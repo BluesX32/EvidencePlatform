@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +20,10 @@ class RecordSource(Base):
     raw_data stores the original parsed fields from that source's file, including:
       - All rispy-parsed fields verbatim
       - "source_record_id": stable source-specific ID (PMID, EID, accession) or null
+
+    Slice 3: precomputed norm fields (norm_title, norm_first_author, match_year,
+    match_doi) stored at import time for re-matching without re-parsing raw_data.
+    These columns are immutable after insert.
     """
     __tablename__ = "record_sources"
 
@@ -29,3 +34,8 @@ class RecordSource(Base):
     # Original parsed fields verbatim — never mutated after insert.
     raw_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Precomputed normalized match fields (Slice 3) — set at import, never mutated.
+    norm_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    norm_first_author: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    match_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    match_doi: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

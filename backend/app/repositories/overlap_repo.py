@@ -9,16 +9,31 @@ Overlap is computed over canonical record_id — correctness is guaranteed by
 insert-time dedup (no DOI string matching at query time).
 """
 import uuid
+from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.match_strategy import MatchStrategy
 from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.source import Source
 
 
 class OverlapRepo:
+
+    @staticmethod
+    async def active_strategy_name(
+        db: AsyncSession, project_id: uuid.UUID
+    ) -> Optional[str]:
+        """Return the name of the currently active match strategy, or None."""
+        result = await db.execute(
+            select(MatchStrategy.name).where(
+                MatchStrategy.project_id == project_id,
+                MatchStrategy.is_active == True,  # noqa: E712
+            )
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def source_totals(db: AsyncSession, project_id: uuid.UUID) -> list:

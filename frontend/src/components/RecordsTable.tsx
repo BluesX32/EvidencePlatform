@@ -1,5 +1,45 @@
 import type { RecordItem } from "../api/client";
 
+const BASIS_LABELS: Record<string, string> = {
+  doi: "DOI",
+  title_author_year: "Title+Author+Year",
+  title_year: "Title+Year",
+  title_author: "Title+Author",
+  none: "—",
+};
+
+const BASIS_COLORS: Record<string, string> = {
+  doi: "#1a73e8",
+  title_author_year: "#188038",
+  title_year: "#e37400",
+  title_author: "#9334e6",
+  none: "#888",
+};
+
+function MatchBasisBadge({ basis }: { basis: string | null }) {
+  if (!basis) return <span style={{ color: "#aaa" }}>—</span>;
+  const label = BASIS_LABELS[basis] ?? basis;
+  const color = BASIS_COLORS[basis] ?? "#888";
+  return (
+    <span
+      title={`Deduplicated by: ${label}`}
+      style={{
+        display: "inline-block",
+        fontSize: "0.72rem",
+        fontWeight: 600,
+        color,
+        background: `${color}18`,
+        border: `1px solid ${color}44`,
+        borderRadius: "0.25rem",
+        padding: "0.1rem 0.35rem",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 interface Props {
   records: RecordItem[];
   sort: string;
@@ -59,6 +99,7 @@ export default function RecordsTable({ records, sort, onSortChange, isLoading }:
             <th>Journal</th>
             <th>DOI</th>
             <th>Sources</th>
+            <th>Dedup</th>
           </tr>
         </thead>
         <tbody>
@@ -76,6 +117,7 @@ export default function RecordsTable({ records, sort, onSortChange, isLoading }:
                 ) : "—"}
               </td>
               <td>{r.sources.length > 0 ? r.sources.join(", ") : "—"}</td>
+              <td><MatchBasisBadge basis={r.match_basis} /></td>
             </tr>
           ))}
         </tbody>

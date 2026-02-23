@@ -28,6 +28,7 @@ class RecordItem(BaseModel):
     pages: Optional[str]
     doi: Optional[str]
     sources: List[str]
+    match_basis: Optional[str]
     created_at: str
 
     @classmethod
@@ -43,6 +44,7 @@ class RecordItem(BaseModel):
             pages=r.pages,
             doi=r.doi,
             sources=r.sources or [],
+            match_basis=r.match_basis,
             created_at=r.created_at.isoformat(),
         )
 
@@ -73,6 +75,7 @@ class OverlapPair(BaseModel):
 class OverlapSummary(BaseModel):
     sources: List[OverlapSourceItem]
     pairs: List[OverlapPair]
+    strategy_name: Optional[str]
 
 
 async def _require_project_access(project_id: uuid.UUID, user: User, db: AsyncSession):
@@ -122,6 +125,7 @@ async def get_overlap(
 
     totals = await OverlapRepo.source_totals(db, project_id)
     pairs = await OverlapRepo.pairwise_overlap(db, project_id)
+    strategy_name = await OverlapRepo.active_strategy_name(db, project_id)
 
     return OverlapSummary(
         sources=[
@@ -143,4 +147,5 @@ async def get_overlap(
             )
             for row in pairs
         ],
+        strategy_name=strategy_name,
     )

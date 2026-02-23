@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { projectsApi, importsApi, sourcesApi } from "../api/client";
-import type { ImportJob } from "../api/client";
+import { projectsApi, importsApi, sourcesApi, strategiesApi, dedupJobsApi } from "../api/client";
+import type { ImportJob, MatchStrategy } from "../api/client";
+
+const PRESET_OPTIONS: { value: string; label: string; description: string }[] = [
+  { value: "doi_first_strict", label: "DOI + Strict fallback", description: "DOI if available; else title + first author + year" },
+  { value: "doi_first_medium", label: "DOI + Medium fallback", description: "DOI if available; else title + year" },
+  { value: "strict", label: "Strict (title + author + year)", description: "Ignores DOI; merges on title + first author + year" },
+  { value: "medium", label: "Medium (title + year)", description: "Merges on title + year only" },
+  { value: "loose", label: "Loose (title + first author)", description: "Merges on title + first author, no year" },
+];
 
 function statusBadge(status: ImportJob["status"]) {
   const colors: Record<string, string> = {
@@ -24,6 +32,9 @@ export default function ProjectPage() {
 
   const [newSourceName, setNewSourceName] = useState("");
   const [sourceError, setSourceError] = useState<string | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState<string>("doi_first_strict");
+  const [newStrategyName, setNewStrategyName] = useState("");
+  const [dedupError, setDedupError] = useState<string | null>(null);
 
   const { data: project, isLoading: loadingProject } = useQuery({
     queryKey: ["project", id],
@@ -47,6 +58,57 @@ export default function ProjectPage() {
     queryKey: ["sources", id],
     queryFn: () => sourcesApi.list(id!).then((r) => r.data),
     enabled: !!id,
+  });
+
+  const { data: strategies, refetch: refetchStrategies } = useQuery({
+    queryKey: ["strategies", id],
+    queryFn: () => strategiesApi.list(id!).then((r) => r.data),
+    enabled: !!id,
+  });
+
+  const { data: dedupJobs, refetch: refetchDedupJobs } = useQuery({
+    queryKey: ["dedup-jobs", id],
+    queryFn: () => dedupJobsApi.list(id!).then((r) => r.data),
+    enabled: !!id,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 5000;
+      const hasActive = data.some((j) => j.status === "pending" || j.status === "running");
+      return hasActive ? 2000 : false;
+    },
+  });
+
+  const activeStrategy = strategies?.find((s) => s.is_active);
+  const lastDedupJob = dedupJobs?.[0];
+
+  const createStrategy = useMutation({
+    mutationFn: ({ name, preset }: { name: string; preset: string }) =>
+      strategiesApi.create(id!, name, preset),
+    onSuccess: () => {
+      refetchStrategies();
+      setNewStrategyName("");
+      setDedupError(null);
+    },
+    onError: (err: any) => {
+      const detail = err.response?.data?.detail ?? "Failed to create strategy";
+      setDedupError(typeof detail === "string" ? detail : JSON.stringify(detail));
+    },
+  });
+
+  const runDedup = useMutation({
+    mutationFn: (strategyId: string) => dedupJobsApi.start(id!, strategyId),
+    onSuccess: () => {
+      refetchDedupJobs();
+      setDedupError(null);
+    },
+    onError: (err: any) => {
+      const detail = err.response?.data?.detail ?? "Failed to start dedup job";
+      if (typeof detail === "object" && detail.message) {
+        setDedupError(detail.message);
+      } else {
+        setDedupError(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+    },
   });
 
   const addSource = useMutation({
@@ -139,6 +201,105 @@ export default function ProjectPage() {
             </button>
           </form>
           {sourceError && <p className="error" style={{ marginTop: "0.5rem" }}>{sourceError}</p>}
+        </section>
+
+        {/* Dedup section */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Deduplication</h3>
+          {activeStrategy && (
+            <p className="muted" style={{ marginBottom: "0.75rem" }}>
+              Active strategy: <strong>{activeStrategy.name}</strong>{" "}
+              <span style={{ color: "#888" }}>({activeStrategy.preset_label})</span>
+            </p>
+          )}
+          {lastDedupJob?.status === "completed" && (
+            <p className="muted" style={{ marginBottom: "0.75rem" }}>
+              Last run:{" "}
+              {new Date(lastDedupJob.completed_at!).toLocaleString()} —{" "}
+              {lastDedupJob.records_before} → {lastDedupJob.records_after} canonical records
+              {lastDedupJob.merges ? ` (${lastDedupJob.merges} merged)` : ""}
+            </p>
+          )}
+          {(lastDedupJob?.status === "pending" || lastDedupJob?.status === "running") && (
+            <p style={{ color: "#1a73e8", marginBottom: "0.75rem" }}>
+              Deduplication running…
+            </p>
+          )}
+
+          {/* Strategy selector */}
+          <div style={{ marginBottom: "1rem" }}>
+            <p style={{ fontWeight: 500, marginBottom: "0.5rem" }}>Select matching preset:</p>
+            {PRESET_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem", marginBottom: "0.4rem", cursor: "pointer" }}
+              >
+                <input
+                  type="radio"
+                  name="preset"
+                  value={opt.value}
+                  checked={selectedPreset === opt.value}
+                  onChange={() => setSelectedPreset(opt.value)}
+                  style={{ marginTop: "0.2rem" }}
+                />
+                <span>
+                  <strong>{opt.label}</strong>
+                  <span className="muted" style={{ marginLeft: "0.4rem" }}>{opt.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {/* Run dedup — uses active strategy or prompts to create one */}
+          {activeStrategy ? (
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+              {activeStrategy.preset !== selectedPreset && (
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Strategy name…"
+                    value={newStrategyName}
+                    onChange={(e) => setNewStrategyName(e.target.value)}
+                    style={{ width: 200 }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    disabled={!newStrategyName.trim() || createStrategy.isPending}
+                    onClick={() => createStrategy.mutate({ name: newStrategyName.trim(), preset: selectedPreset })}
+                  >
+                    Save &amp; activate
+                  </button>
+                </div>
+              )}
+              <button
+                className="btn-primary"
+                disabled={runDedup.isPending || lastDedupJob?.status === "pending" || lastDedupJob?.status === "running"}
+                onClick={() => runDedup.mutate(activeStrategy.id)}
+              >
+                {(lastDedupJob?.status === "pending" || lastDedupJob?.status === "running") ? "Running…" : "Run deduplication"}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <input
+                type="text"
+                className="input"
+                placeholder="Strategy name…"
+                value={newStrategyName}
+                onChange={(e) => setNewStrategyName(e.target.value)}
+                style={{ width: 200 }}
+              />
+              <button
+                className="btn-primary"
+                disabled={!newStrategyName.trim() || createStrategy.isPending}
+                onClick={() => createStrategy.mutate({ name: newStrategyName.trim(), preset: selectedPreset })}
+              >
+                Create strategy
+              </button>
+            </div>
+          )}
+          {dedupError && <p className="error" style={{ marginTop: "0.5rem" }}>{dedupError}</p>}
         </section>
 
         <section style={{ marginTop: "2rem" }}>

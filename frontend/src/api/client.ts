@@ -132,6 +132,7 @@ export interface RecordItem {
   pages: string | null;
   doi: string | null;
   sources: string[];
+  match_basis: string | null;
   created_at: string;
 }
 
@@ -172,4 +173,56 @@ export interface OverlapPair {
 export interface OverlapSummary {
   sources: OverlapSourceItem[];
   pairs: OverlapPair[];
+  strategy_name: string | null;
 }
+
+// ── Match Strategies ──────────────────────────────────────────────────────────
+
+export interface MatchStrategy {
+  id: string;
+  project_id: string;
+  name: string;
+  preset: string;
+  preset_label: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export const strategiesApi = {
+  list: (projectId: string) =>
+    api.get<MatchStrategy[]>(`/projects/${projectId}/strategies`),
+  create: (projectId: string, name: string, preset: string) =>
+    api.post<MatchStrategy>(`/projects/${projectId}/strategies`, { name, preset }),
+  getActive: (projectId: string) =>
+    api.get<MatchStrategy | null>(`/projects/${projectId}/strategies/active`),
+};
+
+// ── Dedup Jobs ────────────────────────────────────────────────────────────────
+
+export interface DedupJob {
+  id: string;
+  project_id: string;
+  strategy_id: string;
+  strategy: { id: string; name: string; preset: string } | null;
+  status: "pending" | "running" | "completed" | "failed";
+  records_before: number | null;
+  records_after: number | null;
+  merges: number | null;
+  clusters_created: number | null;
+  clusters_deleted: number | null;
+  error_msg: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export const dedupJobsApi = {
+  start: (projectId: string, strategyId: string) =>
+    api.post<{ dedup_job_id: string; status: string }>(
+      `/projects/${projectId}/dedup-jobs`,
+      { strategy_id: strategyId }
+    ),
+  list: (projectId: string) =>
+    api.get<DedupJob[]>(`/projects/${projectId}/dedup-jobs`),
+  get: (projectId: string, jobId: string) =>
+    api.get<DedupJob>(`/projects/${projectId}/dedup-jobs/${jobId}`),
+};

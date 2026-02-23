@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.source import Source
+from app.utils.match_keys import compute_match_key, normalize_title, normalize_first_author
 
 
 class RecordRepo:
@@ -26,31 +27,53 @@ class RecordRepo:
         project_id: uuid.UUID,
         source_id: uuid.UUID,
         import_job_id: uuid.UUID,
+        preset: str = "doi_first_strict",
     ) -> int:
         """
         Two-phase import:
           A. Upsert each parsed record into `records` (canonical store).
-             - DOI records: INSERT … ON CONFLICT (project_id, normalized_doi) DO NOTHING,
+             - Records with a match_key: INSERT … ON CONFLICT (project_id, match_key) DO NOTHING,
                then SELECT id for both new and pre-existing rows.
-             - No-DOI records: always INSERT (no conflict possible; not deduplicated).
-          B. Insert a row into `record_sources` (join table) for every canonical record.
+             - Records without a match_key: always INSERT (no conflict possible; isolated).
+          B. Insert a row into `record_sources` (join table) for every canonical record,
+             including precomputed norm fields for future re-dedup.
              INSERT … ON CONFLICT (record_id, source_id) DO NOTHING — idempotent per source.
 
         Returns the count of new `record_sources` rows actually inserted,
         i.e. new source memberships added in this import.
         """
-        doi_records = [(i, r) for i, r in enumerate(parsed_records) if r.get("doi")]
-        nodoi_records = [(i, r) for i, r in enumerate(parsed_records) if not r.get("doi")]
+        # Pre-compute norm fields and match_key for every record
+        enriched: list[dict] = []
+        for r in parsed_records:
+            norm_t = normalize_title(r.get("title"))
+            norm_a = normalize_first_author(r.get("authors"))
+            m_year = r.get("year")
+            m_doi = r.get("doi")  # already lowercased by parser
+            mk, basis = compute_match_key(norm_t, norm_a, m_year, m_doi, preset)
+            enriched.append({
+                **r,
+                "norm_title": norm_t,
+                "norm_first_author": norm_a,
+                "match_year": m_year,
+                "match_doi": m_doi,
+                "match_key": mk,
+                "match_basis": basis,
+            })
+
+        keyed_records = [(i, r) for i, r in enumerate(enriched) if r["match_key"] is not None]
+        nokey_records = [(i, r) for i, r in enumerate(enriched) if r["match_key"] is None]
 
         record_ids: dict[int, uuid.UUID] = {}  # parsed-record index → canonical record.id
 
-        # ── Phase A-1: DOI records (batch upsert) ──────────────────────────
-        if doi_records:
+        # ── Phase A-1: Records with a match_key (batch upsert) ─────────────
+        if keyed_records:
             values = [
                 {
                     "project_id": project_id,
-                    "normalized_doi": r["doi"],  # parser already lowercases/strips
-                    "doi": r["doi"],
+                    "normalized_doi": r.get("doi"),
+                    "match_key": r["match_key"],
+                    "match_basis": r["match_basis"],
+                    "doi": r.get("doi"),
                     "title": r.get("title"),
                     "abstract": r.get("abstract"),
                     "authors": r.get("authors"),
@@ -63,33 +86,35 @@ class RecordRepo:
                     "keywords": r.get("keywords"),
                     "source_format": r.get("source_format", "ris"),
                 }
-                for _, r in doi_records
+                for _, r in keyed_records
             ]
             stmt = pg_insert(Record).values(values).on_conflict_do_nothing(
-                index_elements=["project_id", "normalized_doi"],
-                index_where=text("normalized_doi IS NOT NULL"),
+                index_elements=["project_id", "match_key"],
+                index_where=text("match_key IS NOT NULL"),
             )
             await db.execute(stmt)
             await db.flush()
 
-            # Fetch ids for all DOIs (covers both newly inserted and pre-existing).
-            dois = [r["doi"] for _, r in doi_records]
+            # Fetch ids for all match_keys (covers newly inserted and pre-existing).
+            keys = [r["match_key"] for _, r in keyed_records]
             rows = await db.execute(
-                select(Record.id, Record.normalized_doi).where(
+                select(Record.id, Record.match_key).where(
                     Record.project_id == project_id,
-                    Record.normalized_doi.in_(dois),
+                    Record.match_key.in_(keys),
                 )
             )
-            doi_to_id = {row.normalized_doi: row.id for row in rows}
-            for idx, rec in doi_records:
-                record_ids[idx] = doi_to_id[rec["doi"]]
+            key_to_id = {row.match_key: row.id for row in rows}
+            for idx, rec in keyed_records:
+                record_ids[idx] = key_to_id[rec["match_key"]]
 
-        # ── Phase A-2: No-DOI records (individual inserts) ─────────────────
-        for idx, rec in nodoi_records:
+        # ── Phase A-2: No-key records (individual inserts — never merged) ───
+        for idx, rec in nokey_records:
             record = Record(
                 project_id=project_id,
-                normalized_doi=None,
-                doi=None,
+                normalized_doi=rec.get("doi"),
+                match_key=None,
+                match_basis="none",
+                doi=rec.get("doi"),
                 title=rec.get("title"),
                 abstract=rec.get("abstract"),
                 authors=rec.get("authors"),
@@ -112,7 +137,11 @@ class RecordRepo:
                 "record_id": record_ids[idx],
                 "source_id": source_id,
                 "import_job_id": import_job_id,
-                "raw_data": parsed_records[idx]["raw_data"],
+                "raw_data": enriched[idx]["raw_data"],
+                "norm_title": enriched[idx]["norm_title"],
+                "norm_first_author": enriched[idx]["norm_first_author"],
+                "match_year": enriched[idx]["match_year"],
+                "match_doi": enriched[idx]["match_doi"],
             }
             for idx in record_ids
         ]
@@ -154,6 +183,7 @@ class RecordRepo:
                 Record.issue,
                 Record.pages,
                 Record.doi,
+                Record.match_basis,
                 Record.created_at,
                 func.array_remove(
                     func.array_agg(func.distinct(Source.name)),
@@ -166,7 +196,7 @@ class RecordRepo:
             .group_by(
                 Record.id, Record.title, Record.authors, Record.year,
                 Record.journal, Record.volume, Record.issue, Record.pages,
-                Record.doi, Record.created_at,
+                Record.doi, Record.match_basis, Record.created_at,
             )
         )
 

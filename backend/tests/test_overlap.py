@@ -162,10 +162,30 @@ async def test_same_doi_same_source_reimport_is_idempotent(db):
     assert total_links == 1
 
 
-async def test_no_doi_records_not_deduplicated(db):
-    """Two imports of the same no-DOI record create two separate canonical rows."""
+async def test_no_doi_no_title_records_not_deduplicated(db):
+    """Records with no DOI and no title (match_key=None) are never deduplicated.
+
+    In Slice 3, records without a DOI *can* be deduplicated if they have title+author+year.
+    Records that lack required fields for any preset remain isolated (match_key=None).
+    """
     project_id, sa_id, sb_id, job_id = await _seed_project_and_sources(db)
-    rec = _make_record(doi=None, title="No DOI Article")
+
+    # Record with no DOI and no title → no match key under any preset
+    rec = {
+        "title": None,
+        "abstract": None,
+        "authors": None,
+        "year": 2024,
+        "journal": "Some Journal",
+        "volume": None,
+        "issue": None,
+        "pages": None,
+        "doi": None,
+        "issn": None,
+        "keywords": None,
+        "source_format": "ris",
+        "raw_data": {"source_record_id": None},
+    }
 
     count_a = await RecordRepo.upsert_and_link(
         db, [rec], project_id=project_id, source_id=sa_id, import_job_id=job_id
@@ -177,16 +197,43 @@ async def test_no_doi_records_not_deduplicated(db):
     assert count_a == 1
     assert count_b == 1
 
-    # Two separate canonical rows because no DOI → no dedup key.
+    # Two separate canonical rows because match_key=NULL → no dedup possible.
     total_records = (
         await db.execute(
             select(func.count()).where(
                 Record.project_id == project_id,
-                Record.normalized_doi.is_(None),
+                Record.match_key.is_(None),
             )
         )
     ).scalar_one()
     assert total_records == 2
+
+
+async def test_no_doi_with_title_author_year_is_deduplicated(db):
+    """No-DOI records with complete title+author+year deduplicate under doi_first_strict."""
+    project_id, sa_id, sb_id, job_id = await _seed_project_and_sources(db)
+    rec = _make_record(doi=None, title="Mindfulness and Depression: A Systematic Review")
+
+    count_a = await RecordRepo.upsert_and_link(
+        db, [rec], project_id=project_id, source_id=sa_id, import_job_id=job_id
+    )
+    count_b = await RecordRepo.upsert_and_link(
+        db, [rec], project_id=project_id, source_id=sb_id, import_job_id=job_id
+    )
+
+    assert count_a == 1
+    assert count_b == 1  # idempotent — same record_sources conflict
+
+    # 1 canonical record — deduplicated by title+author+year fallback
+    total_records = (
+        await db.execute(
+            select(func.count()).where(
+                Record.project_id == project_id,
+                Record.match_basis == "title_author_year",
+            )
+        )
+    ).scalar_one()
+    assert total_records == 1
 
 
 # ── overlap tests ─────────────────────────────────────────────────────────────

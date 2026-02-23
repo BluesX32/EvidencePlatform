@@ -10,6 +10,19 @@ from app.models.import_job import ImportJob
 
 class ImportRepo:
     @staticmethod
+    async def get_running(
+        db: AsyncSession, project_id: uuid.UUID
+    ) -> Optional[ImportJob]:
+        """Return any import job in 'pending' or 'processing' state for this project."""
+        result = await db.execute(
+            select(ImportJob).where(
+                ImportJob.project_id == project_id,
+                ImportJob.status.in_(["pending", "processing"]),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         project_id: uuid.UUID,

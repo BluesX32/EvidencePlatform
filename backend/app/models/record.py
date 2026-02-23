@@ -13,16 +13,21 @@ class Record(Base):
     """
     Canonical deduplicated record.  One row per unique article per project.
 
-    Dedup key: (project_id, normalized_doi) — partial unique index, NULL excluded.
-    Records without a DOI are stored as distinct rows (no dedup in Slice 2).
+    Dedup key (Slice 3+): (project_id, match_key) — partial unique index, NULL excluded.
+    match_key is strategy-agnostic (e.g. "doi:10.1234/...", "tay:title|author|year").
+    normalized_doi is kept for backwards compat and auditing.
     Source membership is tracked in record_sources (join table).
     """
     __tablename__ = "records"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
-    # Dedup key: lower(trim(doi)).  NULL for no-DOI records.
+    # Legacy dedup key (Slice 2); kept for auditing. Not used for conflict detection in Slice 3+.
     normalized_doi: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Slice 3 dedup key — strategy-agnostic. NULL = record stays isolated.
+    match_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Which fields were used to form match_key: 'doi' | 'title_author_year' | 'title_year' | 'title_author' | 'none'
+    match_basis: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     abstract: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     authors: Mapped[Optional[list]] = mapped_column(ARRAY(Text), nullable=True)
