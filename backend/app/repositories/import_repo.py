@@ -16,6 +16,7 @@ class ImportRepo:
         user_id: uuid.UUID,
         filename: str,
         file_format: str,
+        source_id: Optional[uuid.UUID] = None,
     ) -> ImportJob:
         job = ImportJob(
             project_id=project_id,
@@ -23,6 +24,7 @@ class ImportRepo:
             filename=filename,
             file_format=file_format,
             status="pending",
+            source_id=source_id,
         )
         db.add(job)
         await db.commit()

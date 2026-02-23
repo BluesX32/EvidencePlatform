@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { importsApi } from "../api/client";
+import { useQuery } from "@tanstack/react-query";
+import { importsApi, sourcesApi } from "../api/client";
 import type { ImportJob } from "../api/client";
 import ImportProgress from "../components/ImportProgress";
 
@@ -15,6 +16,13 @@ export default function ImportPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+
+  const { data: sources } = useQuery({
+    queryKey: ["sources", projectId],
+    queryFn: () => sourcesApi.list(projectId!).then((r) => r.data),
+    enabled: !!projectId,
+  });
 
   function validateFile(f: File): string | null {
     if (!f.name.toLowerCase().endsWith(".ris")) {
@@ -49,7 +57,7 @@ export default function ImportPage() {
     setUploading(true);
     setError(null);
     try {
-      const res = await importsApi.start(projectId, file);
+      const res = await importsApi.start(projectId, file, selectedSourceId || undefined);
       setJobId(res.data.import_job_id);
     } catch (err: any) {
       setError(err.response?.data?.detail ?? "Upload failed");
@@ -63,6 +71,8 @@ export default function ImportPage() {
     }
   }
 
+  const hasSources = sources && sources.length > 0;
+
   return (
     <div className="page">
       <header className="page-header">
@@ -74,6 +84,32 @@ export default function ImportPage() {
 
         {!jobId ? (
           <>
+            {/* Source selector */}
+            <div style={{ marginBottom: "1.25rem" }}>
+              <label className="label" htmlFor="source-select">
+                Source database
+              </label>
+              {hasSources ? (
+                <select
+                  id="source-select"
+                  className="input"
+                  value={selectedSourceId}
+                  onChange={(e) => setSelectedSourceId(e.target.value)}
+                  style={{ display: "block", marginTop: "0.4rem", maxWidth: 300 }}
+                >
+                  <option value="">— Select a source —</option>
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="muted" style={{ marginTop: "0.4rem" }}>
+                  No sources defined yet.{" "}
+                  <Link to={`/projects/${projectId}`}>Add a source</Link> on the project page before importing.
+                </p>
+              )}
+            </div>
+
             <div
               className={`upload-zone ${dragging ? "dragging" : ""} ${file ? "has-file" : ""}`}
               onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -108,7 +144,7 @@ export default function ImportPage() {
               <button
                 className="btn-primary"
                 onClick={handleUpload}
-                disabled={!file || uploading}
+                disabled={!file || uploading || !hasSources || !selectedSourceId}
               >
                 {uploading ? "Uploading…" : "Import"}
               </button>

@@ -17,6 +17,11 @@ RIS tag reference used:
   DO       — DOI
   SN       — ISSN
   KW       — keyword (one tag per keyword)
+  AN       — accession number (PMID in PubMed exports, EID in Scopus exports)
+
+source_record_id convention:
+  raw_data always carries the key "source_record_id" (string | null).
+  Populated from AN (rispy: accession_number) when present; null otherwise.
 """
 import unicodedata
 from typing import Optional
@@ -42,9 +47,19 @@ def parse(file_bytes: bytes) -> list[dict]:
 def _normalize(entry: dict) -> dict:
     """
     Map rispy field names to our schema columns and normalize values.
-    The original entry dict is stored verbatim in raw_data.
+    The original entry dict is stored in raw_data, augmented with
+    a "source_record_id" key for the stable source-specific identifier.
     """
     raw_data = dict(entry)  # shallow copy preserves original
+
+    # Extract stable source-specific identifier (PMID, EID, accession number).
+    # AN tag → rispy "accession_number". Present in PubMed and Scopus RIS exports.
+    source_record_id = (
+        _clean_text(entry.get("accession_number"))
+        or _clean_text(entry.get("pubmed_id"))
+        or None
+    )
+    raw_data["source_record_id"] = source_record_id  # always present; null when absent
 
     title = _clean_text(
         entry.get("title") or entry.get("primary_title") or entry.get("title_secondary")

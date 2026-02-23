@@ -41,19 +41,6 @@ class Protocol(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-class Record(Base):
-    """Canonical deduplicated records derived from record_sources. Active in Slice 2."""
-    __tablename__ = "records"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
-    # The record_source chosen as canonical representative after dedup.
-    primary_source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("record_sources.id"), nullable=False)
-    # Extensible metadata for fields not in the fixed schema.
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
 class DedupPair(Base):
     """Deduplication decisions, every one logged with rationale. Active in Slice 2."""
     __tablename__ = "dedup_pairs"

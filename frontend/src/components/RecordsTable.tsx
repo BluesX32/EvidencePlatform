@@ -58,6 +58,7 @@ export default function RecordsTable({ records, sort, onSortChange, isLoading }:
             <SortHeader label="Year" asc="year_asc" desc="year_desc" current={sort} onChange={onSortChange} />
             <th>Journal</th>
             <th>DOI</th>
+            <th>Sources</th>
           </tr>
         </thead>
         <tbody>
@@ -74,6 +75,7 @@ export default function RecordsTable({ records, sort, onSortChange, isLoading }:
                   </a>
                 ) : "—"}
               </td>
+              <td>{r.sources.length > 0 ? r.sources.join(", ") : "—"}</td>
             </tr>
           ))}
         </tbody>

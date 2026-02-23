@@ -75,12 +75,28 @@ export const projectsApi = {
     api.post<Project>("/projects", { name, description }),
 };
 
+// ── Sources ───────────────────────────────────────────────────────────────────
+
+export interface Source {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export const sourcesApi = {
+  list: (projectId: string) =>
+    api.get<Source[]>(`/projects/${projectId}/sources`),
+  create: (projectId: string, name: string) =>
+    api.post<Source>(`/projects/${projectId}/sources`, { name }),
+};
+
 // ── Imports ───────────────────────────────────────────────────────────────────
 
 export interface ImportJob {
   id: string;
   filename: string;
   status: "pending" | "processing" | "completed" | "failed";
+  source_id: string | null;
   record_count: number | null;
   error_msg: string | null;
   created_at: string;
@@ -88,9 +104,10 @@ export interface ImportJob {
 }
 
 export const importsApi = {
-  start: (projectId: string, file: File) => {
+  start: (projectId: string, file: File, sourceId?: string) => {
     const form = new FormData();
     form.append("file", file);
+    if (sourceId) form.append("source_id", sourceId);
     return api.post<{ import_job_id: string; status: string }>(
       `/projects/${projectId}/imports`,
       form
@@ -114,8 +131,7 @@ export interface RecordItem {
   issue: string | null;
   pages: string | null;
   doi: string | null;
-  source_format: string;
-  import_job_id: string;
+  sources: string[];
   created_at: string;
 }
 
@@ -128,6 +144,32 @@ export interface PaginatedRecords {
 }
 
 export const recordsApi = {
-  list: (projectId: string, params: { page?: number; per_page?: number; q?: string; sort?: string }) =>
-    api.get<PaginatedRecords>(`/projects/${projectId}/records`, { params }),
+  list: (
+    projectId: string,
+    params: { page?: number; per_page?: number; q?: string; sort?: string; source_id?: string }
+  ) => api.get<PaginatedRecords>(`/projects/${projectId}/records`, { params }),
+  overlap: (projectId: string) =>
+    api.get<OverlapSummary>(`/projects/${projectId}/overlap`),
 };
+
+// ── Overlap ───────────────────────────────────────────────────────────────────
+
+export interface OverlapSourceItem {
+  id: string;
+  name: string;
+  total: number;
+  with_doi: number;
+}
+
+export interface OverlapPair {
+  source_a_id: string;
+  source_a_name: string;
+  source_b_id: string;
+  source_b_name: string;
+  shared_records: number;
+}
+
+export interface OverlapSummary {
+  sources: OverlapSourceItem[];
+  pairs: OverlapPair[];
+}

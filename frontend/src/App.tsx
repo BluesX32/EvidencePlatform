@@ -9,6 +9,7 @@ import NewProjectPage from "./pages/NewProjectPage";
 import ProjectPage from "./pages/ProjectPage";
 import ImportPage from "./pages/ImportPage";
 import RecordsPage from "./pages/RecordsPage";
+import OverlapPage from "./pages/OverlapPage";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="/projects/:id" element={<RequireAuth><ProjectPage /></RequireAuth>} />
           <Route path="/projects/:id/import" element={<RequireAuth><ImportPage /></RequireAuth>} />
           <Route path="/projects/:id/records" element={<RequireAuth><RecordsPage /></RequireAuth>} />
+          <Route path="/projects/:id/overlap" element={<RequireAuth><OverlapPage /></RequireAuth>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

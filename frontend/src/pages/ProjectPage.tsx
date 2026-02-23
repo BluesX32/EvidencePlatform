@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { projectsApi, importsApi } from "../api/client";
+import { projectsApi, importsApi, sourcesApi } from "../api/client";
 import type { ImportJob } from "../api/client";
 
 function statusBadge(status: ImportJob["status"]) {
@@ -19,6 +20,10 @@ function statusBadge(status: ImportJob["status"]) {
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
+  const queryClient = useQueryClient();
+
+  const [newSourceName, setNewSourceName] = useState("");
+  const [sourceError, setSourceError] = useState<string | null>(null);
 
   const { data: project, isLoading: loadingProject } = useQuery({
     queryKey: ["project", id],
@@ -37,6 +42,32 @@ export default function ProjectPage() {
       return hasActive ? 1500 : false;
     },
   });
+
+  const { data: sources } = useQuery({
+    queryKey: ["sources", id],
+    queryFn: () => sourcesApi.list(id!).then((r) => r.data),
+    enabled: !!id,
+  });
+
+  const addSource = useMutation({
+    mutationFn: (name: string) => sourcesApi.create(id!, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sources", id] });
+      setNewSourceName("");
+      setSourceError(null);
+    },
+    onError: (err: any) => {
+      const detail = err.response?.data?.detail ?? "Failed to add source";
+      setSourceError(typeof detail === "string" ? detail : JSON.stringify(detail));
+    },
+  });
+
+  function handleAddSource(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newSourceName.trim();
+    if (!name) return;
+    addSource.mutate(name);
+  }
 
   if (loadingProject) return <div className="page"><p>Loading…</p></div>;
 
@@ -60,9 +91,57 @@ export default function ProjectPage() {
           {(project?.record_count ?? 0) > 0 && (
             <Link to={`/projects/${id}/records`} className="btn-secondary">View records</Link>
           )}
+          {(sources?.length ?? 0) >= 2 && (
+            <Link to={`/projects/${id}/overlap`} className="btn-secondary">View overlap</Link>
+          )}
         </div>
 
-        <section>
+        {/* Sources section */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Sources</h3>
+          <p className="muted" style={{ marginBottom: "0.75rem" }}>
+            Tag each imported file with the database it came from (e.g. PubMed, Scopus).
+          </p>
+          {sources && sources.length > 0 && (
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+              {sources.map((s) => (
+                <span
+                  key={s.id}
+                  style={{
+                    background: "var(--surface-alt, #f1f3f4)",
+                    border: "1px solid var(--border, #dadce0)",
+                    borderRadius: "1rem",
+                    padding: "0.2rem 0.75rem",
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                  }}
+                >
+                  {s.name}
+                </span>
+              ))}
+            </div>
+          )}
+          <form onSubmit={handleAddSource} style={{ display: "flex", gap: "0.5rem", maxWidth: 360 }}>
+            <input
+              type="text"
+              className="input"
+              placeholder="New source name…"
+              value={newSourceName}
+              onChange={(e) => setNewSourceName(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              type="submit"
+              className="btn-secondary"
+              disabled={!newSourceName.trim() || addSource.isPending}
+            >
+              Add
+            </button>
+          </form>
+          {sourceError && <p className="error" style={{ marginTop: "0.5rem" }}>{sourceError}</p>}
+        </section>
+
+        <section style={{ marginTop: "2rem" }}>
           <h3>Import history</h3>
           {!jobs || jobs.length === 0 ? (
             <p className="muted">No imports yet. Upload a RIS file to get started.</p>
@@ -71,20 +150,27 @@ export default function ProjectPage() {
               <thead>
                 <tr>
                   <th>File</th>
+                  <th>Source</th>
                   <th>Status</th>
                   <th>Records</th>
                   <th>Date</th>
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>{job.filename}</td>
-                    <td>{statusBadge(job.status)}</td>
-                    <td>{job.record_count ?? "—"}</td>
-                    <td>{new Date(job.created_at).toLocaleString()}</td>
-                  </tr>
-                ))}
+                {jobs.map((job) => {
+                  const sourceName = job.source_id
+                    ? sources?.find((s) => s.id === job.source_id)?.name ?? "—"
+                    : "—";
+                  return (
+                    <tr key={job.id}>
+                      <td>{job.filename}</td>
+                      <td>{sourceName}</td>
+                      <td>{statusBadge(job.status)}</td>
+                      <td>{job.record_count ?? "—"}</td>
+                      <td>{new Date(job.created_at).toLocaleString()}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
