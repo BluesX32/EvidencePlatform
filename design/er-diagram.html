@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Evidence Synthesis — Database Schema</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --border: #1e2230;
+    --accent: #4af0b0;
+    --accent2: #f0a24a;
+    --accent3: #4a9cf0;
+    --accent4: #f04a8a;
+    --text: #c8cedd;
+    --muted: #5a6070;
+    --canonical-glow: rgba(74, 240, 176, 0.08);
+    --join-glow: rgba(240, 162, 74, 0.08);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 40px 32px;
+  }
+
+  h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    margin-bottom: 40px;
+  }
+
+  .section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    margin-top: 40px;
+  }
+
+  /* ─── ASCII Diagram ─── */
+  .ascii-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 24px 28px;
+    overflow-x: auto;
+  }
+  .ascii-block pre {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--text);
+    white-space: pre;
+  }
+  .ascii-block pre .hl-canonical { color: var(--accent); font-weight: 600; }
+  .ascii-block pre .hl-join      { color: var(--accent2); font-weight: 600; }
+  .ascii-block pre .hl-dim       { color: var(--muted); }
+  .ascii-block pre .hl-arrow     { color: var(--accent3); }
+  .ascii-block pre .hl-pk        { color: var(--accent4); }
+
+  /* ─── Visual ER ─── */
+  .er-canvas {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 32px;
+    overflow-x: auto;
+    min-height: 600px;
+  }
+
+  svg.er-svg {
+    display: block;
+    margin: 0 auto;
+    overflow: visible;
+  }
+
+  /* ─── Mermaid block ─── */
+  .mermaid-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 24px 28px;
+  }
+  .mermaid-block pre {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #c8cedd;
+    white-space: pre;
+  }
+  .mermaid-block .kw   { color: #4a9cf0; }
+  .mermaid-block .ent  { color: #4af0b0; font-weight: 600; }
+  .mermaid-block .rel  { color: #f0a24a; }
+  .mermaid-block .lbl  { color: #f04a8a; font-style: italic; }
+  .mermaid-block .col  { color: #c8cedd; }
+  .mermaid-block .typ  { color: #9b8fd4; }
+  .mermaid-block .cmt  { color: #5a6070; font-style: italic; }
+
+  /* ─── Callout cards ─── */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 12px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px;
+  }
+  .card .card-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .card h3 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .card p {
+    font-size: 13px;
+    line-height: 1.65;
+    color: #8c95a8;
+  }
+  .card code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--accent2);
+    background: rgba(240,162,74,0.1);
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+  .card.c1 h3 { color: var(--accent); border-bottom: 1px solid rgba(74,240,176,0.15); padding-bottom: 8px; }
+  .card.c2 h3 { color: var(--accent2); border-bottom: 1px solid rgba(240,162,74,0.15); padding-bottom: 8px; }
+  .card.c3 h3 { color: var(--accent3); border-bottom: 1px solid rgba(74,156,240,0.15); padding-bottom: 8px; }
+  .card.c4 h3 { color: var(--accent4); border-bottom: 1px solid rgba(240,74,138,0.15); padding-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Research Evidence Synthesis Platform</h1>
+<p class="subtitle">PostgreSQL Database Schema — ER Diagrams &amp; Relationship Guide</p>
+
+<!-- ═══════════════════════════════════════════════════════ ASCII ═══ -->
+<p class="section-label">01 — ASCII ER Diagram</p>
+<div class="ascii-block"><pre>
+┌─────────────────────────┐         ┌──────────────────────────┐
+│        <span class="hl-dim">projects</span>          │         │       <span class="hl-dim">import_jobs</span>         │
+├─────────────────────────┤         ├──────────────────────────┤
+│ <span class="hl-pk">id</span> UUID PK              │◄───┐    │ <span class="hl-pk">id</span> UUID PK               │
+│ name                    │    │    │ project_id UUID FK       │──► projects
+│ created_at              │    │    │ source_id  UUID FK       │──► sources
+└─────────────────────────┘    │    │ record_count INT         │
+          │  │                 │    │ created_at               │
+          │  └──────────────── ┤    └──────────────────────────┘
+          │                    │               │
+          │ 1                  │               │ (FK)
+          │                    │               ▼
+          ▼ *                  │    ┌──────────────────────────┐
+┌─────────────────────────┐    │    │      <span class="hl-join">record_sources</span>       │◄── M:N join table
+│        <span class="hl-dim">sources</span>           │    │    ├──────────────────────────┤
+├─────────────────────────┤    │    │ <span class="hl-pk">id</span> UUID PK               │
+│ <span class="hl-pk">id</span> UUID PK              │◄───┼────│ record_id  UUID FK       │──► records
+│ project_id UUID FK      │───►│    │ source_id  UUID FK       │──► sources
+│ name VARCHAR            │    │    │ import_job_id UUID FK    │──► import_jobs
+│ created_at              │    │    │ raw_data JSONB           │
+│ UNIQUE(proj_id, name)   │    │    │ created_at               │
+└─────────────────────────┘    │    │ UNIQUE(record_id,src_id) │
+                               │    └──────────────────────────┘
+                               │               │
+                               │               │ * (many per project)
+                               │               ▼
+                               │    ╔══════════════════════════╗
+                               │    ║  <span class="hl-canonical">records</span> ★ CANONICAL    ║◄── Deduplicated layer
+                               │    ╠══════════════════════════╣
+                               └────║ <span class="hl-pk">id</span> UUID PK               ║
+                                    ║ project_id UUID FK       ║
+                                    ║ normalized_doi TEXT      ║
+                                    ║ title TEXT               ║
+                                    ║ abstract TEXT            ║
+                                    ║ authors TEXT[]           ║
+                                    ║ year INT                 ║
+                                    ║ journal, volume, issue…  ║
+                                    ║ keywords TEXT[]          ║
+                                    ║ source_format TEXT       ║
+                                    ║ created_at               ║
+                                    ║ UNIQUE(proj_id, norm_doi)║
+                                    ║   WHERE norm_doi IS NOT  ║
+                                    ║         NULL             ║
+                                    ╚══════════════════════════╝
+
+  <span class="hl-dim">Cardinalities:</span>
+  projects ──1:N──► sources          (a project owns many sources)
+  projects ──1:N──► records          (a project owns many canonical records)
+  projects ──1:N──► import_jobs      (a project has many import jobs)
+  sources  ──1:N──► import_jobs      (a source is used in many import jobs)
+  records  ──M:N──► sources          (via record_sources)
+</pre></div>
+
+<!-- ═══════════════════════════════════════════════════════ MERMAID ═══ -->
+<p class="section-label">02 — Mermaid ER Diagram (paste into mermaid.live)</p>
+<div class="mermaid-block"><pre>
+<span class="kw">erDiagram</span>
+
+    <span class="ent">projects</span> {
+        <span class="typ">UUID</span>        id          <span class="typ">PK</span>
+        <span class="typ">text</span>        name
+        <span class="typ">timestamptz</span> created_at
+    }
+
+    <span class="ent">sources</span> {
+        <span class="typ">UUID</span>        id          <span class="typ">PK</span>
+        <span class="typ">UUID</span>        project_id  <span class="typ">FK</span>
+        <span class="typ">varchar</span>     name
+        <span class="typ">timestamptz</span> created_at
+    }
+
+    <span class="cmt">%% ★ CANONICAL LAYER — one deduped record per DOI per project</span>
+    <span class="ent">records</span> {
+        <span class="typ">UUID</span>        id              <span class="typ">PK</span>
+        <span class="typ">UUID</span>        project_id      <span class="typ">FK</span>
+        <span class="typ">text</span>        normalized_doi  <span class="cmt">"nullable, unique per project"</span>
+        <span class="typ">text</span>        title
+        <span class="typ">text</span>        abstract
+        <span class="typ">text[]</span>      authors
+        <span class="typ">int</span>         year
+        <span class="typ">text</span>        journal
+        <span class="typ">text</span>        volume
+        <span class="typ">text</span>        issue
+        <span class="typ">text</span>        pages
+        <span class="typ">text</span>        doi
+        <span class="typ">text</span>        issn
+        <span class="typ">text[]</span>      keywords
+        <span class="typ">text</span>        source_format
+        <span class="typ">timestamptz</span> created_at
+    }
+
+    <span class="cmt">%% M:N join — links canonical records to the sources they appeared in</span>
+    <span class="ent">record_sources</span> {
+        <span class="typ">UUID</span>        id             <span class="typ">PK</span>
+        <span class="typ">UUID</span>        record_id      <span class="typ">FK</span>
+        <span class="typ">UUID</span>        source_id      <span class="typ">FK</span>
+        <span class="typ">UUID</span>        import_job_id  <span class="typ">FK</span>
+        <span class="typ">jsonb</span>       raw_data       <span class="cmt">"original row; must include source_record_id"</span>
+        <span class="typ">timestamptz</span> created_at
+    }
+
+    <span class="ent">import_jobs</span> {
+        <span class="typ">UUID</span>        id           <span class="typ">PK</span>
+        <span class="typ">UUID</span>        project_id   <span class="typ">FK</span>
+        <span class="typ">UUID</span>        source_id    <span class="typ">FK</span>
+        <span class="typ">int</span>         record_count
+        <span class="typ">timestamptz</span> created_at
+    }
+
+    <span class="cmt">%% ── Relationships ──────────────────────────────────────────────</span>
+    <span class="ent">projects</span>       <span class="rel">||--o{</span> <span class="ent">sources</span>         <span class="lbl">: "owns"</span>
+    <span class="ent">projects</span>       <span class="rel">||--o{</span> <span class="ent">records</span>         <span class="lbl">: "owns (canonical)"</span>
+    <span class="ent">projects</span>       <span class="rel">||--o{</span> <span class="ent">import_jobs</span>     <span class="lbl">: "tracks"</span>
+    <span class="ent">sources</span>        <span class="rel">||--o{</span> <span class="ent">import_jobs</span>     <span class="lbl">: "used in"</span>
+    <span class="ent">records</span>        <span class="rel">||--o{</span> <span class="ent">record_sources</span>  <span class="lbl">: "appears in"</span>
+    <span class="ent">sources</span>        <span class="rel">||--o{</span> <span class="ent">record_sources</span>  <span class="lbl">: "contains"</span>
+    <span class="ent">import_jobs</span>    <span class="rel">||--o{</span> <span class="ent">record_sources</span>  <span class="lbl">: "produced"</span>
+</pre></div>
+
+<!-- ═══════════════════════════════════════════════════════ CARDS ═══ -->
+<p class="section-label">03 — Relationship Explanations</p>
+<div class="cards">
+  <div class="card c1">
+    <div class="card-tag">Canonical Layer</div>
+    <h3>★ records — single source of truth</h3>
+    <p><code>records</code> is the deduplicated, project-scoped canonical layer. A unique partial index on <code>(project_id, normalized_doi) WHERE normalized_doi IS NOT NULL</code> guarantees that two sources importing the same paper produce exactly one canonical record per project. All downstream work (screening, extraction, synthesis) targets <code>records</code>, never raw imports.</p>
+  </div>
+
+  <div class="card c2">
+    <div class="card-tag">Many-to-Many</div>
+    <h3>record_sources — the M:N bridge</h3>
+    <p>A single canonical <code>record</code> can appear in many <code>sources</code> (e.g., PubMed, Embase, Scopus all export the same paper). <code>record_sources</code> resolves this M:N relationship and stores the full <code>raw_data</code> JSONB blob so the original import row is never lost. <code>UNIQUE(record_id, source_id)</code> prevents duplicates at the join level.</p>
+  </div>
+
+  <div class="card c3">
+    <div class="card-tag">Overlap Computation</div>
+    <h3>How cross-source overlap is computed</h3>
+    <p>A canonical record's overlap count is simply the number of rows it has in <code>record_sources</code>. Records with <code>COUNT(source_id) ≥ 2</code> across distinct sources are duplicates found in multiple databases. Because <code>record_sources</code> always references the canonical <code>record.id</code>, no fuzzy joins are needed — a single <code>GROUP BY record_id</code> query gives you the full duplication matrix per project.</p>
+  </div>
+
+  <div class="card c4">
+    <div class="card-tag">Idempotent Import</div>
+    <h3>How re-importing the same file is safe</h3>
+    <p>On import, each incoming row is normalized to a <code>normalized_doi</code>. An <code>INSERT INTO records … ON CONFLICT (project_id, normalized_doi) DO NOTHING</code> ensures the canonical record is created only once. Then <code>INSERT INTO record_sources … ON CONFLICT (record_id, source_id) DO NOTHING</code> skips the join row if it already exists. Re-running the same import job is therefore fully safe: it produces zero net changes, and <code>import_jobs.record_count</code> can reflect rows attempted vs. actually inserted.</p>
+  </div>
+</div>
+
+</body>
+</html>
