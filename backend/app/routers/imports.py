@@ -15,8 +15,8 @@ from app.services.import_service import process_import
 
 router = APIRouter(prefix="/projects", tags=["imports"])
 
-_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-_SUPPORTED_FORMATS = {".ris": "ris"}
+_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+_SUPPORTED_FORMATS = {".ris": "ris", ".txt": "ris"}  # .txt RIS exports from OVID/Embase
 
 
 class ImportJobResponse(BaseModel):
@@ -79,12 +79,12 @@ async def start_import(
     if not file_format:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '{suffix}'. Supported: {list(_SUPPORTED_FORMATS.keys())}",
+            detail=f"Unsupported file format '{suffix}'. Supported: .ris and .txt (RIS content)",
         )
 
     file_bytes = await file.read()
     if len(file_bytes) > _MAX_FILE_SIZE:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 50 MB limit")
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 100 MB limit")
 
     job = await ImportRepo.create(
         db,

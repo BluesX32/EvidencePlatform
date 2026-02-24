@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { recordsApi } from "../api/client";
-import RecordsTable from "../components/RecordsTable";
+import { recordsApi, sourcesApi } from "../api/client";
+import RecordsTable, { type ColumnVisibility, DEFAULT_COLUMNS } from "../components/RecordsTable";
 
 export default function RecordsPage() {
   const { id: projectId } = useParams<{ id: string }>();
@@ -11,6 +11,23 @@ export default function RecordsPage() {
   const page = parseInt(searchParams.get("page") ?? "1");
   const sort = searchParams.get("sort") ?? "year_desc";
   const q = searchParams.get("q") ?? "";
+  const sourceId = searchParams.get("source_id") ?? undefined;
+
+  // Column visibility — persisted to localStorage keyed by project
+  const columnsKey = `${projectId}-columns`;
+  const [columns, setColumns] = useState<ColumnVisibility>(() => {
+    try {
+      const stored = localStorage.getItem(columnsKey);
+      return stored ? (JSON.parse(stored) as ColumnVisibility) : DEFAULT_COLUMNS;
+    } catch {
+      return DEFAULT_COLUMNS;
+    }
+  });
+
+  function handleColumnsChange(c: ColumnVisibility) {
+    setColumns(c);
+    try { localStorage.setItem(columnsKey, JSON.stringify(c)); } catch { /* ignore */ }
+  }
 
   // Debounced search state
   const [searchInput, setSearchInput] = useState(q);
@@ -26,9 +43,22 @@ export default function RecordsPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  const { data: sources } = useQuery({
+    queryKey: ["sources", projectId],
+    queryFn: () => sourcesApi.list(projectId!).then((r) => r.data),
+    enabled: !!projectId && !!sourceId,
+  });
+
+  const activeSourceName = sourceId
+    ? sources?.find((s) => s.id === sourceId)?.name
+    : undefined;
+
   const { data, isLoading } = useQuery({
-    queryKey: ["records", projectId, page, sort, q],
-    queryFn: () => recordsApi.list(projectId!, { page, per_page: 50, q: q || undefined, sort }).then((r) => r.data),
+    queryKey: ["records", projectId, page, sort, q, sourceId],
+    queryFn: () =>
+      recordsApi
+        .list(projectId!, { page, per_page: 50, q: q || undefined, sort, source_id: sourceId })
+        .then((r) => r.data),
     enabled: !!projectId,
     placeholderData: (prev) => prev,
   });
@@ -46,6 +76,15 @@ export default function RecordsPage() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set("page", String(p));
+      return next;
+    });
+  }
+
+  function clearSourceFilter() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("source_id");
+      next.set("page", "1");
       return next;
     });
   }
@@ -70,11 +109,44 @@ export default function RecordsPage() {
           </span>
         </div>
 
+        {sourceId && (
+          <div style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            background: "#e8f0fe",
+            border: "1px solid #c5d9f5",
+            borderRadius: "1rem",
+            padding: "0.2rem 0.6rem 0.2rem 0.75rem",
+            fontSize: "0.85rem",
+            marginBottom: "0.75rem",
+          }}>
+            <span>Filtered by: <strong>{activeSourceName ?? "source"}</strong></span>
+            <button
+              onClick={clearSourceFilter}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "1rem",
+                lineHeight: 1,
+                padding: "0 0.1rem",
+                color: "#555",
+              }}
+              title="Clear filter"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         <RecordsTable
           records={data?.records ?? []}
           sort={sort}
           onSortChange={setSort}
           isLoading={isLoading}
+          columns={columns}
+          onColumnsChange={handleColumnsChange}
         />
 
         {data && data.total_pages > 1 && (

@@ -37,6 +37,7 @@ PRESET_LABELS = {
 class StrategyCreate(BaseModel):
     name: str
     preset: str
+    activate: bool = False
 
 
 class StrategyResponse(BaseModel):
@@ -110,6 +111,9 @@ async def create_strategy(
             status_code=409,
             detail=f"A strategy named '{body.name}' already exists for this project",
         )
+    if body.activate:
+        await StrategyRepo.set_active(db, project_id, strategy.id)
+        await db.refresh(strategy)
     return _to_response(strategy)
 
 
@@ -133,3 +137,20 @@ async def get_active_strategy(
     await _require_project_access(project_id, current_user, db)
     strategy = await StrategyRepo.get_active(db, project_id)
     return _to_response(strategy) if strategy else None
+
+
+@router.patch("/{strategy_id}/activate", response_model=StrategyResponse)
+async def activate_strategy(
+    project_id: uuid.UUID,
+    strategy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set this strategy as active and deactivate all others for the project."""
+    await _require_project_access(project_id, current_user, db)
+    strategy = await StrategyRepo.get_by_id(db, project_id, strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    await StrategyRepo.set_active(db, project_id, strategy_id)
+    await db.refresh(strategy)
+    return _to_response(strategy)

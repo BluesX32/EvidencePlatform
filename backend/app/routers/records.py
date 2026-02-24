@@ -20,6 +20,7 @@ _VALID_SORTS = {"title_asc", "title_desc", "year_asc", "year_desc"}
 class RecordItem(BaseModel):
     id: str
     title: Optional[str]
+    abstract: Optional[str]
     authors: Optional[List[str]]
     year: Optional[int]
     journal: Optional[str]
@@ -27,6 +28,8 @@ class RecordItem(BaseModel):
     issue: Optional[str]
     pages: Optional[str]
     doi: Optional[str]
+    issn: Optional[str]
+    keywords: Optional[List[str]]
     sources: List[str]
     match_basis: Optional[str]
     created_at: str
@@ -36,6 +39,7 @@ class RecordItem(BaseModel):
         return cls(
             id=str(r.id),
             title=r.title,
+            abstract=r.abstract,
             authors=r.authors,
             year=r.year,
             journal=r.journal,
@@ -43,6 +47,8 @@ class RecordItem(BaseModel):
             issue=r.issue,
             pages=r.pages,
             doi=r.doi,
+            issn=r.issn,
+            keywords=r.keywords,
             sources=r.sources or [],
             match_basis=r.match_basis,
             created_at=r.created_at.isoformat(),

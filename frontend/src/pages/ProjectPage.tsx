@@ -83,9 +83,10 @@ export default function ProjectPage() {
 
   const createStrategy = useMutation({
     mutationFn: ({ name, preset }: { name: string; preset: string }) =>
-      strategiesApi.create(id!, name, preset),
+      strategiesApi.create(id!, name, preset, true),
     onSuccess: () => {
-      refetchStrategies();
+      queryClient.invalidateQueries({ queryKey: ["strategies", id] });
+      queryClient.invalidateQueries({ queryKey: ["strategies-active", id] });
       setNewStrategyName("");
       setDedupError(null);
     },
@@ -99,6 +100,7 @@ export default function ProjectPage() {
     mutationFn: (strategyId: string) => dedupJobsApi.start(id!, strategyId),
     onSuccess: () => {
       refetchDedupJobs();
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
       setDedupError(null);
     },
     onError: (err: any) => {
@@ -143,8 +145,17 @@ export default function ProjectPage() {
           <h2>{project?.name}</h2>
           {project?.description && <p>{project.description}</p>}
           <div className="project-stats">
-            <span><strong>{project?.record_count ?? 0}</strong> records</span>
-            <span><strong>{project?.import_count ?? 0}</strong> imports</span>
+            <span title="Canonical records (unique after dedup)">
+              <strong>{project?.record_count ?? 0}</strong> records
+            </span>
+            <span title="Completed import jobs">
+              <strong>{project?.import_count ?? 0}</strong> imports
+            </span>
+            {(project?.failed_import_count ?? 0) > 0 && (
+              <span style={{ color: "#c5221f" }}>
+                <strong>{project.failed_import_count}</strong> failed
+              </span>
+            )}
           </div>
         </div>
 
@@ -167,8 +178,9 @@ export default function ProjectPage() {
           {sources && sources.length > 0 && (
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
               {sources.map((s) => (
-                <span
+                <Link
                   key={s.id}
+                  to={`/projects/${id}/records?source_id=${s.id}`}
                   style={{
                     background: "var(--surface-alt, #f1f3f4)",
                     border: "1px solid var(--border, #dadce0)",
@@ -176,10 +188,13 @@ export default function ProjectPage() {
                     padding: "0.2rem 0.75rem",
                     fontSize: "0.85rem",
                     fontWeight: 500,
+                    textDecoration: "none",
+                    color: "inherit",
                   }}
+                  title={`View records from ${s.name}`}
                 >
                   {s.name}
-                </span>
+                </Link>
               ))}
             </div>
           )}
@@ -276,27 +291,33 @@ export default function ProjectPage() {
                 className="btn-primary"
                 disabled={runDedup.isPending || lastDedupJob?.status === "pending" || lastDedupJob?.status === "running"}
                 onClick={() => runDedup.mutate(activeStrategy.id)}
+                title="Run deduplication with the active strategy"
               >
                 {(lastDedupJob?.status === "pending" || lastDedupJob?.status === "running") ? "Running…" : "Run deduplication"}
               </button>
             </div>
           ) : (
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              <input
-                type="text"
-                className="input"
-                placeholder="Strategy name…"
-                value={newStrategyName}
-                onChange={(e) => setNewStrategyName(e.target.value)}
-                style={{ width: 200 }}
-              />
-              <button
-                className="btn-primary"
-                disabled={!newStrategyName.trim() || createStrategy.isPending}
-                onClick={() => createStrategy.mutate({ name: newStrategyName.trim(), preset: selectedPreset })}
-              >
-                Create strategy
-              </button>
+            <div>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Strategy name…"
+                  value={newStrategyName}
+                  onChange={(e) => setNewStrategyName(e.target.value)}
+                  style={{ width: 200 }}
+                />
+                <button
+                  className="btn-primary"
+                  disabled={!newStrategyName.trim() || createStrategy.isPending}
+                  onClick={() => createStrategy.mutate({ name: newStrategyName.trim(), preset: selectedPreset })}
+                >
+                  Save &amp; activate
+                </button>
+              </div>
+              <p className="muted" style={{ fontSize: "0.85rem" }}>
+                Create and activate a strategy to enable deduplication.
+              </p>
             </div>
           )}
           {dedupError && <p className="error" style={{ marginTop: "0.5rem" }}>{dedupError}</p>}

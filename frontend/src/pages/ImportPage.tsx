@@ -25,11 +25,12 @@ export default function ImportPage() {
   });
 
   function validateFile(f: File): string | null {
-    if (!f.name.toLowerCase().endsWith(".ris")) {
-      return "Only .ris files are supported";
+    const lower = f.name.toLowerCase();
+    if (!lower.endsWith(".ris") && !lower.endsWith(".txt")) {
+      return "Only .ris and .txt (RIS content) files are supported";
     }
-    if (f.size > 50 * 1024 * 1024) {
-      return "File exceeds 50 MB limit";
+    if (f.size > 100 * 1024 * 1024) {
+      return "File exceeds 100 MB limit";
     }
     return null;
   }
@@ -80,7 +81,7 @@ export default function ImportPage() {
       </header>
       <main>
         <h2>Import literature</h2>
-        <p className="muted">Upload a .ris file exported from PubMed, Scopus, or any database supporting RIS format.</p>
+        <p className="muted">Upload a .ris or .txt file exported from PubMed, Scopus, Embase, OVID, or any database supporting RIS format.</p>
 
         {!jobId ? (
           <>
@@ -120,7 +121,7 @@ export default function ImportPage() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".ris"
+                accept=".ris,.txt"
                 style={{ display: "none" }}
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }}
               />
@@ -131,8 +132,8 @@ export default function ImportPage() {
                 </div>
               ) : (
                 <div>
-                  <p>Drop a .ris file here or click to select</p>
-                  <p className="muted">Maximum 50 MB</p>
+                  <p>Drop a .ris or .txt file here or click to select</p>
+                  <p className="muted">Maximum 100 MB · RIS format</p>
                 </div>
               )}
             </div>

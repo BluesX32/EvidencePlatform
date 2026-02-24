@@ -13,6 +13,7 @@ Two-phase write per record:
 Advisory lock: acquired at the start of the upsert section so that only one
 mutation job (import or dedup) can modify a project's records at a time.
 """
+import logging
 import uuid
 from typing import Optional
 
@@ -22,6 +23,8 @@ from app.repositories.import_repo import ImportRepo
 from app.repositories.record_repo import RecordRepo
 from app.repositories.strategy_repo import StrategyRepo
 from app.services.locks import try_acquire_project_lock, release_project_lock
+
+logger = logging.getLogger(__name__)
 
 
 async def process_import(
@@ -36,7 +39,27 @@ async def process_import(
 
     File parsing happens before lock acquisition (parsing is read-only).
     The advisory lock is held only during the DB write phase.
+
+    All exceptions (including unexpected BaseException subclasses) are caught
+    and recorded so the job never stays stuck in "processing".
     """
+    try:
+        await _run_import(job_id, project_id, source_id, file_bytes)
+    except BaseException as exc:  # noqa: BLE001 — last-resort safety net
+        logger.exception("Unhandled exception in process_import for job %s", job_id)
+        try:
+            async with SessionLocal() as db:
+                await ImportRepo.set_failed(db, job_id, f"Unexpected error: {exc}")
+        except Exception:
+            logger.exception("Failed to record job failure for job %s", job_id)
+
+
+async def _run_import(
+    job_id: uuid.UUID,
+    project_id: uuid.UUID,
+    source_id: Optional[uuid.UUID],
+    file_bytes: bytes,
+) -> None:
     async with SessionLocal() as db:
         await ImportRepo.set_processing(db, job_id)
         try:
@@ -46,7 +69,7 @@ async def process_import(
             return
 
         if not records:
-            await ImportRepo.set_completed(db, job_id, 0)
+            await ImportRepo.set_failed(db, job_id, "No valid records found in file. Check that it is a valid RIS file.")
             return
 
         # Look up the active strategy for this project (default preset if none)
@@ -60,7 +83,7 @@ async def process_import(
             async with SessionLocal() as db:
                 await ImportRepo.set_failed(
                     db, job_id,
-                    "Could not acquire project lock: another job is running"
+                    "Another import or dedup job is running for this project. Please wait and retry.",
                 )
             return
 

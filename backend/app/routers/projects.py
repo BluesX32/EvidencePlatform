@@ -51,8 +51,9 @@ class ProjectDetail(BaseModel):
     description: Optional[str]
     created_by: str
     created_at: str
-    record_count: int
-    import_count: int
+    record_count: int        # canonical records (unique after dedup)
+    import_count: int        # completed import jobs
+    failed_import_count: int
 
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
@@ -99,7 +100,9 @@ async def get_project(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     record_count = await ProjectRepo.count_records(db, project.id)
+    import_count = await ImportRepo.count_completed(db, project.id)
     jobs = await ImportRepo.list_by_project(db, project.id)
+    failed_count = sum(1 for j in jobs if j.status == "failed")
 
     return ProjectDetail(
         id=str(project.id),
@@ -108,5 +111,6 @@ async def get_project(
         created_by=str(project.created_by),
         created_at=project.created_at.isoformat(),
         record_count=record_count,
-        import_count=len(jobs),
+        import_count=import_count,
+        failed_import_count=failed_count,
     )

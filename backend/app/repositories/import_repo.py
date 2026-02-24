@@ -59,6 +59,18 @@ class ImportRepo:
         return list(result.scalars().all())
 
     @staticmethod
+    async def count_completed(db: AsyncSession, project_id: uuid.UUID) -> int:
+        """Count import jobs with status 'completed' for a project."""
+        from sqlalchemy import func
+        result = await db.execute(
+            select(func.count()).where(
+                ImportJob.project_id == project_id,
+                ImportJob.status == "completed",
+            )
+        )
+        return result.scalar_one()
+
+    @staticmethod
     async def set_processing(db: AsyncSession, job_id: uuid.UUID) -> None:
         job = await ImportRepo.get_by_id(db, job_id)
         if job:

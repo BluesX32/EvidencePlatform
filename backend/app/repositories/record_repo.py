@@ -176,6 +176,7 @@ class RecordRepo:
             select(
                 Record.id,
                 Record.title,
+                Record.abstract,
                 Record.authors,
                 Record.year,
                 Record.journal,
@@ -183,6 +184,8 @@ class RecordRepo:
                 Record.issue,
                 Record.pages,
                 Record.doi,
+                Record.issn,
+                Record.keywords,
                 Record.match_basis,
                 Record.created_at,
                 func.array_remove(
@@ -194,9 +197,10 @@ class RecordRepo:
             .outerjoin(Source, Source.id == RecordSource.source_id)
             .where(Record.project_id == project_id)
             .group_by(
-                Record.id, Record.title, Record.authors, Record.year,
-                Record.journal, Record.volume, Record.issue, Record.pages,
-                Record.doi, Record.match_basis, Record.created_at,
+                Record.id, Record.title, Record.abstract, Record.authors,
+                Record.year, Record.journal, Record.volume, Record.issue,
+                Record.pages, Record.doi, Record.issn, Record.keywords,
+                Record.match_basis, Record.created_at,
             )
         )
 

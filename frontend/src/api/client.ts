@@ -64,8 +64,9 @@ export interface ProjectListItem extends Project {
 }
 
 export interface ProjectDetail extends Project {
-  record_count: number;
-  import_count: number;
+  record_count: number;        // canonical records (unique after dedup)
+  import_count: number;        // completed import jobs
+  failed_import_count: number;
 }
 
 export const projectsApi = {
@@ -124,6 +125,7 @@ export const importsApi = {
 export interface RecordItem {
   id: string;
   title: string | null;
+  abstract: string | null;
   authors: string[] | null;
   year: number | null;
   journal: string | null;
@@ -131,6 +133,8 @@ export interface RecordItem {
   issue: string | null;
   pages: string | null;
   doi: string | null;
+  issn: string | null;
+  keywords: string[] | null;
   sources: string[];
   match_basis: string | null;
   created_at: string;
@@ -191,10 +195,12 @@ export interface MatchStrategy {
 export const strategiesApi = {
   list: (projectId: string) =>
     api.get<MatchStrategy[]>(`/projects/${projectId}/strategies`),
-  create: (projectId: string, name: string, preset: string) =>
-    api.post<MatchStrategy>(`/projects/${projectId}/strategies`, { name, preset }),
+  create: (projectId: string, name: string, preset: string, activate = false) =>
+    api.post<MatchStrategy>(`/projects/${projectId}/strategies`, { name, preset, activate }),
   getActive: (projectId: string) =>
     api.get<MatchStrategy | null>(`/projects/${projectId}/strategies/active`),
+  activate: (projectId: string, strategyId: string) =>
+    api.patch<MatchStrategy>(`/projects/${projectId}/strategies/${strategyId}/activate`),
 };
 
 // ── Dedup Jobs ────────────────────────────────────────────────────────────────

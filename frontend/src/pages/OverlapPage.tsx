@@ -81,7 +81,15 @@ export default function OverlapPage() {
                   <tbody>
                     {data.sources.map((s) => (
                       <tr key={s.id}>
-                        <td>{s.name}</td>
+                        <td>
+                          <Link
+                            to={`/projects/${projectId}/records?source_id=${s.id}`}
+                            style={{ textDecoration: "none", color: "var(--primary, #1a73e8)" }}
+                            title={`View records from ${s.name}`}
+                          >
+                            {s.name}
+                          </Link>
+                        </td>
                         <td>{s.total}</td>
                         <td>{s.with_doi}</td>
                         <td>{s.total - s.with_doi}</td>

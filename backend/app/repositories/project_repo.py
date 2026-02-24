@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project
-from app.models.record_source import RecordSource
+from app.models.record import Record
 
 
 class ProjectRepo:
@@ -31,7 +31,8 @@ class ProjectRepo:
 
     @staticmethod
     async def count_records(db: AsyncSession, project_id: uuid.UUID) -> int:
+        """Count canonical records (unique deduplicated records) for a project."""
         result = await db.execute(
-            select(func.count()).where(RecordSource.project_id == project_id)
+            select(func.count()).where(Record.project_id == project_id)
         )
         return result.scalar_one()
