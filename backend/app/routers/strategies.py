@@ -1,22 +1,29 @@
 """Match-strategy management endpoints.
 
-POST /projects/{project_id}/strategies          — create a new named strategy
-GET  /projects/{project_id}/strategies          — list all strategies
-GET  /projects/{project_id}/strategies/active   — get the active strategy
+POST  /projects/{project_id}/strategies                — create a new named strategy
+GET   /projects/{project_id}/strategies                — list all strategies
+GET   /projects/{project_id}/strategies/active         — get the active strategy
+GET   /projects/{project_id}/strategies/preview        — preview dedup without writing
+PATCH /projects/{project_id}/strategies/{id}/activate  — set strategy as active
 """
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.record import Record
+from app.models.record_source import RecordSource
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 from app.repositories.strategy_repo import StrategyRepo, VALID_PRESETS
+from app.utils.match_keys import StrategyConfig
+from app.utils.cluster_builder import TieredClusterBuilder, SourceRecord
 
 router = APIRouter(prefix="/projects/{project_id}/strategies", tags=["strategies"])
 
@@ -82,6 +89,27 @@ async def _require_project_access(
     return project
 
 
+def _build_sources_from_rows(rs_rows) -> list[SourceRecord]:
+    """Convert DB rows into SourceRecord objects for the cluster builder."""
+    sources = []
+    for row in rs_rows:
+        raw = row.raw_data or {}
+        pmid = raw.get("pmid") or raw.get("source_record_id")
+        authors = raw.get("authors")
+        sources.append(SourceRecord(
+            id=row.id,
+            old_record_id=row.record_id,
+            norm_title=row.norm_title,
+            norm_first_author=row.norm_first_author,
+            match_year=row.match_year,
+            match_doi=row.match_doi,
+            pmid=str(pmid) if pmid else None,
+            authors=authors if isinstance(authors, list) else None,
+            raw_data=raw,
+        ))
+    return sources
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -137,6 +165,77 @@ async def get_active_strategy(
     await _require_project_access(project_id, current_user, db)
     strategy = await StrategyRepo.get_active(db, project_id)
     return _to_response(strategy) if strategy else None
+
+
+@router.get("/preview")
+async def preview_dedup(
+    project_id: uuid.UUID,
+    strategy_id: uuid.UUID = Query(..., description="ID of the strategy to preview"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Synchronously compute what a dedup run would do for this strategy, without
+    writing any changes to the database.
+
+    Returns the set of duplicate clusters that would be merged, plus summary
+    statistics (would_merge, would_remain, tier breakdown).
+    """
+    await _require_project_access(project_id, current_user, db)
+
+    strategy = await StrategyRepo.get_by_id(db, project_id, strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # Resolve StrategyConfig from JSONB or preset
+    config_dict = strategy.config or {}
+    config = StrategyConfig.from_dict(config_dict) if config_dict else StrategyConfig.from_preset(strategy.preset)
+
+    # Fetch all record_sources for this project (read-only)
+    rs_rows = (
+        await db.execute(
+            select(
+                RecordSource.id,
+                RecordSource.record_id,
+                RecordSource.norm_title,
+                RecordSource.norm_first_author,
+                RecordSource.match_year,
+                RecordSource.match_doi,
+                RecordSource.raw_data,
+            )
+            .join(Record, Record.id == RecordSource.record_id)
+            .where(Record.project_id == project_id)
+        )
+    ).all()
+
+    sources = _build_sources_from_rows(rs_rows)
+
+    builder = TieredClusterBuilder(config)
+    preview = builder.preview(sources)
+
+    return {
+        "strategy_id": str(strategy.id),
+        "strategy_name": strategy.name,
+        "config": config.to_dict(),
+        "would_merge": preview.would_merge,
+        "would_remain": preview.would_remain,
+        "isolated": len(preview.isolated),
+        "tier1_count": preview.tier1_count,
+        "tier2_count": preview.tier2_count,
+        "tier3_count": preview.tier3_count,
+        "clusters": [
+            {
+                "match_tier": c.match_tier,
+                "match_basis": c.match_basis,
+                "match_reason": c.match_reason,
+                "similarity_score": c.similarity_score,
+                "record_source_ids": [str(m.id) for m in c.members],
+                "titles": [m.raw_data.get("title") for m in c.members],
+                "dois": [m.match_doi for m in c.members],
+            }
+            for c in preview.clusters
+        ],
+    }
 
 
 @router.patch("/{strategy_id}/activate", response_model=StrategyResponse)

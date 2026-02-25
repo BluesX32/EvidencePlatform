@@ -3,22 +3,29 @@
 Runs as a FastAPI background task. The router creates the dedup_job row and
 returns 202 immediately; this service does the actual work.
 
-Algorithm
----------
+Algorithm (Tiered — Phase B upgrade)
+--------------------------------------
 For each record_source in the project:
-  1. Compute (match_key, match_basis) from precomputed norm fields + strategy preset.
-  2. Group sources by match_key.
+  1. Build a SourceRecord from precomputed norm fields + PMID from raw_data.
+  2. Call TieredClusterBuilder.compute_clusters() — Union-Find over 3 tiers:
+       Tier 1: exact DOI or PMID
+       Tier 2: exact normalized title + year (or + author)
+       Tier 3: fuzzy title similarity (rapidfuzz, optional)
   3. For each cluster:
-       a. Find or create a canonical records row with that match_key.
-       b. Re-point record_sources.record_id to the cluster's canonical record.
+       a. Derive match_key for the canonical record from the cluster's tier+representative.
+       b. Find or create a canonical records row with that match_key.
+       c. Re-point record_sources.record_id to the cluster's canonical record.
   4. Delete orphaned records rows (no record_sources left).
-  5. Log every move to match_log.
+  5. Log every move to match_log with match_tier, match_basis, match_reason.
   6. Update dedup_jobs statistics and status.
+
+Backward compatibility: existing presets (doi_first_strict, etc.) are converted
+to StrategyConfig via StrategyConfig.from_preset(), producing identical clustering
+behavior for tiers 1 and 2.
 
 Advisory lock ensures only one mutation job (import or dedup) runs per project.
 """
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -34,7 +41,8 @@ from app.models.record_source import RecordSource
 from app.repositories.dedup_repo import DedupJobRepo
 from app.repositories.strategy_repo import StrategyRepo
 from app.services.locks import try_acquire_project_lock, release_project_lock
-from app.utils.match_keys import compute_match_key
+from app.utils.match_keys import StrategyConfig
+from app.utils.cluster_builder import TieredClusterBuilder, SourceRecord, Cluster
 
 
 async def run_dedup(
@@ -80,11 +88,17 @@ async def _run_clustering(
     project_id: uuid.UUID,
     strategy_id: uuid.UUID,
 ) -> None:
-    # ── 1. Load strategy ────────────────────────────────────────────────────
+    # ── 1. Load strategy and resolve StrategyConfig ──────────────────────────
     strategy = await db.get(MatchStrategy, strategy_id)
     if strategy is None:
         raise ValueError(f"Strategy {strategy_id} not found")
-    preset = strategy.preset
+
+    # Prefer JSONB config; fall back to preset mapping for existing strategies
+    config_dict = strategy.config or {}
+    if config_dict:
+        config = StrategyConfig.from_dict(config_dict)
+    else:
+        config = StrategyConfig.from_preset(strategy.preset)
 
     # ── 2. Count records before ─────────────────────────────────────────────
     count_result = await db.execute(
@@ -116,47 +130,53 @@ async def _run_clustering(
         await StrategyRepo.set_active(db, project_id, strategy_id)
         return
 
-    # ── 4. Compute match key for each record_source ─────────────────────────
-    # rs_data: list of dicts with id, old_record_id, match_key, match_basis
-    rs_data = []
+    # ── 4. Build SourceRecord objects ────────────────────────────────────────
+    sources = []
     for row in rs_rows:
-        mk, basis = compute_match_key(
+        raw = row.raw_data or {}
+        # PMID may be stored under 'pmid' (MEDLINE) or 'source_record_id' (general)
+        pmid = raw.get("pmid") or raw.get("source_record_id")
+        authors = raw.get("authors")
+        sources.append(SourceRecord(
+            id=row.id,
+            old_record_id=row.record_id,
             norm_title=row.norm_title,
             norm_first_author=row.norm_first_author,
-            year=row.match_year,
-            doi=row.match_doi,
-            preset=preset,
-        )
-        rs_data.append(
-            {
-                "id": row.id,
-                "old_record_id": row.record_id,
-                "match_key": mk,
-                "match_basis": basis,
-                "source_id": row.source_id,
-                "import_job_id": row.import_job_id,
-                "raw_data": row.raw_data,
-            }
-        )
+            match_year=row.match_year,
+            match_doi=row.match_doi,
+            pmid=str(pmid) if pmid else None,
+            authors=authors if isinstance(authors, list) else None,
+            raw_data=raw,
+        ))
 
-    # ── 5. Group by match_key ────────────────────────────────────────────────
-    # match_key=None → each source is isolated (own cluster)
-    keyed_groups: dict[str, list[dict]] = defaultdict(list)
-    null_records = []  # sources with no key
-    for rs in rs_data:
-        if rs["match_key"] is not None:
-            keyed_groups[rs["match_key"]].append(rs)
-        else:
-            null_records.append(rs)
+    # ── 5. Run tiered clustering ─────────────────────────────────────────────
+    builder = TieredClusterBuilder(config)
+    clusters = builder.compute_clusters(sources)
 
     # ── 6. Resolve clusters ─────────────────────────────────────────────────
-    # Maps old_record_id → new canonical record id (for logging)
     match_log_entries: list[dict] = []
     merges = 0
     clusters_created = 0
 
-    for match_key_val, members in keyed_groups.items():
-        basis = members[0]["match_basis"]
+    for cluster in clusters:
+        is_isolated = cluster.match_tier == 0
+
+        if is_isolated:
+            # Isolated: each source keeps its existing record unchanged
+            for src in cluster.members:
+                match_log_entries.append({
+                    "dedup_job_id": job_id,
+                    "record_src_id": src.id,
+                    "old_record_id": src.old_record_id,
+                    "new_record_id": src.old_record_id,
+                    "match_key": None,
+                    "match_basis": "none",
+                    "action": "unchanged",
+                })
+            continue
+
+        # Derive canonical match_key from cluster tier + representative
+        match_key_val = _derive_match_key(cluster)
 
         # Look for an existing canonical record with this match_key
         existing = (
@@ -171,13 +191,13 @@ async def _run_clustering(
         if existing:
             canonical_id = existing
         else:
-            # Create a new canonical record using the "best" member's data
-            best = _pick_best_source(members)
-            raw = best["raw_data"]
+            # Create a new canonical record from the cluster's representative
+            rep = cluster.representative
+            raw = rep.raw_data
             new_rec = Record(
                 project_id=project_id,
                 match_key=match_key_val,
-                match_basis=basis,
+                match_basis=cluster.match_basis,
                 normalized_doi=raw.get("doi"),
                 doi=raw.get("doi"),
                 title=raw.get("title"),
@@ -197,45 +217,27 @@ async def _run_clustering(
             canonical_id = new_rec.id
             clusters_created += 1
 
-        # Re-point all record_sources in this cluster to canonical_id
-        for rs in members:
-            action = "unchanged" if rs["old_record_id"] == canonical_id else "merged"
-            if action == "merged":
-                merges += 1
-            match_log_entries.append(
-                {
-                    "dedup_job_id": job_id,
-                    "record_src_id": rs["id"],
-                    "old_record_id": rs["old_record_id"],
-                    "new_record_id": canonical_id,
-                    "match_key": match_key_val,
-                    "match_basis": basis,
-                    "action": action,
-                }
-            )
-
-        # Batch-update record_sources
-        member_ids = [rs["id"] for rs in members]
+        # Batch-update record_sources to point to canonical record
+        member_ids = [src.id for src in cluster.members]
         await db.execute(
             update(RecordSource)
             .where(RecordSource.id.in_(member_ids))
             .values(record_id=canonical_id)
         )
 
-    # For null-keyed sources: each source keeps (or gets) its own isolated record.
-    # Re-point to the same record it was already in — no change needed, just log.
-    for rs in null_records:
-        match_log_entries.append(
-            {
+        for src in cluster.members:
+            action = "unchanged" if src.old_record_id == canonical_id else "merged"
+            if action == "merged":
+                merges += 1
+            match_log_entries.append({
                 "dedup_job_id": job_id,
-                "record_src_id": rs["id"],
-                "old_record_id": rs["old_record_id"],
-                "new_record_id": rs["old_record_id"],
-                "match_key": None,
-                "match_basis": "none",
-                "action": "unchanged",
-            }
-        )
+                "record_src_id": src.id,
+                "old_record_id": src.old_record_id,
+                "new_record_id": canonical_id,
+                "match_key": match_key_val,
+                "match_basis": cluster.match_basis,
+                "action": action,
+            })
 
     await db.flush()
 
@@ -278,18 +280,28 @@ async def _run_clustering(
     await StrategyRepo.set_active(db, project_id, strategy_id)
 
 
-def _pick_best_source(members: list[dict]) -> dict:
-    """Choose the best canonical source record for a cluster.
-
-    Priority: has DOI > most bib fields populated > earliest in list.
+def _derive_match_key(cluster: Cluster) -> Optional[str]:
     """
-    def score(m: dict) -> tuple:
-        raw = m["raw_data"]
-        has_doi = 1 if raw.get("doi") else 0
-        field_count = sum(
-            1 for k in ("title", "abstract", "authors", "year", "journal")
-            if raw.get(k)
-        )
-        return (has_doi, field_count)
+    Derive the canonical match_key string for a non-isolated cluster.
 
-    return max(members, key=score)
+    The key format is compatible with the legacy compute_match_key() output
+    so that existing canonical records can be found by match_key lookup.
+    """
+    rep = cluster.representative
+    basis = cluster.match_basis
+
+    if basis == "tier1_doi" and rep.match_doi:
+        return f"doi:{rep.match_doi}"
+    if basis == "tier1_pmid" and rep.pmid:
+        return f"pmid:{rep.pmid}"
+    if basis == "tier2_title_year" and rep.norm_title and rep.match_year:
+        return f"ty:{rep.norm_title}|{rep.match_year}"
+    if basis == "tier2_title_author_year" and rep.norm_title and rep.norm_first_author and rep.match_year:
+        return f"tay:{rep.norm_title}|{rep.norm_first_author}|{rep.match_year}"
+    if basis == "tier3_fuzzy" and rep.norm_title:
+        score = cluster.similarity_score or 0.0
+        year = rep.match_year or "unknown"
+        return f"fuz:{score:.2f}:{rep.norm_title}|{year}"
+
+    # Fallback: stable key based on representative's source ID
+    return f"auto:{rep.id}"

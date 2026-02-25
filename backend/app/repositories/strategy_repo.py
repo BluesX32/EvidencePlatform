@@ -6,6 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.match_strategy import MatchStrategy
+from app.utils.match_keys import StrategyConfig
 
 VALID_PRESETS = frozenset(
     {"doi_first_strict", "doi_first_medium", "strict", "medium", "loose"}
@@ -50,10 +51,12 @@ class StrategyRepo:
     async def create(
         db: AsyncSession, project_id: uuid.UUID, name: str, preset: str
     ) -> MatchStrategy:
+        config = StrategyConfig.from_preset(preset).to_dict()
         strategy = MatchStrategy(
             project_id=project_id,
             name=name,
             preset=preset,
+            config=config,
             is_active=False,
         )
         db.add(strategy)
