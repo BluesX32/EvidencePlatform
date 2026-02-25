@@ -78,12 +78,26 @@ class ImportRepo:
             await db.commit()
 
     @staticmethod
-    async def set_completed(db: AsyncSession, job_id: uuid.UUID, record_count: int) -> None:
+    async def set_completed(
+        db: AsyncSession,
+        job_id: uuid.UUID,
+        record_count: int,
+        warning_msg: Optional[str] = None,
+    ) -> None:
+        """
+        Mark job as completed.
+
+        If warning_msg is provided (e.g., some records failed to parse while
+        others succeeded), it is stored in error_msg so the user can see the
+        partial-failure summary. The job status is still 'completed'.
+        """
         job = await ImportRepo.get_by_id(db, job_id)
         if job:
             job.status = "completed"
             job.record_count = record_count
             job.completed_at = datetime.now(timezone.utc)
+            if warning_msg:
+                job.error_msg = warning_msg
             await db.commit()
 
     @staticmethod

@@ -1,0 +1,78 @@
+PMID- 36521234
+OWN - NLM
+STAT- MEDLINE
+TI  - Effects of mindfulness-based stress reduction on anxiety and depression:
+      a systematic review and meta-analysis.
+AU  - Smith, John A
+AU  - Jones, Alice B
+AU  - Williams, Carol
+FAU - Smith, John Arthur
+FAU - Jones, Alice Barbara
+FAU - Williams, Carol
+AB  - Background: Mindfulness-based stress reduction (MBSR) has been widely applied
+      in clinical settings. Objective: To systematically review the evidence for MBSR
+      on anxiety and depression outcomes. Methods: We searched PubMed, CINAHL, and
+      PsycINFO through December 2022. Results: 42 RCTs were included. MBSR showed
+      significant effects on anxiety (d=0.52) and depression (d=0.48). Conclusion:
+      MBSR is effective for reducing anxiety and depression in clinical populations.
+DP  - 2023 Jan 15
+JT  - Journal of Clinical Psychology
+TA  - J Clin Psychol
+VI  - 79
+IP  - 1
+PG  - 123-145
+LID - 10.1002/jclp.23456 [doi]
+AID - 10.1002/jclp.23456 [doi]
+MH  - Mindfulness
+MH  - Anxiety/therapy
+MH  - Depression/therapy
+MH  - Stress, Psychological/therapy
+OT  - meta-analysis
+OT  - systematic review
+IS  - 1097-4679 (Electronic)
+IS  - 0021-9762 (Linking)
+
+PMID- 36521235
+OWN - NLM
+STAT- MEDLINE
+TI  - Cognitive behavioral therapy versus pharmacotherapy for major depression:
+      a randomized controlled trial.
+AU  - Brown, Michael
+AU  - Garcia, Sofia
+FAU - Brown, Michael Thomas
+FAU - Garcia, Sofia Elena
+AB  - This randomized controlled trial compared CBT with antidepressant medication
+      in 320 adults with major depression. Both treatments were effective at 12 weeks.
+      CBT showed superior long-term outcomes at 2-year follow-up.
+DP  - 2022 Nov
+JT  - JAMA Psychiatry
+TA  - JAMA Psychiatry
+VI  - 79
+IP  - 11
+PG  - 1089-1097
+LID - 10.1001/jamapsychiatry.2022.3456 [doi]
+AID - 10.1001/jamapsychiatry.2022.3456 [doi]
+MH  - Cognitive Behavioral Therapy
+MH  - Antidepressive Agents/therapeutic use
+MH  - Depressive Disorder, Major/therapy
+IS  - 2168-6238 (Electronic)
+IS  - 2168-622X (Print)
+
+PMID- 36521236
+OWN - NLM
+STAT- MEDLINE
+TI  - Exercise interventions for depression in older adults: a Cochrane review.
+AU  - Thompson, Robert
+AB  - Objective: Evaluate the effectiveness of exercise interventions for depression
+      in adults aged 60 and older. Conclusions: Moderate evidence supports exercise
+      as an effective treatment for late-life depression.
+DP  - 2023 Mar
+JT  - Cochrane Database of Systematic Reviews
+TA  - Cochrane Database Syst Rev
+VI  - 3
+PG  - CD013745
+LID - 10.1002/14651858.CD013745.pub2 [doi]
+MH  - Exercise Therapy
+MH  - Depression/therapy
+MH  - Aged
+IS  - 1469-493X (Electronic)

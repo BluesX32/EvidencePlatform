@@ -22,11 +22,24 @@ RIS tag reference used:
 source_record_id convention:
   raw_data always carries the key "source_record_id" (string | null).
   Populated from AN (rispy: accession_number) when present; null otherwise.
+
+Two entry points:
+  parse()          — strict: raises ValueError on any parse failure (preserved for
+                     backward compatibility and direct tests).
+  parse_tolerant() — lenient: parses record-by-record, collects per-record errors,
+                     returns a ParseResult even when some records are corrupt.
 """
+import re
 import unicodedata
 from typing import Optional
 
 import rispy
+
+from app.parsers.base import ParseResult, RecordError
+
+# Delimiter used to split a RIS file into individual record blocks.
+# "ER  -" marks the end of a record; we split on lines that start with it.
+_ER_SPLIT_RE = re.compile(r"\nER\s{2}-[^\n]*", re.MULTILINE)
 
 
 def parse(file_bytes: bytes) -> list[dict]:
@@ -42,6 +55,58 @@ def parse(file_bytes: bytes) -> list[dict]:
         raise ValueError(f"Cannot parse file as RIS: {exc}") from exc
 
     return [_normalize(entry) for entry in entries]
+
+
+def parse_tolerant(file_bytes: bytes) -> ParseResult:
+    """
+    Parse a RIS file record-by-record, tolerating individual corrupt entries.
+
+    Splits the file on ER (end-of-record) tags and attempts to parse each
+    block independently with rispy. Failures are collected as RecordError
+    entries and do not abort processing of subsequent records.
+
+    Returns:
+        ParseResult with the same normalized dict shape as parse().
+    """
+    text = file_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+    # Split into blocks: each block is one record's worth of RIS text.
+    # Re-append the ER line that was consumed by the split.
+    raw_blocks = _ER_SPLIT_RE.split(text)
+    blocks = [b.strip() for b in raw_blocks if b.strip()]
+
+    records: list[dict] = []
+    errors: list[RecordError] = []
+    warnings: list[str] = []
+
+    for i, block in enumerate(blocks):
+        # A minimal RIS block must have at least TY and ER
+        if not block:
+            continue
+        # Re-add the ER tag so rispy can parse the block
+        block_with_er = block + "\nER  - \n"
+        try:
+            entries = rispy.loads(block_with_er)
+            for entry in entries:
+                records.append(_normalize(entry))
+        except Exception as exc:
+            errors.append(
+                RecordError(
+                    index=i,
+                    reason=f"RIS parse error: {exc}",
+                    raw_snippet=block[:200],
+                )
+            )
+
+    return ParseResult(
+        records=records,
+        errors=errors,
+        format_detected="ris",
+        total_attempted=len(blocks),
+        valid_count=len(records),
+        failed_count=len(errors),
+        warnings=warnings,
+    )
 
 
 def _normalize(entry: dict) -> dict:

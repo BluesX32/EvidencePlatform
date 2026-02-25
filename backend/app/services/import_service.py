@@ -12,13 +12,17 @@ Two-phase write per record:
 
 Advisory lock: acquired at the start of the upsert section so that only one
 mutation job (import or dedup) can modify a project's records at a time.
+
+Format support: any format accepted by app.parsers.parse_file (RIS, MEDLINE).
+Partial failures (some records corrupt) result in status='completed' with a
+warning summary in error_msg rather than aborting the entire job.
 """
 import logging
 import uuid
 from typing import Optional
 
 from app.database import SessionLocal, engine
-from app.parsers import ris as ris_parser
+from app.parsers import parse_file
 from app.repositories.import_repo import ImportRepo
 from app.repositories.record_repo import RecordRepo
 from app.repositories.strategy_repo import StrategyRepo
@@ -62,15 +66,24 @@ async def _run_import(
 ) -> None:
     async with SessionLocal() as db:
         await ImportRepo.set_processing(db, job_id)
-        try:
-            records = ris_parser.parse(file_bytes)
-        except ValueError as exc:
-            await ImportRepo.set_failed(db, job_id, str(exc))
+
+        # Detect format and parse — record-level errors are collected, not fatal
+        parse_result = parse_file(file_bytes)
+
+        if parse_result.valid_count == 0:
+            # All records failed or format is undetectable — hard failure
+            await ImportRepo.set_failed(db, job_id, parse_result.error_summary())
             return
 
-        if not records:
-            await ImportRepo.set_failed(db, job_id, "No valid records found in file. Check that it is a valid RIS file.")
-            return
+        records = parse_result.records
+        warning_msg: Optional[str] = (
+            parse_result.error_summary() if parse_result.failed_count > 0 else None
+        )
+        if warning_msg:
+            logger.warning(
+                "Import job %s: %d records skipped during parsing",
+                job_id, parse_result.failed_count,
+            )
 
         # Look up the active strategy for this project (default preset if none)
         strategy = await StrategyRepo.get_active(db, project_id)
@@ -97,7 +110,7 @@ async def _run_import(
                     import_job_id=job_id,
                     preset=preset,
                 )
-                await ImportRepo.set_completed(db, job_id, inserted)
+                await ImportRepo.set_completed(db, job_id, inserted, warning_msg=warning_msg)
         except Exception as exc:
             async with SessionLocal() as db:
                 await ImportRepo.set_failed(db, job_id, str(exc))

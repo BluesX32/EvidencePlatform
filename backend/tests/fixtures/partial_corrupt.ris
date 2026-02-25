@@ -1,0 +1,25 @@
+TY  - JOUR
+TI  - A valid first record about mindfulness
+AU  - Smith, Alice
+PY  - 2023
+DO  - 10.1234/valid-record-one
+ER  -
+
+this is not a ris record at all - just garbage text
+without any valid RIS tags which should be caught as an error
+
+TY  - JOUR
+TI  - A valid third record about cognitive therapy
+AU  - Jones, Bob
+AU  - Williams, Carol
+PY  - 2022
+DO  - 10.1234/valid-record-three
+AB  - Abstract for the third valid record.
+KW  - cognitive therapy
+ER  -
+
+TY  - JOUR
+TI  - Another valid record number four
+AU  - Garcia, Diana
+PY  - 2021
+ER  -
