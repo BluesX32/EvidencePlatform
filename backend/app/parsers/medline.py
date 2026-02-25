@@ -37,6 +37,7 @@ import unicodedata
 from typing import Optional
 
 from app.parsers.base import ParseResult, RecordError
+from app.parsers.detector import _decode_bytes
 
 # Regex for a MEDLINE tag line: 4 chars + "- " (standard PubMed export)
 # Some tags are shorter and right-padded with spaces to 4 chars, e.g. "PMID-"
@@ -92,11 +93,8 @@ def parse_tolerant(file_bytes: bytes) -> ParseResult:
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _decode(file_bytes: bytes) -> str:
-    """UTF-8 decode with BOM removal and CRLF normalisation."""
-    if file_bytes.startswith(b"\xef\xbb\xbf"):
-        file_bytes = file_bytes[3:]
-    text = file_bytes.decode("utf-8", errors="replace")
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    """Decode with encoding fallback (utf-8-sig → utf-8 → latin-1) and CRLF normalisation."""
+    return _decode_bytes(file_bytes)
 
 
 def _split_records(text: str) -> list[str]:

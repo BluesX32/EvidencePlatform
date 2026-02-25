@@ -36,10 +36,21 @@ from typing import Optional
 import rispy
 
 from app.parsers.base import ParseResult, RecordError
+from app.parsers.detector import _decode_bytes
 
 # Delimiter used to split a RIS file into individual record blocks.
 # "ER  -" marks the end of a record; we split on lines that start with it.
-_ER_SPLIT_RE = re.compile(r"\nER\s{2}-[^\n]*", re.MULTILINE)
+# Accepts any number of spaces between ER and the dash (0, 1, or 2+) to handle
+# variant RIS exports from Scopus, CINAHL, and other tools.
+_ER_SPLIT_RE = re.compile(r"\nER\s*-[^\n]*", re.MULTILINE)
+
+# Used for fallback detection of multiple records when no ER lines are present.
+_TY_TAG_RE = re.compile(r"^TY\s+-", re.MULTILINE)
+
+# Normalizes any RIS tag line to have exactly 2 spaces before the dash so that
+# rispy (which requires "TAG  - value") can parse variant-spacing exports.
+# Handles: "TY -", "TY   -", "AU - " etc.
+_TAG_SPACING_RE = re.compile(r"^([A-Z0-9]{2,4})[ \t]*-", re.MULTILINE)
 
 
 def parse(file_bytes: bytes) -> list[dict]:
@@ -65,15 +76,24 @@ def parse_tolerant(file_bytes: bytes) -> ParseResult:
     block independently with rispy. Failures are collected as RecordError
     entries and do not abort processing of subsequent records.
 
+    Fallback: if ER splitting yields ≤ 1 block but multiple TY tags are present
+    (multi-record file with no ER lines), re-splits on blank lines and processes
+    only blocks that start with a TY tag.
+
     Returns:
         ParseResult with the same normalized dict shape as parse().
     """
-    text = file_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    text = _decode_bytes(file_bytes)
 
     # Split into blocks: each block is one record's worth of RIS text.
     # Re-append the ER line that was consumed by the split.
     raw_blocks = _ER_SPLIT_RE.split(text)
     blocks = [b.strip() for b in raw_blocks if b.strip()]
+
+    # Fallback: no ER lines found but multiple TY tags detected → try blank-line split
+    if len(blocks) <= 1 and len(_TY_TAG_RE.findall(text)) >= 2:
+        blank_blocks = re.split(r"\n{2,}", text.strip())
+        blocks = [b.strip() for b in blank_blocks if b.strip() and _TY_TAG_RE.search(b)]
 
     records: list[dict] = []
     errors: list[RecordError] = []
@@ -83,6 +103,9 @@ def parse_tolerant(file_bytes: bytes) -> ParseResult:
         # A minimal RIS block must have at least TY and ER
         if not block:
             continue
+        # Normalize tag spacing to "TAG  - " (exactly 2 spaces) for rispy compatibility.
+        # Handles exports that use "TY -" or "AU -" (1 space) instead of standard 2 spaces.
+        block = _TAG_SPACING_RE.sub(r"\1  -", block)
         # Re-add the ER tag so rispy can parse the block
         block_with_er = block + "\nER  - \n"
         try:

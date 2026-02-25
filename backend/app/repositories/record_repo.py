@@ -17,6 +17,19 @@ from app.models.record_source import RecordSource
 from app.models.source import Source
 from app.utils.match_keys import compute_match_key, normalize_title, normalize_first_author
 
+# Maximum rows per bulk INSERT statement.
+# asyncpg raises if the number of query parameters exceeds 32767.
+# Record has 16 explicit columns → safe limit: 32767 // 16 = 2047 rows.
+# RecordSource has 8 explicit columns → safe limit: 32767 // 8 = 4095 rows.
+# We use 500 as a conservative universal chunk size for both tables.
+_CHUNK_SIZE = 500
+
+
+def _chunks(lst: list, n: int):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
+
 
 class RecordRepo:
 
@@ -65,7 +78,8 @@ class RecordRepo:
 
         record_ids: dict[int, uuid.UUID] = {}  # parsed-record index → canonical record.id
 
-        # ── Phase A-1: Records with a match_key (batch upsert) ─────────────
+        # ── Phase A-1: Records with a match_key (chunked batch upsert) ────────
+        # Chunked to stay under the asyncpg 32767 query parameter limit.
         if keyed_records:
             values = [
                 {
@@ -88,11 +102,12 @@ class RecordRepo:
                 }
                 for _, r in keyed_records
             ]
-            stmt = pg_insert(Record).values(values).on_conflict_do_nothing(
-                index_elements=["project_id", "match_key"],
-                index_where=text("match_key IS NOT NULL"),
-            )
-            await db.execute(stmt)
+            for chunk in _chunks(values, _CHUNK_SIZE):
+                stmt = pg_insert(Record).values(chunk).on_conflict_do_nothing(
+                    index_elements=["project_id", "match_key"],
+                    index_where=text("match_key IS NOT NULL"),
+                )
+                await db.execute(stmt)
             await db.flush()
 
             # Fetch ids for all match_keys (covers newly inserted and pre-existing).
@@ -131,7 +146,8 @@ class RecordRepo:
             await db.flush()
             record_ids[idx] = record.id
 
-        # ── Phase B: insert record_sources join rows ────────────────────────
+        # ── Phase B: insert record_sources join rows (chunked) ─────────────
+        # Chunked to stay under the asyncpg 32767 query parameter limit.
         join_values = [
             {
                 "record_id": record_ids[idx],
@@ -149,12 +165,15 @@ class RecordRepo:
             await db.commit()
             return 0
 
-        join_stmt = pg_insert(RecordSource).values(join_values).on_conflict_do_nothing(
-            index_elements=["record_id", "source_id"]
-        )
-        result = await db.execute(join_stmt)
+        total_inserted = 0
+        for chunk in _chunks(join_values, _CHUNK_SIZE):
+            join_stmt = pg_insert(RecordSource).values(chunk).on_conflict_do_nothing(
+                index_elements=["record_id", "source_id"]
+            )
+            result = await db.execute(join_stmt)
+            total_inserted += result.rowcount
         await db.commit()
-        return result.rowcount
+        return total_inserted
 
     @staticmethod
     async def list_paginated(

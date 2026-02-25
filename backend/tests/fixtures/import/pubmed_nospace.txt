@@ -1,0 +1,22 @@
+PMID-36521234
+TI  - Mindfulness-based interventions for anxiety: a systematic review
+AU  - Smith J
+AU  - Jones A
+AB  - Background: Mindfulness-based interventions have been widely studied for anxiety disorders.
+DP  - 2023 Jan
+JT  - Journal of Clinical Psychology
+VI  - 79
+IP  - 2
+PG  - 123-140
+LID - 10.1002/jclp.23456 [doi]
+
+PMID-36521235
+TI  - Cognitive behavioral therapy versus mindfulness for depression
+AU  - Brown M
+AB  - This study compares CBT and mindfulness approaches for major depressive disorder.
+DP  - 2022 Nov
+JT  - Journal of Affective Disorders
+VI  - 310
+PG  - 55-63
+LID - 10.1001/jad.2022.456 [doi]
+
