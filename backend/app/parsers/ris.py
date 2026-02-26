@@ -35,7 +35,7 @@ from typing import Optional
 
 import rispy
 
-from app.parsers.base import ParseResult, RecordError
+from app.parsers.base import ParseResult, RecordError, normalize_doi, _is_useful_record
 from app.parsers.detector import _decode_bytes
 
 # Delimiter used to split a RIS file into individual record blocks.
@@ -45,12 +45,14 @@ from app.parsers.detector import _decode_bytes
 _ER_SPLIT_RE = re.compile(r"\nER\s*-[^\n]*", re.MULTILINE)
 
 # Used for fallback detection of multiple records when no ER lines are present.
-_TY_TAG_RE = re.compile(r"^TY\s+-", re.MULTILINE)
+# Accepts zero or more spaces between TY and the dash (mirrors _RIS_RE in detector).
+_TY_TAG_RE = re.compile(r"^TY\s*-", re.MULTILINE)
 
-# Normalizes any RIS tag line to have exactly 2 spaces before the dash so that
-# rispy (which requires "TAG  - value") can parse variant-spacing exports.
-# Handles: "TY -", "TY   -", "AU - " etc.
-_TAG_SPACING_RE = re.compile(r"^([A-Z0-9]{2,4})[ \t]*-", re.MULTILINE)
+# Normalizes any RIS tag line to the canonical "TAG  - value" form required by
+# rispy.  Consumes optional whitespace both before and after the dash so that
+# zero-space exports ("TY-JOUR", "AU-Smith") become "TY  - JOUR", "AU  - Smith".
+# Handles: "TY-JOUR", "TY -JOUR", "TY  - JOUR", "AU   -Smith" etc.
+_TAG_SPACING_RE = re.compile(r"^([A-Z0-9]{2,4})[ \t]*-[ \t]*", re.MULTILINE)
 
 
 def parse(file_bytes: bytes) -> list[dict]:
@@ -103,15 +105,18 @@ def parse_tolerant(file_bytes: bytes) -> ParseResult:
         # A minimal RIS block must have at least TY and ER
         if not block:
             continue
-        # Normalize tag spacing to "TAG  - " (exactly 2 spaces) for rispy compatibility.
-        # Handles exports that use "TY -" or "AU -" (1 space) instead of standard 2 spaces.
-        block = _TAG_SPACING_RE.sub(r"\1  -", block)
+        # Normalize tag spacing to "TAG  - value" form required by rispy.
+        # Consumes any whitespace before and after the dash; replacement always
+        # produces 2 spaces before + 1 space after the dash.
+        block = _TAG_SPACING_RE.sub(r"\1  - ", block)
         # Re-add the ER tag so rispy can parse the block
         block_with_er = block + "\nER  - \n"
         try:
             entries = rispy.loads(block_with_er)
             for entry in entries:
-                records.append(_normalize(entry))
+                rec = _normalize(entry)
+                if _is_useful_record(rec):
+                    records.append(rec)
         except Exception as exc:
             errors.append(
                 RecordError(
@@ -160,6 +165,7 @@ def _normalize(entry: dict) -> dict:
         or entry.get("alternate_title1")
         or entry.get("secondary_title")
         or entry.get("periodical_name_full_format")
+        or entry.get("SO")  # Scopus / CINAHL "source" field (unknown tag → stored as-is)
     )
     doi = _clean_text(entry.get("doi"))
     issn = _clean_text(entry.get("issn"))
@@ -174,7 +180,7 @@ def _normalize(entry: dict) -> dict:
         "authors": authors if authors else None,
         "year": year,
         "journal": journal,
-        "doi": doi.lower() if doi else None,  # normalise DOI casing for dedup
+        "doi": normalize_doi(doi),  # lowercase + strip "doi:" / URL prefix
         "issn": issn,
         "volume": volume,
         "issue": issue,
@@ -208,7 +214,7 @@ def _extract_year(entry: dict) -> Optional[int]:
     Year is stored as a string in various fields. Extract the four-digit year.
     rispy maps PY/Y1 to 'year' as a string like "2023" or "2023/01/15/".
     """
-    raw = entry.get("year") or entry.get("publication_year") or ""
+    raw = entry.get("year") or entry.get("publication_year") or entry.get("DA") or ""
     if not raw:
         return None
     # Take the first 4-digit sequence

@@ -1,0 +1,42 @@
+PMID- 22130746
+OWN - NLM
+STAT- MEDLINE
+TI  - Mindfulness-based cognitive therapy for recurrent depression in adults with and without a history of childhood trauma.
+AU  - Foley E
+AU  - Baillie A
+FAU - Foley, Elizabeth
+FAU - Baillie, Andrew
+AB  - Mindfulness-based cognitive therapy (MBCT) is an evidence-based group intervention for preventing depressive relapse.
+DP  - 2013 Aug
+JT  - Journal of Clinical Psychology
+TA  - J Clin Psychol
+VI  - 69
+IP  - 8
+PG  - 809-20
+LID - 10.1002/jclp.21791 [doi]
+IS  - 1097-4679 (Electronic)
+IS  - 0021-9762 (Print)
+OT  - mindfulness
+OT  - depression
+OT  - cognitive therapy
+
+PMID- 22130747
+OWN - NLM
+STAT- MEDLINE
+TI  - Effectiveness of mindfulness-based stress reduction and mindfulness-based cognitive therapy in vascular disease.
+AU  - Abbott RA
+AU  - Whear R
+FAU - Abbott, Rebecca A
+FAU - Whear, Rebecca
+AB  - We examined the effect of mindfulness-based interventions on vascular health outcomes.
+DP  - 2014 Feb
+JT  - Journal of Psychosomatic Research
+TA  - J Psychosom Res
+VI  - 76
+IP  - 2
+PG  - 341-51
+LID - 10.1016/j.jpsychores.2013.12.008 [doi]
+IS  - 1879-1360 (Electronic)
+OT  - mindfulness
+OT  - vascular
+OT  - stress reduction

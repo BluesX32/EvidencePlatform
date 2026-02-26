@@ -36,12 +36,15 @@ import re
 import unicodedata
 from typing import Optional
 
-from app.parsers.base import ParseResult, RecordError
+from app.parsers.base import ParseResult, RecordError, normalize_doi, _is_useful_record
 from app.parsers.detector import _decode_bytes
 
-# Regex for a MEDLINE tag line: 4 chars + "- " (standard PubMed export)
-# Some tags are shorter and right-padded with spaces to 4 chars, e.g. "PMID-"
-_TAG_LINE_RE = re.compile(r"^([A-Z]{2,4})\s*-\s(.*)")
+# Regex for a MEDLINE tag line: 2-4 uppercase letters + optional spaces + dash +
+# optional whitespace + value.  The value may start immediately after the dash
+# ("PMID-12345") or be separated by one or more spaces ("TI  - Title").
+# The `.strip()` call in _parse_fields() removes any leading whitespace from the
+# captured value, so `\s*` in the trailing group is safe.
+_TAG_LINE_RE = re.compile(r"^([A-Z]{2,4})\s*-\s*(.*)")
 _DOI_SUFFIX_RE = re.compile(r"\s*\[doi\]\s*$", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(\d{4})")
 
@@ -66,9 +69,10 @@ def parse_tolerant(file_bytes: bytes) -> ParseResult:
             continue
         try:
             rec = _parse_block(block)
-            if rec is not None:
+            if rec is not None and _is_useful_record(rec):
                 records.append(rec)
-            # rec can be None if block has no recognizable fields (blank / comment)
+            # rec is None if block has no recognizable fields (blank / comment);
+            # _is_useful_record() drops records with no title AND no identifier.
         except Exception as exc:
             errors.append(
                 RecordError(
@@ -127,10 +131,11 @@ def _parse_fields(block: str) -> dict[str, list[str]]:
                 fields.setdefault(current_tag, []).append(" ".join(current_value))
             current_tag = m.group(1).strip()
             current_value = [m.group(2).strip()]
-        elif line.startswith("      ") and current_tag is not None:
-            # Continuation line (6 leading spaces)
+        elif current_tag is not None and line.strip():
+            # Continuation line: either starts with 6 spaces (standard PubMed) or
+            # is any other non-blank, non-tag line (tolerant handling for vendors
+            # that wrap long values without the standard indent).
             current_value.append(line.strip())
-        # else: ignore malformed lines
 
     # Flush last tag
     if current_tag is not None:
@@ -195,7 +200,7 @@ def _parse_block(block: str) -> Optional[dict]:
         "authors": authors,
         "year": year,
         "journal": journal,
-        "doi": doi.lower() if doi else None,
+        "doi": normalize_doi(doi),  # lowercase + strip "doi:" / URL prefix
         "issn": issn,
         "volume": volume,
         "issue": issue,

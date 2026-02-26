@@ -49,7 +49,14 @@ def parse_file(file_bytes: bytes) -> ParseResult:
             ],
         )
 
-    # "unknown" — cannot identify format
+    # "unknown" — detector could not identify the format.
+    # The detector already attempted a rispy (RIS) parse as a last resort before
+    # returning "unknown".  Try the MEDLINE parser here as a final fallback before
+    # giving up — some PubMed-tagged files lack a PMID line but contain valid fields.
+    medline_result = medline.parse_tolerant(file_bytes)
+    if medline_result.valid_count >= 1:
+        return medline_result
+
     return ParseResult(
         records=[],
         errors=[],
@@ -58,9 +65,7 @@ def parse_file(file_bytes: bytes) -> ParseResult:
         valid_count=0,
         failed_count=1,
         warnings=[
-            "Cannot detect file format. "
-            "Expected RIS (.ris) or MEDLINE/PubMed-tagged (.txt). "
-            "Check that the file was exported from a supported database."
+            "Unsupported format. Expected RIS (TY -) or PubMed tagged (PMID-/TI-/AU-)."
         ],
     )
 

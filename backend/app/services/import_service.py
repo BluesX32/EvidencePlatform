@@ -112,7 +112,9 @@ async def _run_import(
                 )
                 await ImportRepo.set_completed(db, job_id, inserted, warning_msg=warning_msg)
         except Exception as exc:
+            logger.exception("Import DB write failed for job %s", job_id)
+            safe_msg = "Database error during import. Please retry or contact support."
             async with SessionLocal() as db:
-                await ImportRepo.set_failed(db, job_id, str(exc))
+                await ImportRepo.set_failed(db, job_id, safe_msg)
         finally:
             await release_project_lock(lock_conn, project_id)

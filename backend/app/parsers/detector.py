@@ -28,8 +28,9 @@ _PROBE_BYTES = 4096
 FormatStr = Literal["ris", "medline", "csv", "unknown"]
 
 # RIS: record type tag — any spacing between TY and the dash is accepted.
-# Standard is "TY  -" (2 spaces) but Scopus/CINAHL may use "TY -" (1 space).
-_RIS_RE = re.compile(r"^TY\s+-", re.MULTILINE)
+# Standard is "TY  -" (2 spaces); Scopus/CINAHL may use "TY -" (1 space);
+# some OVID exports emit "TY-" (zero spaces).
+_RIS_RE = re.compile(r"^TY\s*-", re.MULTILINE)
 
 # MEDLINE/PubMed tagged: PMID tag with optional spaces before the value.
 # PubMed export: "PMID- 22130746" (space); some tools emit "PMID-22130746" (no space).
@@ -62,6 +63,24 @@ def _decode_bytes(data: bytes) -> str:
     # Latin-1 is a universal fallback — all 256 byte values are valid
     text = data.decode("latin-1")
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_text(file_bytes: bytes) -> str:
+    """
+    Decode file bytes to a Unicode string.
+
+    Public wrapper around ``_decode_bytes`` that applies the same
+    encoding-fallback chain (utf-8-sig → utf-8 → latin-1) and CRLF
+    normalisation used throughout the parser pipeline.  Prefer this
+    function in new code; ``_decode_bytes`` is kept for internal use.
+
+    Args:
+        file_bytes: Raw bytes from an uploaded file (any encoding).
+
+    Returns:
+        Decoded Unicode string with LF-only line endings.
+    """
+    return _decode_bytes(file_bytes)
 
 
 def _decode_probe(file_bytes: bytes) -> str:

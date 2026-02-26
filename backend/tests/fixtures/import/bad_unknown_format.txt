@@ -1,0 +1,12 @@
+This file does not contain bibliographic data in any recognized format.
+
+It has multiple lines of plain prose text that look nothing like RIS or
+PubMed-tagged exports. There are no TY tags, no PMID lines, and no standard
+field tags of any kind.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor
+incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis
+nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+
+No bibliographic records here — the import pipeline should reject this file
+gracefully and return a user-friendly error message.
