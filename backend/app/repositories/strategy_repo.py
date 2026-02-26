@@ -1,4 +1,11 @@
-"""Repository for match_strategies CRUD."""
+"""Repository for match_strategies CRUD.
+
+Strategies can be created from:
+  - A named preset (doi_first_strict, doi_first_medium, strict, medium, loose)
+    The preset's StrategyConfig is serialised to the config JSONB column.
+  - A custom config dict (preset='custom')
+    Used by the field-chip builder UI when users configure rules manually.
+"""
 import uuid
 from typing import Optional
 
@@ -9,7 +16,7 @@ from app.models.match_strategy import MatchStrategy
 from app.utils.match_keys import StrategyConfig
 
 VALID_PRESETS = frozenset(
-    {"doi_first_strict", "doi_first_medium", "strict", "medium", "loose"}
+    {"doi_first_strict", "doi_first_medium", "strict", "medium", "loose", "custom"}
 )
 
 
@@ -49,14 +56,33 @@ class StrategyRepo:
 
     @staticmethod
     async def create(
-        db: AsyncSession, project_id: uuid.UUID, name: str, preset: str
+        db: AsyncSession,
+        project_id: uuid.UUID,
+        name: str,
+        preset: str,
+        config: Optional[dict] = None,
+        selected_fields: Optional[list] = None,
     ) -> MatchStrategy:
-        config = StrategyConfig.from_preset(preset).to_dict()
+        """
+        Create a new match strategy.
+
+        If `config` is provided (custom field-chip builder strategy), it is stored
+        directly in the config JSONB.  Otherwise, the config is derived from the
+        preset name using StrategyConfig.from_preset().
+
+        For custom strategies, use preset='custom'.
+        """
+        if config is not None:
+            resolved_config = config
+        else:
+            resolved_config = StrategyConfig.from_preset(preset).to_dict()
+
         strategy = MatchStrategy(
             project_id=project_id,
             name=name,
             preset=preset,
-            config=config,
+            config=resolved_config,
+            selected_fields=selected_fields,
             is_active=False,
         )
         db.add(strategy)

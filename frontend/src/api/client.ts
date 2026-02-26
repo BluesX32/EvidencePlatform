@@ -182,12 +182,35 @@ export interface OverlapSummary {
 
 // ── Match Strategies ──────────────────────────────────────────────────────────
 
+/** Mirrors backend StrategyConfig dataclass. Controls which matching tiers are enabled. */
+export interface StrategyConfig {
+  use_doi: boolean;
+  use_pmid: boolean;
+  use_title_year: boolean;
+  use_title_author_year: boolean;
+  use_fuzzy: boolean;
+  fuzzy_threshold: number;
+  fuzzy_author_check: boolean;
+}
+
+export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
+  use_doi: true,
+  use_pmid: true,
+  use_title_year: true,
+  use_title_author_year: true,
+  use_fuzzy: false,
+  fuzzy_threshold: 0.85,
+  fuzzy_author_check: true,
+};
+
 export interface MatchStrategy {
   id: string;
   project_id: string;
   name: string;
   preset: string;
   preset_label: string;
+  config: StrategyConfig;
+  selected_fields: string[] | null;
   is_active: boolean;
   created_at: string;
 }
@@ -195,8 +218,22 @@ export interface MatchStrategy {
 export const strategiesApi = {
   list: (projectId: string) =>
     api.get<MatchStrategy[]>(`/projects/${projectId}/strategies`),
-  create: (projectId: string, name: string, preset: string, activate = false) =>
-    api.post<MatchStrategy>(`/projects/${projectId}/strategies`, { name, preset, activate }),
+  /** Create a strategy from a preset name or a custom config object. */
+  create: (
+    projectId: string,
+    name: string,
+    preset: string,
+    activate = false,
+    config?: Partial<StrategyConfig> | null,
+    selected_fields?: string[] | null
+  ) =>
+    api.post<MatchStrategy>(`/projects/${projectId}/strategies`, {
+      name,
+      preset,
+      activate,
+      config: config ?? null,
+      selected_fields: selected_fields ?? null,
+    }),
   getActive: (projectId: string) =>
     api.get<MatchStrategy | null>(`/projects/${projectId}/strategies/active`),
   activate: (projectId: string, strategyId: string) =>
@@ -231,4 +268,50 @@ export const dedupJobsApi = {
     api.get<DedupJob[]>(`/projects/${projectId}/dedup-jobs`),
   get: (projectId: string, jobId: string) =>
     api.get<DedupJob>(`/projects/${projectId}/dedup-jobs/${jobId}`),
+};
+
+// ── Overlap Resolution ────────────────────────────────────────────────────────
+
+export interface OverlapWithinSource {
+  cluster_count: number;
+  duplicate_record_count: number;
+}
+
+export interface OverlapCrossSource {
+  cluster_count: number;
+}
+
+export interface OverlapResolutionSummary {
+  strategy_name: string | null;
+  within_source: OverlapWithinSource;
+  cross_source: OverlapCrossSource;
+  sources: OverlapSourceItem[];
+  pairs: OverlapPair[];
+}
+
+export const overlapsApi = {
+  /** Get the latest overlap resolution summary for a project. */
+  getSummary: (projectId: string) =>
+    api.get<OverlapResolutionSummary>(`/projects/${projectId}/overlaps`),
+  /** Start an overlap detection job in the background. */
+  run: (projectId: string, strategyId: string) =>
+    api.post<{ overlap_job_id: string; status: string; message: string }>(
+      `/projects/${projectId}/overlaps/run`,
+      { strategy_id: strategyId }
+    ),
+  /** Preview overlap detection without writing (synchronous). */
+  preview: (projectId: string, strategyId: string) =>
+    api.get(`/projects/${projectId}/overlaps/preview`, {
+      params: { strategy_id: strategyId },
+    }),
+  /** List detected overlap clusters with member details. */
+  listClusters: (
+    projectId: string,
+    scope?: "within_source" | "cross_source",
+    limit = 50,
+    offset = 0
+  ) =>
+    api.get(`/projects/${projectId}/overlaps/clusters`, {
+      params: { scope, limit, offset },
+    }),
 };

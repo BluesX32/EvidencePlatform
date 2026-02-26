@@ -43,7 +43,12 @@ PRESET_LABELS = {
 
 class StrategyCreate(BaseModel):
     name: str
-    preset: str
+    # preset='custom' when using the field-chip builder with an explicit config dict
+    preset: str = "doi_first_strict"
+    # Direct StrategyConfig dict from the builder UI (overrides preset's defaults)
+    config: Optional[dict] = None
+    # Ordered list of fields used by this strategy (for UI display)
+    selected_fields: Optional[list] = None
     activate: bool = False
 
 
@@ -53,6 +58,8 @@ class StrategyResponse(BaseModel):
     name: str
     preset: str
     preset_label: str
+    config: dict
+    selected_fields: Optional[list]
     is_active: bool
     created_at: str
 
@@ -67,6 +74,8 @@ def _to_response(s) -> StrategyResponse:
         name=s.name,
         preset=s.preset,
         preset_label=PRESET_LABELS.get(s.preset, s.preset),
+        config=s.config or {},
+        selected_fields=s.selected_fields,
         is_active=s.is_active,
         created_at=s.created_at.isoformat(),
     )
@@ -132,7 +141,14 @@ async def create_strategy(
         raise HTTPException(status_code=400, detail="name must not be empty")
 
     try:
-        strategy = await StrategyRepo.create(db, project_id, body.name.strip(), body.preset)
+        strategy = await StrategyRepo.create(
+            db,
+            project_id,
+            body.name.strip(),
+            body.preset,
+            config=body.config,
+            selected_fields=body.selected_fields,
+        )
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
