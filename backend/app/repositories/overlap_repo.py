@@ -15,6 +15,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.match_strategy import MatchStrategy
+from app.models.overlap_cluster import OverlapCluster
+from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.source import Source
@@ -52,6 +54,47 @@ class OverlapRepo:
             .outerjoin(Record, Record.id == RecordSource.record_id)
             .where(Source.project_id == project_id)
             .group_by(Source.id, Source.name)
+            .order_by(Source.name)
+        )
+        result = await db.execute(stmt)
+        return list(result.all())
+
+    @staticmethod
+    async def source_totals_with_overlap(db: AsyncSession, project_id: uuid.UUID) -> list:
+        """
+        Returns one row per source with:
+          id, name, total, with_doi,
+          internal_overlaps (duplicate-role members in within_source clusters),
+          unique_count (total - internal_overlaps)
+        """
+        # Subquery: count duplicate-role members per source in within_source clusters
+        dup_subq = (
+            select(
+                OverlapClusterMember.source_id,
+                func.count(OverlapClusterMember.id).label("dup_count"),
+            )
+            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+            .where(
+                OverlapCluster.project_id == project_id,
+                OverlapCluster.scope == "within_source",
+                OverlapClusterMember.role == "duplicate",
+            )
+            .group_by(OverlapClusterMember.source_id)
+        ).subquery()
+
+        stmt = (
+            select(
+                Source.id,
+                Source.name,
+                func.count(RecordSource.record_id).label("total"),
+                func.count(Record.normalized_doi).label("with_doi"),
+                func.coalesce(dup_subq.c.dup_count, 0).label("internal_overlaps"),
+            )
+            .outerjoin(RecordSource, RecordSource.source_id == Source.id)
+            .outerjoin(Record, Record.id == RecordSource.record_id)
+            .outerjoin(dup_subq, dup_subq.c.source_id == Source.id)
+            .where(Source.project_id == project_id)
+            .group_by(Source.id, Source.name, dup_subq.c.dup_count)
             .order_by(Source.name)
         )
         result = await db.execute(stmt)

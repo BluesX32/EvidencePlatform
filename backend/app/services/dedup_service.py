@@ -36,8 +36,6 @@ from app.database import SessionLocal, engine
 from app.models.dedup_job import DedupJob
 from app.models.match_log import MatchLog
 from app.models.match_strategy import MatchStrategy
-from app.models.overlap_cluster import OverlapCluster
-from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.repositories.dedup_repo import DedupJobRepo
@@ -250,48 +248,6 @@ async def _run_clustering(
     if match_log_entries:
         db.add_all([MatchLog(**e) for e in match_log_entries])
         await db.flush()
-
-    # ── 7b. Populate overlap_clusters (within-source + cross-source snapshot) ─
-    # Clear previous clusters for this project, then re-populate.
-    from sqlalchemy import delete as sa_delete
-    await db.execute(sa_delete(OverlapCluster).where(OverlapCluster.project_id == project_id))
-    await db.flush()
-
-    for cluster in clusters:
-        if cluster.size <= 1:
-            continue  # isolated — not an overlap
-
-        # Determine scope: within_source if all members share the same source_id
-        unique_sources = {source_id_map.get(m.id) for m in cluster.members}
-        unique_sources.discard(None)
-        scope = "within_source" if len(unique_sources) <= 1 else "cross_source"
-
-        oc = OverlapCluster(
-            project_id=project_id,
-            job_id=job_id,
-            scope=scope,
-            match_tier=cluster.match_tier,
-            match_basis=cluster.match_basis,
-            match_reason=cluster.match_reason,
-            similarity_score=cluster.similarity_score,
-            reason_json={
-                "match_basis": cluster.match_basis,
-                "match_reason": cluster.match_reason,
-            },
-        )
-        db.add(oc)
-        await db.flush()
-
-        for src in cluster.members:
-            role = "canonical" if src.id == cluster.representative.id else "duplicate"
-            db.add(OverlapClusterMember(
-                cluster_id=oc.id,
-                record_source_id=src.id,
-                source_id=source_id_map.get(src.id, src.id),
-                role=role,
-            ))
-
-    await db.flush()
 
     # ── 8. Delete orphaned records rows (no record_sources pointing to them) ─
     orphan_result = await db.execute(

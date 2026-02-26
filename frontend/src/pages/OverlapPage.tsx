@@ -119,9 +119,10 @@ export default function OverlapPage() {
                   <thead>
                     <tr>
                       <th>Source</th>
-                      <th>Total records</th>
+                      <th>Total</th>
+                      <th>Unique</th>
+                      <th>Internal Duplicates</th>
                       <th>With DOI</th>
-                      <th>Without DOI</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -139,8 +140,9 @@ export default function OverlapPage() {
                           </Link>
                         </td>
                         <td>{s.total}</td>
+                        <td>{s.unique_count ?? "—"}</td>
+                        <td>{s.internal_overlaps ?? "—"}</td>
                         <td>{s.with_doi}</td>
-                        <td>{s.total - s.with_doi}</td>
                       </tr>
                     ))}
                   </tbody>

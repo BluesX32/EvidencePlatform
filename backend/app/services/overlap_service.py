@@ -2,22 +2,28 @@
 Overlap Resolution service.
 
 Two modes of operation:
-  run_overlap_detection()  — Full async background task that detects overlaps,
-                             persists results to overlap_clusters, and creates
-                             a dedup_job entry for tracking.
-  build_overlap_snapshot() — Synchronous helper used by both the background task
-                             and the preview endpoint; returns OverlapSnapshot.
+  run_within_source_detection() — Auto-triggered after each successful import.
+                                   No advisory lock. Clears old within-source
+                                   clusters for the given source and writes
+                                   fresh ones.
+  run_overlap_detection()       — Manual cross-source detection (background
+                                   task via /overlaps/run). Acquires advisory
+                                   lock, loads ALL record_sources, runs
+                                   OverlapDetector, persists cross_source
+                                   clusters only (within_source clusters are
+                                   managed by the auto-trigger above).
+  build_overlap_preview()       — Pure (no DB writes). Used by /preview endpoint.
 
 Overlap scopes:
-  within_source — all members of the cluster come from the same source file.
-                  These are true intra-source duplicates (e.g. PubMed returned
-                  the same PMID twice in one export).
-  cross_source  — members span two or more sources.
-                  These are the same paper appearing in multiple databases.
+  within_source — all cluster members from the same source file
+  cross_source  — members from two or more sources
 
-Algorithm: Delegates to TieredClusterBuilder (existing Union-Find engine) and
-categorises each resulting cluster by comparing source_id membership.
+Algorithm: OverlapDetector (5-tier, blocking key, Union-Find) in
+app.utils.overlap_detector.  No longer delegates to TieredClusterBuilder.
 """
+from __future__ import annotations
+
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -35,8 +41,16 @@ from app.models.record_source import RecordSource
 from app.repositories.dedup_repo import DedupJobRepo
 from app.repositories.strategy_repo import StrategyRepo
 from app.services.locks import try_acquire_project_lock, release_project_lock
-from app.utils.cluster_builder import Cluster, TieredClusterBuilder, SourceRecord
-from app.utils.match_keys import StrategyConfig
+from app.utils.overlap_detector import (
+    OverlapConfig,
+    OverlapDetector,
+    DetectedCluster,
+    OverlapRecord,
+    _build_overlap_records,
+    select_representative,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -52,24 +66,107 @@ class OverlapClusterSummary:
     match_reason: str
     similarity_score: Optional[float]
     member_count: int
-    source_ids: list[str]               # unique source_ids in this cluster
-    record_source_ids: list[str]        # all record_source IDs
-    titles: list[Optional[str]]
-    dois: list[Optional[str]]
+    source_ids: list                    # unique source_ids in this cluster
+    record_source_ids: list             # all record_source IDs
+    titles: list
+    dois: list
 
 
 @dataclass
 class OverlapSnapshot:
     """Full result of an overlap detection run."""
-    within_source_clusters: list[OverlapClusterSummary]
-    cross_source_clusters: list[OverlapClusterSummary]
+    within_source_clusters: list
+    cross_source_clusters: list
     within_source_duplicate_count: int  # total duplicate records found within sources
     cross_source_overlap_count: int     # record_sources that overlap across sources
     unique_overlapping_papers: int      # canonical clusters with cross-source overlap
 
 
 # ---------------------------------------------------------------------------
-# Public entry point: background task
+# Auto-triggered: within-source detection (after each import)
+# ---------------------------------------------------------------------------
+
+async def run_within_source_detection(
+    project_id: uuid.UUID,
+    source_id: uuid.UUID,
+) -> None:
+    """
+    Auto-triggered after a successful import. No advisory lock needed.
+
+    1. Load all record_sources for the given source.
+    2. Run OverlapDetector — only within-source pairs matter here.
+    3. Delete old within-source clusters for this source.
+    4. Persist new within-source clusters.
+    """
+    async with SessionLocal() as db:
+        # Load record_sources for this source only
+        rs_rows = (
+            await db.execute(
+                select(
+                    RecordSource.id,
+                    RecordSource.record_id,
+                    RecordSource.source_id,
+                    RecordSource.norm_title,
+                    RecordSource.norm_first_author,
+                    RecordSource.match_year,
+                    RecordSource.match_doi,
+                    RecordSource.raw_data,
+                )
+                .where(RecordSource.source_id == source_id)
+            )
+        ).all()
+
+        if len(rs_rows) < 2:
+            return
+
+        records = _build_overlap_records(rs_rows)
+        config = _load_config_for_project(None)  # use default for auto-run
+
+        detector = OverlapDetector(config)
+        clusters = detector.detect(records)
+
+        # Delete previous within-source clusters for this source
+        # (clusters whose ONLY members belong to this source)
+        old_cluster_ids = (
+            await db.execute(
+                select(OverlapCluster.id)
+                .join(
+                    OverlapClusterMember,
+                    OverlapClusterMember.cluster_id == OverlapCluster.id,
+                )
+                .where(
+                    OverlapCluster.project_id == project_id,
+                    OverlapCluster.scope == "within_source",
+                    OverlapClusterMember.source_id == source_id,
+                )
+                .group_by(OverlapCluster.id)
+            )
+        ).scalars().all()
+
+        if old_cluster_ids:
+            await db.execute(
+                delete(OverlapCluster).where(OverlapCluster.id.in_(old_cluster_ids))
+            )
+            await db.flush()
+
+        # Persist new within-source clusters only
+        for cluster in clusters:
+            unique_sources = {r.source_id for r in cluster.records}
+            if len(unique_sources) != 1:
+                continue  # skip cross-source (shouldn't happen within one source load)
+
+            await _persist_cluster(db, project_id, None, "within_source", cluster)
+
+        await db.commit()
+        logger.info(
+            "Within-source overlap detection complete for source %s: %d clusters",
+            source_id,
+            sum(1 for c in clusters if len({r.source_id for r in c.records}) == 1),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Manual: cross-source detection (background task via /overlaps/run)
 # ---------------------------------------------------------------------------
 
 async def run_overlap_detection(
@@ -93,10 +190,6 @@ async def run_overlap_detection(
             await release_project_lock(lock_conn, project_id)
 
 
-# ---------------------------------------------------------------------------
-# Internal implementation
-# ---------------------------------------------------------------------------
-
 async def _do_overlap_detection(
     job_id: uuid.UUID,
     project_id: uuid.UUID,
@@ -105,13 +198,13 @@ async def _do_overlap_detection(
     async with SessionLocal() as db:
         await DedupJobRepo.set_running(db, job_id)
         try:
-            await _run_detection(db, job_id, project_id, strategy_id)
+            await _run_cross_source_detection(db, job_id, project_id, strategy_id)
         except Exception as exc:
             await DedupJobRepo.set_failed(db, job_id, str(exc))
             raise
 
 
-async def _run_detection(
+async def _run_cross_source_detection(
     db: AsyncSession,
     job_id: uuid.UUID,
     project_id: uuid.UUID,
@@ -122,15 +215,14 @@ async def _run_detection(
     if strategy is None:
         raise ValueError(f"Strategy {strategy_id} not found")
 
-    config_dict = strategy.config or {}
-    config = StrategyConfig.from_dict(config_dict) if config_dict else StrategyConfig.from_preset(strategy.preset)
+    config = _load_config_for_project(strategy)
 
     # ── 2. Count records before ──────────────────────────────────────────────
     records_before = (
         await db.execute(select(func.count()).where(Record.project_id == project_id))
     ).scalar_one()
 
-    # ── 3. Fetch all record_sources with source_id ───────────────────────────
+    # ── 3. Fetch ALL record_sources for this project ─────────────────────────
     rs_rows = (
         await db.execute(
             select(
@@ -152,122 +244,77 @@ async def _run_detection(
         await DedupJobRepo.set_completed(db, job_id, records_before, records_before, 0, 0, 0)
         return
 
-    # ── 4. Build SourceRecord objects (include source_id in raw_data for lookup)
-    sources, source_id_map = _build_source_records(rs_rows)
+    # ── 4. Run detector ───────────────────────────────────────────────────────
+    records = _build_overlap_records(rs_rows)
+    detector = OverlapDetector(config)
+    clusters = detector.detect(records)
 
-    # ── 5. Cluster all sources ───────────────────────────────────────────────
-    builder = TieredClusterBuilder(config)
-    clusters = builder.compute_clusters(sources)
-
-    # ── 6. Delete previous overlap clusters for this project ─────────────────
+    # ── 5. Delete previous cross-source clusters for this project ────────────
     await db.execute(
-        delete(OverlapCluster).where(OverlapCluster.project_id == project_id)
+        delete(OverlapCluster).where(
+            OverlapCluster.project_id == project_id,
+            OverlapCluster.scope == "cross_source",
+        )
     )
     await db.flush()
 
-    # ── 7. Categorise clusters and persist ───────────────────────────────────
-    within_dupes = 0
+    # ── 6. Persist cross-source clusters only ─────────────────────────────────
     cross_overlaps = 0
     clusters_created = 0
 
     for cluster in clusters:
-        if cluster.size <= 1:
-            continue  # isolated — not an overlap
+        unique_source_ids = {r.source_id for r in cluster.records}
+        if len(unique_source_ids) <= 1:
+            continue  # within-source clusters are managed by auto-trigger
 
-        scope = _classify_scope(cluster, source_id_map)
-
-        oc = OverlapCluster(
-            project_id=project_id,
-            job_id=job_id,
-            scope=scope,
-            match_tier=cluster.match_tier,
-            match_basis=cluster.match_basis,
-            match_reason=cluster.match_reason,
-            similarity_score=cluster.similarity_score,
-            reason_json={
-                "match_basis": cluster.match_basis,
-                "match_reason": cluster.match_reason,
-            },
-        )
-        db.add(oc)
-        await db.flush()  # get oc.id
-
-        for src in cluster.members:
-            role = "canonical" if src.id == cluster.representative.id else "duplicate"
-            db.add(OverlapClusterMember(
-                cluster_id=oc.id,
-                record_source_id=src.id,
-                source_id=source_id_map[src.id],
-                role=role,
-            ))
-
+        await _persist_cluster(db, project_id, job_id, "cross_source", cluster)
         clusters_created += 1
-        if scope == "within_source":
-            within_dupes += cluster.size - 1
-        else:
-            cross_overlaps += cluster.size
+        cross_overlaps += len(cluster.records)
 
-    await db.flush()
-
-    # ── 8. Mark job completed ────────────────────────────────────────────────
+    # ── 7. Mark job completed ────────────────────────────────────────────────
     await DedupJobRepo.set_completed(
         db,
         job_id,
         records_before=records_before,
-        records_after=records_before,  # overlap detection does not change records
-        merges=within_dupes + cross_overlaps,
+        records_after=records_before,
+        merges=cross_overlaps,
         clusters_created=clusters_created,
         clusters_deleted=0,
     )
     await StrategyRepo.set_active(db, project_id, strategy_id)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
-# Synchronous snapshot builder (used by preview endpoint and the above)
+# Preview (pure — no DB writes)
 # ---------------------------------------------------------------------------
 
-def build_overlap_snapshot(
-    sources: list[SourceRecord],
-    source_id_map: dict[uuid.UUID, uuid.UUID],
-    config: StrategyConfig,
-) -> OverlapSnapshot:
+def build_overlap_preview(rs_rows, config: OverlapConfig) -> OverlapSnapshot:
     """
-    Runs the cluster builder and categorises results into within-source and
-    cross-source clusters.  No DB writes.
-
-    Args:
-        sources:        SourceRecord list (all records in the project)
-        source_id_map:  Maps record_source.id → source.id
-        config:         StrategyConfig to use for clustering
-    Returns:
-        OverlapSnapshot with lists of OverlapClusterSummary objects
+    Run OverlapDetector on the given rows and classify into within/cross.
+    No DB writes. Used by the /preview endpoint.
     """
-    builder = TieredClusterBuilder(config)
-    clusters = builder.compute_clusters(sources)
+    records = _build_overlap_records(rs_rows)
+    detector = OverlapDetector(config)
+    clusters = detector.detect(records)
 
-    within: list[OverlapClusterSummary] = []
-    cross: list[OverlapClusterSummary] = []
+    within: list = []
+    cross: list = []
 
     for cluster in clusters:
-        if cluster.size <= 1:
-            continue
-
-        scope = _classify_scope(cluster, source_id_map)
-        unique_source_ids = list({
-            str(source_id_map[m.id]) for m in cluster.members
-            if m.id in source_id_map
-        })
+        unique_source_ids = {r.source_id for r in cluster.records}
+        scope = "within_source" if len(unique_source_ids) == 1 else "cross_source"
         summary = OverlapClusterSummary(
             scope=scope,
-            match_tier=cluster.match_tier,
+            match_tier=cluster.tier,
             match_basis=cluster.match_basis,
             match_reason=cluster.match_reason,
             similarity_score=cluster.similarity_score,
-            member_count=cluster.size,
-            source_ids=unique_source_ids,
-            record_source_ids=[str(m.id) for m in cluster.members],
-            titles=[m.raw_data.get("title") for m in cluster.members],
-            dois=[m.match_doi for m in cluster.members],
+            member_count=len(cluster.records),
+            source_ids=[str(sid) for sid in unique_source_ids],
+            record_source_ids=[str(r.record_source_id) for r in cluster.records],
+            titles=[r.norm_title or None for r in cluster.records],
+            dois=[r.doi for r in cluster.records],
         )
         if scope == "within_source":
             within.append(summary)
@@ -291,45 +338,48 @@ def build_overlap_snapshot(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_source_records(
-    rs_rows,
-) -> tuple[list[SourceRecord], dict[uuid.UUID, uuid.UUID]]:
-    """
-    Convert DB rows into SourceRecord objects.
-    Returns (sources, source_id_map) where source_id_map[rs.id] = rs.source_id.
-    """
-    sources: list[SourceRecord] = []
-    source_id_map: dict[uuid.UUID, uuid.UUID] = {}
-
-    for row in rs_rows:
-        raw = row.raw_data or {}
-        pmid = raw.get("pmid") or raw.get("source_record_id")
-        authors = raw.get("authors")
-        src = SourceRecord(
-            id=row.id,
-            old_record_id=row.record_id,
-            norm_title=row.norm_title,
-            norm_first_author=row.norm_first_author,
-            match_year=row.match_year,
-            match_doi=row.match_doi,
-            pmid=str(pmid) if pmid else None,
-            authors=authors if isinstance(authors, list) else None,
-            raw_data=raw,
-        )
-        sources.append(src)
-        source_id_map[row.id] = row.source_id
-
-    return sources, source_id_map
+def _load_config_for_project(strategy: Optional[MatchStrategy]) -> OverlapConfig:
+    """Load OverlapConfig from strategy.selected_fields JSONB, or use default."""
+    if strategy is None:
+        return OverlapConfig.default()
+    sf = strategy.selected_fields
+    if sf and isinstance(sf, dict):
+        return OverlapConfig.from_dict(sf)
+    return OverlapConfig.default()
 
 
-def _classify_scope(
-    cluster: Cluster,
-    source_id_map: dict[uuid.UUID, uuid.UUID],
-) -> str:
-    """
-    Return 'within_source' if all cluster members come from the same source,
-    otherwise 'cross_source'.
-    """
-    source_ids = {source_id_map.get(m.id) for m in cluster.members}
-    source_ids.discard(None)
-    return "within_source" if len(source_ids) <= 1 else "cross_source"
+async def _persist_cluster(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    job_id: Optional[uuid.UUID],
+    scope: str,
+    cluster: DetectedCluster,
+) -> None:
+    """Write one DetectedCluster to overlap_clusters + overlap_cluster_members."""
+    rep = select_representative(cluster.records)
+
+    oc = OverlapCluster(
+        project_id=project_id,
+        job_id=job_id,
+        scope=scope,
+        match_tier=cluster.tier,
+        match_basis=cluster.match_basis,
+        match_reason=cluster.match_reason,
+        similarity_score=cluster.similarity_score,
+        reason_json={
+            "match_basis": cluster.match_basis,
+            "match_reason": cluster.match_reason,
+        },
+    )
+    db.add(oc)
+    await db.flush()  # get oc.id
+
+    for r in cluster.records:
+        role = "canonical" if r.record_source_id == rep.record_source_id else "duplicate"
+        db.add(OverlapClusterMember(
+            cluster_id=oc.id,
+            record_source_id=r.record_source_id,
+            source_id=r.source_id,
+            role=role,
+        ))
+    await db.flush()

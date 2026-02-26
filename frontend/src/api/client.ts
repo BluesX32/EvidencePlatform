@@ -159,11 +159,28 @@ export const recordsApi = {
 
 // ── Overlap ───────────────────────────────────────────────────────────────────
 
+/** Controls which fields and tiers are active during overlap detection. */
+export interface OverlapConfig {
+  selected_fields: string[];
+  fuzzy_enabled: boolean;
+  fuzzy_threshold: number;
+  year_tolerance: number;
+}
+
+export const DEFAULT_OVERLAP_CONFIG: OverlapConfig = {
+  selected_fields: ["doi", "pmid", "title", "year", "first_author", "volume"],
+  fuzzy_enabled: false,
+  fuzzy_threshold: 0.93,
+  year_tolerance: 0,
+};
+
 export interface OverlapSourceItem {
   id: string;
   name: string;
   total: number;
   with_doi: number;
+  internal_overlaps: number;
+  unique_count: number;
 }
 
 export interface OverlapPair {
@@ -210,7 +227,7 @@ export interface MatchStrategy {
   preset: string;
   preset_label: string;
   config: StrategyConfig;
-  selected_fields: string[] | null;
+  selected_fields: OverlapConfig | string[] | null;
   is_active: boolean;
   created_at: string;
 }
@@ -225,7 +242,7 @@ export const strategiesApi = {
     preset: string,
     activate = false,
     config?: Partial<StrategyConfig> | null,
-    selected_fields?: string[] | null
+    selected_fields?: OverlapConfig | string[] | null
   ) =>
     api.post<MatchStrategy>(`/projects/${projectId}/strategies`, {
       name,

@@ -8,10 +8,11 @@ GET  /projects/{project_id}/overlaps/clusters   — Detailed cluster list
 
 The "Overlap Resolution" module has two conceptual engines:
   Within-Source Uniqueness  — duplicates within a single source file
+                              (auto-triggered after each import)
   Cross-Source Overlap      — same paper in multiple sources
+                              (manual run via /overlaps/run)
 
-Both use the same TieredClusterBuilder (Union-Find, three tiers) and differ
-only in how clusters are classified by source membership.
+Both use OverlapDetector (5-tier, field-based, Union-Find).
 """
 import uuid
 from typing import Optional
@@ -32,13 +33,11 @@ from app.models.record_source import RecordSource
 from app.models.source import Source
 from app.models.user import User
 from app.repositories.dedup_repo import DedupJobRepo
+from app.repositories.overlap_repo import OverlapRepo
 from app.repositories.project_repo import ProjectRepo
 from app.repositories.strategy_repo import StrategyRepo
-from app.services.overlap_service import (
-    build_overlap_snapshot,
-    _build_source_records,
-)
-from app.utils.match_keys import StrategyConfig
+from app.services.overlap_service import build_overlap_preview
+from app.utils.overlap_detector import OverlapConfig, _build_overlap_records
 
 router = APIRouter(prefix="/projects/{project_id}/overlaps", tags=["overlap-resolution"])
 
@@ -60,9 +59,11 @@ async def _require_project_access(
     return project
 
 
-def _resolve_config(strategy: MatchStrategy) -> StrategyConfig:
-    config_dict = strategy.config or {}
-    return StrategyConfig.from_dict(config_dict) if config_dict else StrategyConfig.from_preset(strategy.preset)
+def _resolve_config(strategy: MatchStrategy) -> OverlapConfig:
+    sf = strategy.selected_fields
+    if sf and isinstance(sf, dict):
+        return OverlapConfig.from_dict(sf)
+    return OverlapConfig.default()
 
 
 async def _fetch_rs_rows(db: AsyncSession, project_id: uuid.UUID):
@@ -117,9 +118,8 @@ async def run_overlap_detection(
     """
     Start an Overlap Resolution job in the background.
 
-    The job detects:
-    - Within-source duplicates (same paper twice in one source file)
-    - Cross-source overlaps (same paper in multiple sources)
+    The job detects cross-source overlaps (same paper in multiple sources).
+    Within-source duplicates are detected automatically after each import.
 
     Results are stored in overlap_clusters and overlap_cluster_members.
     Poll GET /overlaps to see results once complete.
@@ -171,8 +171,8 @@ async def get_overlap_summary(
     - Strategy name used for the last run
     - Within-source duplicate counts
     - Cross-source overlap counts
-    - Per-source record totals
-    - Pairwise source overlap (legacy, computed from canonical record_id)
+    - Per-source record totals (with unique_count and internal_overlaps)
+    - Pairwise source overlap (computed from canonical record_id)
     """
     await _require_project_access(project_id, current_user, db)
 
@@ -215,24 +215,10 @@ async def get_overlap_summary(
         )
     ).scalar_one()
 
-    # Per-source totals
-    source_rows = (
-        await db.execute(
-            select(
-                Source.id,
-                Source.name,
-                func.count(RecordSource.record_id).label("total"),
-                func.count(Record.normalized_doi).label("with_doi"),
-            )
-            .outerjoin(RecordSource, RecordSource.source_id == Source.id)
-            .outerjoin(Record, Record.id == RecordSource.record_id)
-            .where(Source.project_id == project_id)
-            .group_by(Source.id, Source.name)
-            .order_by(Source.name)
-        )
-    ).all()
+    # Per-source totals with overlap counts
+    source_rows = await OverlapRepo.source_totals_with_overlap(db, project_id)
 
-    # Pairwise overlap (legacy: canonical record_id self-join)
+    # Pairwise overlap (canonical record_id self-join)
     rs_a = RecordSource.__table__.alias("rs_a")
     rs_b = RecordSource.__table__.alias("rs_b")
     s_a = Source.__table__.alias("s_a")
@@ -285,6 +271,8 @@ async def get_overlap_summary(
                 "name": r.name,
                 "total": r.total,
                 "with_doi": r.with_doi,
+                "internal_overlaps": r.internal_overlaps,
+                "unique_count": max(0, r.total - r.internal_overlaps),
             }
             for r in source_rows
         ],
@@ -331,7 +319,6 @@ async def list_overlap_clusters(
 
     result = []
     for oc in clusters:
-        # Fetch members for this cluster
         members = (
             await db.execute(
                 select(
@@ -401,8 +388,7 @@ async def preview_overlap(
     config = _resolve_config(strategy)
     rs_rows = await _fetch_rs_rows(db, project_id)
 
-    sources, source_id_map = _build_source_records(rs_rows)
-    snapshot = build_overlap_snapshot(sources, source_id_map, config)
+    snapshot = build_overlap_preview(rs_rows, config)
 
     return {
         "strategy_id": str(strategy_id),

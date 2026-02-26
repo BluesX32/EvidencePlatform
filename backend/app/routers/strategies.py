@@ -7,7 +7,7 @@ GET   /projects/{project_id}/strategies/preview        — preview dedup without
 PATCH /projects/{project_id}/strategies/{id}/activate  — set strategy as active
 """
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -47,8 +47,8 @@ class StrategyCreate(BaseModel):
     preset: str = "doi_first_strict"
     # Direct StrategyConfig dict from the builder UI (overrides preset's defaults)
     config: Optional[dict] = None
-    # Ordered list of fields used by this strategy (for UI display)
-    selected_fields: Optional[list] = None
+    # OverlapConfig dict (or ordered list for legacy display) stored in JSONB
+    selected_fields: Optional[Any] = None
     activate: bool = False
 
 
@@ -59,7 +59,7 @@ class StrategyResponse(BaseModel):
     preset: str
     preset_label: str
     config: dict
-    selected_fields: Optional[list]
+    selected_fields: Optional[Any]
     is_active: bool
     created_at: str
 

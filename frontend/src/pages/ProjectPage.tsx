@@ -8,26 +8,30 @@ import {
   strategiesApi,
   dedupJobsApi,
   overlapsApi,
-  DEFAULT_STRATEGY_CONFIG,
+  DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, StrategyConfig } from "../api/client";
+import type { ImportJob, OverlapConfig } from "../api/client";
 
 // ---------------------------------------------------------------------------
-// Field chip definitions for the strategy builder
+// Field chip definitions for the overlap strategy builder (9 fields)
 // ---------------------------------------------------------------------------
 
 interface FieldDef {
-  key: keyof StrategyConfig;
+  key: string;
   label: string;
   description: string;
 }
 
 const FIELD_DEFS: FieldDef[] = [
-  { key: "use_doi",               label: "DOI",                   description: "Match on exact Digital Object Identifier" },
-  { key: "use_pmid",              label: "PubMed ID",             description: "Match on exact PubMed / MEDLINE accession number" },
-  { key: "use_title_year",        label: "Title + Year",          description: "Match on normalized title and publication year" },
-  { key: "use_title_author_year", label: "Title + Author + Year", description: "Match on title, first author last name, and year" },
-  { key: "use_fuzzy",             label: "Fuzzy title",           description: "Approximate title similarity matching (rapidfuzz)" },
+  { key: "doi",          label: "DOI",          description: "Match on exact Digital Object Identifier" },
+  { key: "pmid",         label: "PubMed ID",    description: "Match on exact PubMed / MEDLINE accession number" },
+  { key: "title",        label: "Title",        description: "Match on normalized title" },
+  { key: "year",         label: "Year",         description: "Match on publication year" },
+  { key: "first_author", label: "First Author", description: "Match on first author last name" },
+  { key: "all_authors",  label: "All Authors",  description: "Match on all author last names (requires at least one shared)" },
+  { key: "volume",       label: "Volume",       description: "Match on journal volume number" },
+  { key: "pages",        label: "Pages",        description: "Match on page range" },
+  { key: "journal",      label: "Journal",      description: "Match on journal name" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ function FieldChip({
 }: {
   fieldDef: FieldDef;
   enabled: boolean;
-  onChange: (key: keyof StrategyConfig, value: boolean) => void;
+  onChange: (key: string, value: boolean) => void;
 }) {
   return (
     <button
@@ -91,7 +95,12 @@ export default function ProjectPage() {
   const [sourceError, setSourceError] = useState<string | null>(null);
 
   // Strategy builder state
-  const [strategyConfig, setStrategyConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
+  const [selectedFields, setSelectedFields] = useState<Set<string>>(
+    new Set(DEFAULT_OVERLAP_CONFIG.selected_fields)
+  );
+  const [fuzzyEnabled, setFuzzyEnabled] = useState(DEFAULT_OVERLAP_CONFIG.fuzzy_enabled);
+  const [fuzzyThreshold, setFuzzyThreshold] = useState(DEFAULT_OVERLAP_CONFIG.fuzzy_threshold);
+  const [yearTolerance, setYearTolerance] = useState(DEFAULT_OVERLAP_CONFIG.year_tolerance);
   const [newStrategyName, setNewStrategyName] = useState("");
   const [overlapError, setOverlapError] = useState<string | null>(null);
 
@@ -146,15 +155,13 @@ export default function ProjectPage() {
   const isJobRunning =
     lastDedupJob?.status === "pending" || lastDedupJob?.status === "running";
 
-  const enabledFieldCount = FIELD_DEFS.filter(
-    (f) => !!strategyConfig[f.key]
-  ).length;
+  const enabledFieldCount = selectedFields.size;
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const createStrategy = useMutation({
-    mutationFn: ({ name, config }: { name: string; config: StrategyConfig }) =>
-      strategiesApi.create(id!, name, "custom", true, config),
+    mutationFn: ({ name, overlapConfig }: { name: string; overlapConfig: OverlapConfig }) =>
+      strategiesApi.create(id!, name, "custom", true, null, overlapConfig),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["strategies", id] });
       queryClient.invalidateQueries({ queryKey: ["strategies-active", id] });
@@ -210,8 +217,13 @@ export default function ProjectPage() {
     addSource.mutate(name);
   }
 
-  function handleFieldToggle(key: keyof StrategyConfig, value: boolean) {
-    setStrategyConfig((prev) => ({ ...prev, [key]: value }));
+  function handleFieldToggle(key: string, value: boolean) {
+    setSelectedFields((prev) => {
+      const next = new Set(prev);
+      if (value) next.add(key);
+      else next.delete(key);
+      return next;
+    });
   }
 
   function handleRunOverlap() {
@@ -221,7 +233,13 @@ export default function ProjectPage() {
   function handleSaveAndRun() {
     const name = newStrategyName.trim();
     if (!name) return;
-    createStrategy.mutate({ name, config: strategyConfig });
+    const overlapConfig: OverlapConfig = {
+      selected_fields: Array.from(selectedFields),
+      fuzzy_enabled: fuzzyEnabled,
+      fuzzy_threshold: fuzzyThreshold,
+      year_tolerance: yearTolerance,
+    };
+    createStrategy.mutate({ name, overlapConfig });
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -398,67 +416,66 @@ export default function ProjectPage() {
                 <FieldChip
                   key={fd.key}
                   fieldDef={fd}
-                  enabled={!!strategyConfig[fd.key]}
+                  enabled={selectedFields.has(fd.key)}
                   onChange={handleFieldToggle}
                 />
               ))}
             </div>
 
-            {/* Fuzzy options (shown only when fuzzy is enabled) */}
-            {strategyConfig.use_fuzzy && (
-              <div
+            {/* Fuzzy matching toggle + options */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "1rem",
+                marginTop: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <label
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: "1rem",
-                  marginTop: "0.5rem",
-                  padding: "0.5rem 0.75rem",
-                  background: "#f8f9fa",
-                  borderRadius: "0.375rem",
+                  gap: "0.35rem",
+                  color: "#5f6368",
+                  cursor: "pointer",
                   fontSize: "0.85rem",
                 }}
               >
-                <label style={{ color: "#5f6368", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <input
+                  type="checkbox"
+                  checked={fuzzyEnabled}
+                  onChange={(e) => setFuzzyEnabled(e.target.checked)}
+                />
+                Fuzzy title matching
+              </label>
+              {fuzzyEnabled && (
+                <label style={{ color: "#5f6368", display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem" }}>
                   Similarity threshold:
                   <input
                     type="range"
                     min={0.7}
                     max={1.0}
                     step={0.01}
-                    value={strategyConfig.fuzzy_threshold}
-                    onChange={(e) =>
-                      setStrategyConfig((prev) => ({
-                        ...prev,
-                        fuzzy_threshold: parseFloat(e.target.value),
-                      }))
-                    }
+                    value={fuzzyThreshold}
+                    onChange={(e) => setFuzzyThreshold(parseFloat(e.target.value))}
                     style={{ width: 100 }}
                   />
-                  <strong>{Math.round(strategyConfig.fuzzy_threshold * 100)}%</strong>
+                  <strong>{Math.round(fuzzyThreshold * 100)}%</strong>
                 </label>
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.35rem",
-                    color: "#5f6368",
-                    cursor: "pointer",
-                  }}
+              )}
+              <label style={{ color: "#5f6368", fontSize: "0.85rem" }}>
+                Year:&nbsp;
+                <select
+                  value={yearTolerance}
+                  onChange={(e) => setYearTolerance(parseInt(e.target.value, 10))}
+                  style={{ fontSize: "0.85rem" }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={strategyConfig.fuzzy_author_check}
-                    onChange={(e) =>
-                      setStrategyConfig((prev) => ({
-                        ...prev,
-                        fuzzy_author_check: e.target.checked,
-                      }))
-                    }
-                  />
-                  Require shared author
-                </label>
-              </div>
-            )}
+                  <option value={0}>Exact year</option>
+                  <option value={1}>Allow ±1 year</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           {/* Action buttons */}

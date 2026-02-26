@@ -90,6 +90,7 @@ async def _run_import(
         preset = strategy.preset if strategy else "doi_first_strict"
 
     # Re-open session inside advisory lock scope so the lock connection stays alive
+    import_succeeded = False
     async with engine.connect() as lock_conn:
         acquired = await try_acquire_project_lock(lock_conn, project_id)
         if not acquired:
@@ -111,6 +112,7 @@ async def _run_import(
                     preset=preset,
                 )
                 await ImportRepo.set_completed(db, job_id, inserted, warning_msg=warning_msg)
+            import_succeeded = True
         except Exception as exc:
             logger.exception("Import DB write failed for job %s", job_id)
             safe_msg = "Database error during import. Please retry or contact support."
@@ -118,3 +120,14 @@ async def _run_import(
                 await ImportRepo.set_failed(db, job_id, safe_msg)
         finally:
             await release_project_lock(lock_conn, project_id)
+
+    # After lock fully released: auto within-source overlap detection
+    if import_succeeded and source_id is not None:
+        from app.services.overlap_service import run_within_source_detection
+        try:
+            await run_within_source_detection(project_id, source_id)
+        except Exception:
+            logger.warning(
+                "Within-source overlap detection failed after import for source %s",
+                source_id, exc_info=True,
+            )
