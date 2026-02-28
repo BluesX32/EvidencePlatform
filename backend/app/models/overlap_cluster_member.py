@@ -5,8 +5,9 @@ Each row links one record_source to an overlap_cluster, along with a role:
   duplicate — a record merged/linked to the canonical
 """
 import uuid
+from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +46,10 @@ class OverlapClusterMember(Base):
     )
     # 'canonical' | 'duplicate'
     role: Mapped[str] = mapped_column(String(20), nullable=False)
+    # 'auto' = detector added | 'user' = manually added
+    added_by: Mapped[str] = mapped_column(String(10), nullable=False, server_default="auto")
+    # Optional note when user manually links records
+    note: Mapped[Optional[str]] = mapped_column(Text(), nullable=True)
     created_at: Mapped[object] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

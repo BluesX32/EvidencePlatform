@@ -306,6 +306,53 @@ export interface OverlapResolutionSummary {
   pairs: OverlapPair[];
 }
 
+// ── Overlap cluster detail types ──────────────────────────────────────────────
+
+export interface OverlapClusterMemberDetail {
+  record_source_id: string;
+  source_id: string;
+  source_name: string;
+  role: "canonical" | "duplicate";
+  added_by: "auto" | "user";
+  note: string | null;
+  title: string | null;
+  doi: string | null;
+}
+
+export interface OverlapClusterDetail {
+  cluster_id: string;
+  scope: "within_source" | "cross_source";
+  match_tier: number;
+  match_basis: string;
+  match_reason: string | null;
+  similarity_score: number | null;
+  member_count: number;
+  origin: "auto" | "manual" | "mixed";
+  locked: boolean;
+  members: OverlapClusterMemberDetail[];
+}
+
+export interface OverlapVisualSummary {
+  sources: { id: string; name: string }[];
+  matrix: number[][];
+  unique_counts: Record<string, number>;
+  top_intersections: {
+    source_ids: string[];
+    source_names: string[];
+    count: number;
+  }[];
+}
+
+export interface ManualLinkRequest {
+  record_ids: string[];
+  locked?: boolean;
+  note?: string;
+}
+
+export interface ClusterLockRequest {
+  locked: boolean;
+}
+
 export const overlapsApi = {
   /** Get the latest overlap resolution summary for a project. */
   getSummary: (projectId: string) =>
@@ -328,7 +375,23 @@ export const overlapsApi = {
     limit = 50,
     offset = 0
   ) =>
-    api.get(`/projects/${projectId}/overlaps/clusters`, {
-      params: { scope, limit, offset },
-    }),
+    api.get<{ clusters: OverlapClusterDetail[]; offset: number; limit: number }>(
+      `/projects/${projectId}/overlaps/clusters`,
+      { params: { scope, limit, offset } }
+    ),
+  /** Get NxN visual overlap matrix for a project. */
+  getVisualSummary: (projectId: string) =>
+    api.get<OverlapVisualSummary>(`/projects/${projectId}/overlaps/visual-summary`),
+  /** Manually link a set of records into a cross-source overlap cluster. */
+  manualLink: (projectId: string, body: ManualLinkRequest) =>
+    api.post<OverlapClusterDetail>(`/projects/${projectId}/overlaps/manual-link`, body),
+  /** Set or clear the locked flag on a cluster. */
+  lockCluster: (projectId: string, clusterId: string, body: ClusterLockRequest) =>
+    api.post<OverlapClusterDetail>(
+      `/projects/${projectId}/overlaps/${clusterId}/lock`,
+      body
+    ),
+  /** Remove a user-added member from a cluster. */
+  removeMember: (projectId: string, clusterId: string, recordSourceId: string) =>
+    api.delete(`/projects/${projectId}/overlaps/${clusterId}/members/${recordSourceId}`),
 };

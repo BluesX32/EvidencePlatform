@@ -101,6 +101,68 @@ class OverlapRepo:
         return list(result.all())
 
     @staticmethod
+    async def get_cluster_with_members(
+        db: AsyncSession, cluster_id: uuid.UUID
+    ) -> Optional[tuple]:
+        """Return (OverlapCluster, list[OverlapClusterMember]) or None."""
+        cluster = await db.get(OverlapCluster, cluster_id)
+        if cluster is None:
+            return None
+        members = list(
+            (
+                await db.execute(
+                    select(OverlapClusterMember).where(
+                        OverlapClusterMember.cluster_id == cluster_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return (cluster, members)
+
+    @staticmethod
+    async def get_locked_cross_source_member_ids(
+        db: AsyncSession, project_id: uuid.UUID
+    ) -> set:
+        """Return set[UUID] of record_source_ids in locked cross_source clusters."""
+        result = await db.execute(
+            select(OverlapClusterMember.record_source_id)
+            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+            .where(
+                OverlapCluster.project_id == project_id,
+                OverlapCluster.scope == "cross_source",
+                OverlapCluster.locked == True,  # noqa: E712
+            )
+        )
+        return set(result.scalars().all())
+
+    @staticmethod
+    async def cross_source_cluster_source_sets(
+        db: AsyncSession, project_id: uuid.UUID
+    ) -> list:
+        """
+        Return list[list[UUID]]: for each cross_source cluster in the project,
+        the distinct source_ids present among its members.
+        Used for the visual overlap matrix computation.
+        """
+        result = await db.execute(
+            select(OverlapClusterMember.cluster_id, OverlapClusterMember.source_id)
+            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+            .where(
+                OverlapCluster.project_id == project_id,
+                OverlapCluster.scope == "cross_source",
+            )
+            .distinct()
+        )
+        from collections import defaultdict
+
+        groups: dict = defaultdict(set)
+        for row in result.all():
+            groups[row.cluster_id].add(row.source_id)
+        return [list(s) for s in groups.values()]
+
+    @staticmethod
     async def pairwise_overlap(db: AsyncSession, project_id: uuid.UUID) -> list:
         """
         Returns one row per ordered source pair (source_a < source_b) with:

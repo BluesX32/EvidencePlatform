@@ -264,7 +264,7 @@ export default function ProjectPage() {
             </span>
             {(project?.failed_import_count ?? 0) > 0 && (
               <span style={{ color: "#c5221f" }}>
-                <strong>{project.failed_import_count}</strong> failed
+                <strong>{project?.failed_import_count}</strong> failed
               </span>
             )}
           </div>

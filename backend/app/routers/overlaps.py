@@ -36,7 +36,13 @@ from app.repositories.dedup_repo import DedupJobRepo
 from app.repositories.overlap_repo import OverlapRepo
 from app.repositories.project_repo import ProjectRepo
 from app.repositories.strategy_repo import StrategyRepo
-from app.services.overlap_service import build_overlap_preview
+from app.services.overlap_service import (
+    build_overlap_preview,
+    build_visual_summary,
+    lock_cluster,
+    manual_link_records,
+    remove_cluster_member,
+)
 from app.utils.overlap_detector import OverlapConfig, _build_overlap_records
 
 router = APIRouter(prefix="/projects/{project_id}/overlaps", tags=["overlap-resolution"])
@@ -97,6 +103,30 @@ class OverlapRunResponse(BaseModel):
     overlap_job_id: str
     status: str
     message: str
+
+
+class ManualLinkRequest(BaseModel):
+    record_ids: list        # list[str UUID]
+    locked: bool = True
+    note: Optional[str] = None
+
+
+class ClusterLockRequest(BaseModel):
+    locked: bool
+
+
+class ClusterSummaryResponse(BaseModel):
+    cluster_id: str
+    scope: str
+    match_tier: int
+    match_basis: str
+    match_reason: str
+    similarity_score: Optional[float]
+    member_count: int
+    source_ids: list
+    record_source_ids: list
+    origin: str
+    locked: bool
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +355,8 @@ async def list_overlap_clusters(
                     OverlapClusterMember.record_source_id,
                     OverlapClusterMember.source_id,
                     OverlapClusterMember.role,
+                    OverlapClusterMember.added_by,
+                    OverlapClusterMember.note,
                     RecordSource.norm_title,
                     RecordSource.match_doi,
                     Source.name.label("source_name"),
@@ -346,12 +378,16 @@ async def list_overlap_clusters(
             "match_reason": oc.match_reason,
             "similarity_score": oc.similarity_score,
             "member_count": len(members),
+            "origin": oc.origin,
+            "locked": oc.locked,
             "members": [
                 {
                     "record_source_id": str(m.record_source_id),
                     "source_id": str(m.source_id),
                     "source_name": m.source_name,
                     "role": m.role,
+                    "added_by": m.added_by,
+                    "note": m.note,
                     "title": m.norm_title,
                     "doi": m.match_doi,
                 }
@@ -430,3 +466,139 @@ async def preview_overlap(
             ],
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /overlaps/visual-summary — NxN matrix for OverlapPage visualization
+# ---------------------------------------------------------------------------
+
+@router.get("/visual-summary")
+async def get_visual_summary(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return a visual overlap summary for the project.
+
+    Includes:
+    - sources: ordered list of {id, name}
+    - matrix: N×N symmetric matrix where cell [i][j] = number of cross_source
+              clusters shared between source i and source j (diagonal = 0)
+    - unique_counts: {source_id: unique_record_count}
+    - top_intersections: top 10 source-combination groups by overlap count
+    """
+    await _require_project_access(project_id, current_user, db)
+    return await build_visual_summary(db, project_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /overlaps/manual-link — user-driven overlap linking
+# ---------------------------------------------------------------------------
+
+@router.post("/manual-link", response_model=ClusterSummaryResponse)
+async def manual_link_records_endpoint(
+    project_id: uuid.UUID,
+    body: ManualLinkRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Manually link a set of records into a cross-source overlap cluster.
+
+    - If both records are already in the same cluster: no-op, returns existing cluster.
+    - If records are in two different unlocked clusters: merges them.
+    - If a locked cluster is involved or 3+ clusters: creates a new manual cluster.
+    - New manual clusters are locked by default (locked=True) so algorithm reruns
+      will not alter them.
+    """
+    await _require_project_access(project_id, current_user, db)
+    try:
+        record_source_ids = [uuid.UUID(str(rid)) for rid in body.record_ids]
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid record_id: {exc}")
+    try:
+        summary = await manual_link_records(
+            db=db,
+            project_id=project_id,
+            record_source_ids=record_source_ids,
+            locked=body.locked,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    return ClusterSummaryResponse(
+        cluster_id=str(summary.cluster_id),
+        scope=summary.scope,
+        match_tier=summary.match_tier,
+        match_basis=summary.match_basis,
+        match_reason=summary.match_reason,
+        similarity_score=summary.similarity_score,
+        member_count=summary.member_count,
+        source_ids=summary.source_ids,
+        record_source_ids=summary.record_source_ids,
+        origin=summary.origin,
+        locked=summary.locked,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /overlaps/{cluster_id}/lock — set or clear the locked flag
+# ---------------------------------------------------------------------------
+
+@router.post("/{cluster_id}/lock", response_model=ClusterSummaryResponse)
+async def lock_cluster_endpoint(
+    project_id: uuid.UUID,
+    cluster_id: uuid.UUID,
+    body: ClusterLockRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lock or unlock an overlap cluster. Locked clusters are not modified by algorithm reruns."""
+    await _require_project_access(project_id, current_user, db)
+    try:
+        summary = await lock_cluster(db, project_id, cluster_id, body.locked)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    await db.commit()
+    return ClusterSummaryResponse(
+        cluster_id=str(summary.cluster_id),
+        scope=summary.scope,
+        match_tier=summary.match_tier,
+        match_basis=summary.match_basis,
+        match_reason=summary.match_reason,
+        similarity_score=summary.similarity_score,
+        member_count=summary.member_count,
+        source_ids=summary.source_ids,
+        record_source_ids=summary.record_source_ids,
+        origin=summary.origin,
+        locked=summary.locked,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /overlaps/{cluster_id}/members/{record_source_id}
+# ---------------------------------------------------------------------------
+
+@router.delete(
+    "/{cluster_id}/members/{record_source_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_cluster_member_endpoint(
+    project_id: uuid.UUID,
+    cluster_id: uuid.UUID,
+    record_source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Remove a user-added member from an overlap cluster.
+    Only members with added_by='user' can be removed.
+    """
+    await _require_project_access(project_id, current_user, db)
+    try:
+        await remove_cluster_member(db, project_id, cluster_id, record_source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
