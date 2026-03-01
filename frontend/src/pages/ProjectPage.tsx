@@ -11,6 +11,7 @@ import {
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
 import type { ImportJob, OverlapConfig } from "../api/client";
+import StartScreeningModal from "../components/StartScreeningModal";
 
 // ---------------------------------------------------------------------------
 // Field chip definitions for the overlap strategy builder (9 fields)
@@ -211,6 +212,9 @@ export default function ProjectPage() {
   // Toast
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
+  // Screening modal
+  const [showScreeningModal, setShowScreeningModal] = useState(false);
+
   // ── Data queries ──────────────────────────────────────────────────────────
 
   const { data: project, isLoading: loadingProject } = useQuery({
@@ -370,6 +374,12 @@ export default function ProjectPage() {
 
   return (
     <div className="page">
+      {showScreeningModal && id && (
+        <StartScreeningModal
+          projectId={id}
+          onClose={() => setShowScreeningModal(false)}
+        />
+      )}
       {toast && (
         <Toast
           message={toast.message}
@@ -455,9 +465,12 @@ export default function ProjectPage() {
             </Link>
           )}
           {(project?.record_count ?? 0) > 0 && (
-            <Link to={`/projects/${id}/corpora`} className="btn-secondary">
-              Screening
-            </Link>
+            <button
+              className="btn-secondary"
+              onClick={() => setShowScreeningModal(true)}
+            >
+              Start Screening
+            </button>
           )}
         </div>
 

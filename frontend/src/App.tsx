@@ -10,8 +10,7 @@ import ProjectPage from "./pages/ProjectPage";
 import ImportPage from "./pages/ImportPage";
 import RecordsPage from "./pages/RecordsPage";
 import OverlapPage from "./pages/OverlapPage";
-import CorpusPage from "./pages/CorpusPage";
-import ScreeningPage from "./pages/ScreeningPage";
+import ScreeningWorkspace from "./pages/ScreeningWorkspace";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -35,8 +34,7 @@ export default function App() {
           <Route path="/projects/:id/import" element={<RequireAuth><ImportPage /></RequireAuth>} />
           <Route path="/projects/:id/records" element={<RequireAuth><RecordsPage /></RequireAuth>} />
           <Route path="/projects/:id/overlap" element={<RequireAuth><OverlapPage /></RequireAuth>} />
-          <Route path="/projects/:id/corpora" element={<RequireAuth><CorpusPage /></RequireAuth>} />
-          <Route path="/projects/:id/corpora/:corpus_id/screen" element={<RequireAuth><ScreeningPage /></RequireAuth>} />
+          <Route path="/projects/:id/screen" element={<RequireAuth><ScreeningWorkspace /></RequireAuth>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

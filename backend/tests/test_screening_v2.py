@@ -2,11 +2,10 @@
 VS4 v2 regression tests.
 
 Covers:
-  1. CorpusCreate Pydantic validator accepts string UUIDs as source_ids (bug fix regression)
-  2. Queue item status transitions: skip marks status='skipped', next_pending skips it
-  3. Extraction with framework_updated=True resets consecutive_no_novelty
-  4. Corpus can reach stopped_at before the queue is exhausted (saturation-first)
-  5. ExtractionJson fields (levels/dimensions/snippets) round-trip through extracted_json
+  1. Queue item status transitions: skip marks status='skipped', next_pending skips it
+  2. Extraction with framework_updated=True resets consecutive_no_novelty
+  3. Corpus can reach stopped_at before the queue is exhausted (saturation-first)
+  4. ExtractionJson fields (levels/dimensions/snippets) round-trip through extracted_json
 """
 from __future__ import annotations
 
@@ -16,8 +15,7 @@ from typing import Dict, List, Optional
 
 import pytest
 
-from app.routers.corpora import CorpusCreate
-from app.services.screening_service import _resolve_canonical_key
+from app.services.direct_screening_service import _resolve_canonical_key
 
 
 # ---------------------------------------------------------------------------
@@ -47,40 +45,7 @@ def _run_saturation(
 
 
 # ---------------------------------------------------------------------------
-# 1. CorpusCreate: string UUID coercion
-# ---------------------------------------------------------------------------
-
-class TestCorpusCreateValidator:
-    def test_accepts_string_uuids(self):
-        sid1 = uuid.uuid4()
-        sid2 = uuid.uuid4()
-        body = CorpusCreate(
-            name="Test corpus",
-            source_ids=[str(sid1), str(sid2)],
-        )
-        assert body.source_ids == [sid1, sid2]
-        assert all(isinstance(s, uuid.UUID) for s in body.source_ids)
-
-    def test_accepts_uuid_objects_unchanged(self):
-        sid = uuid.uuid4()
-        body = CorpusCreate(name="X", source_ids=[sid])
-        assert body.source_ids == [sid]
-
-    def test_accepts_empty_source_ids(self):
-        body = CorpusCreate(name="X", source_ids=[])
-        assert body.source_ids == []
-
-    def test_rejects_invalid_uuid_string(self):
-        with pytest.raises(Exception):
-            CorpusCreate(name="X", source_ids=["not-a-uuid"])
-
-    def test_default_saturation_threshold(self):
-        body = CorpusCreate(name="X")
-        assert body.saturation_threshold == 10
-
-
-# ---------------------------------------------------------------------------
-# 2. Queue item status — pure state-machine tests
+# 1. Queue item status — pure state-machine tests
 # ---------------------------------------------------------------------------
 
 class TestQueueItemStatus:

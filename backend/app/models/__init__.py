@@ -10,13 +10,10 @@ from app.models.match_log import MatchLog
 from app.models.overlap_cluster import OverlapCluster
 from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.overlap_strategy_run import OverlapStrategyRun
-from app.models.future import ProjectMember, Protocol, DedupPair, ScreeningDecision, ExtractionForm, ExtractedData
-from app.models.corpus import Corpus
-from app.models.corpus_queue_item import CorpusQueueItem
-from app.models.corpus_decision import CorpusDecision
-from app.models.corpus_borderline_case import CorpusBorderlineCase
-from app.models.corpus_extraction import CorpusExtraction
-from app.models.corpus_second_review import CorpusSecondReview
+from app.models.future import ProjectMember, Protocol, DedupPair
+from app.models.screening_decision import ScreeningDecision
+from app.models.extraction_record import ExtractionRecord
+from app.models.screening_claim import ScreeningClaim
 
 __all__ = [
     "User",
@@ -35,12 +32,6 @@ __all__ = [
     "Protocol",
     "DedupPair",
     "ScreeningDecision",
-    "ExtractionForm",
-    "ExtractedData",
-    "Corpus",
-    "CorpusQueueItem",
-    "CorpusDecision",
-    "CorpusBorderlineCase",
-    "CorpusExtraction",
-    "CorpusSecondReview",
+    "ExtractionRecord",
+    "ScreeningClaim",
 ]

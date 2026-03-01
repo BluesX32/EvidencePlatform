@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.screening_service import _resolve_canonical_key
+from app.services.direct_screening_service import _resolve_canonical_key
 
 
 # ---------------------------------------------------------------------------
