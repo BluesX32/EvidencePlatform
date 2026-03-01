@@ -94,7 +94,7 @@ class OverlapRepo:
             .outerjoin(Record, Record.id == RecordSource.record_id)
             .outerjoin(dup_subq, dup_subq.c.source_id == Source.id)
             .where(Source.project_id == project_id)
-            .group_by(Source.id, Source.name, dup_subq.c.dup_count)
+            .group_by(Source.id, Source.name)
             .order_by(Source.name)
         )
         result = await db.execute(stmt)

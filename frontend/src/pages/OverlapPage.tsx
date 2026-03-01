@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -23,6 +23,85 @@ function evidenceLabel(tier: number): string {
     case 5: return "Fuzzy title";
     default: return `Tier ${tier}`;
   }
+}
+
+// ── Pagination controls ───────────────────────────────────────────────────────
+
+function PaginationStrip({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (p: number) => void;
+  onPageSizeChange: (ps: number) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: "0.6rem",
+        alignItems: "center",
+        flexWrap: "wrap",
+        margin: "0.5rem 0",
+        fontSize: "0.85rem",
+        color: "#3c4043",
+      }}
+    >
+      <button
+        className="btn-secondary"
+        style={{ padding: "0.2rem 0.7rem", fontSize: "0.82rem" }}
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+      >
+        ← Prev
+      </button>
+
+      <span>
+        Page <strong>{page}</strong> / {totalPages}
+      </span>
+
+      <button
+        className="btn-secondary"
+        style={{ padding: "0.2rem 0.7rem", fontSize: "0.82rem" }}
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+      >
+        Next →
+      </button>
+
+      <span style={{ marginLeft: "0.4rem", color: "#80868b" }}>
+        {totalItems.toLocaleString()} paper groups total
+      </span>
+
+      <label
+        style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.35rem" }}
+      >
+        <span style={{ color: "#5f6368" }}>Per page:</span>
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          style={{
+            fontSize: "0.82rem",
+            padding: "0.15rem 0.4rem",
+            border: "1px solid #dadce0",
+            borderRadius: "0.25rem",
+            background: "#fff",
+          }}
+        >
+          <option value={25}>25</option>
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+        </select>
+      </label>
+    </div>
+  );
 }
 
 // ── Main page ────────────────────────────────────────────────────────────────
@@ -57,13 +136,6 @@ export default function OverlapPage() {
     enabled: !!projectId,
   });
 
-  const { data: clustersData, refetch: refetchClusters } = useQuery({
-    queryKey: ["overlap-clusters", projectId, "cross_source"],
-    queryFn: () =>
-      overlapsApi.listClusters(projectId!, "cross_source", 200, 0).then((r) => r.data),
-    enabled: !!projectId,
-  });
-
   // ── State ─────────────────────────────────────────────────────────────────
 
   const [highlightedPair, setHighlightedPair]     = useState<[string, string] | null>(null);
@@ -76,10 +148,40 @@ export default function OverlapPage() {
   const [selectedSourceId, setSelectedSourceId]   = useState<string | null>(null);
   const [expandedClusterId, setExpandedClusterId] = useState<string | null>(null);
 
-  // Cluster list filter chips
-  const [originFilter, setOriginFilter]     = useState<"all" | "auto" | "manual" | "mixed">("all");
-  const [showPinnedOnly, setShowPinnedOnly] = useState(false);
+  // Cluster list filter chips (all server-side)
+  const [originFilter, setOriginFilter]         = useState<"all" | "auto" | "manual" | "mixed">("all");
+  const [showPinnedOnly, setShowPinnedOnly]     = useState(false);
   const [minSourcesFilter, setMinSourcesFilter] = useState(0);
+
+  // Pagination
+  const [clusterPage, setClusterPage]         = useState(1);
+  const [clusterPageSize, setClusterPageSize] = useState(50);
+
+  // Reset to page 1 whenever any filter changes
+  useEffect(() => {
+    setClusterPage(1);
+  }, [originFilter, showPinnedOnly, minSourcesFilter, selectedSourceId]);
+
+  // ── Clusters query (server-side filtered + paginated) ─────────────────────
+
+  const { data: clustersData, refetch: refetchClusters } = useQuery({
+    queryKey: [
+      "overlap-clusters", projectId,
+      clusterPage, clusterPageSize,
+      originFilter, showPinnedOnly, minSourcesFilter, selectedSourceId,
+    ],
+    queryFn: () =>
+      overlapsApi.listClusters(projectId!, {
+        scope: "cross_source",
+        page: clusterPage,
+        page_size: clusterPageSize,
+        source_id: selectedSourceId ?? undefined,
+        origin: originFilter !== "all" ? originFilter : undefined,
+        locked: showPinnedOnly ? true : undefined,
+        min_sources: minSourcesFilter > 0 ? minSourcesFilter : undefined,
+      }).then((r) => r.data),
+    enabled: !!projectId,
+  });
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -94,6 +196,7 @@ export default function OverlapPage() {
         note: linkNote || undefined,
       }),
     onSuccess: () => {
+      setClusterPage(1);
       refetchClusters();
       queryClient.invalidateQueries({ queryKey: ["overlap-visual", projectId] });
       setShowLinkForm(false);
@@ -133,28 +236,20 @@ export default function OverlapPage() {
   }, [visualData?.sources]);
 
   const allClusters: OverlapClusterDetail[] = clustersData?.clusters ?? [];
-
-  // Sort: member count desc → source count desc
-  const sortedClusters = [...allClusters].sort((a, b) => {
-    const byMembers = b.member_count - a.member_count;
-    if (byMembers !== 0) return byMembers;
-    const aS = new Set(a.members.map((m) => m.source_id)).size;
-    const bS = new Set(b.members.map((m) => m.source_id)).size;
-    return bS - aS;
-  });
-
-  // Apply all active filters
-  const filteredClusters = sortedClusters.filter((c) => {
-    if (originFilter !== "all" && c.origin !== originFilter) return false;
-    if (showPinnedOnly && !c.locked) return false;
-    const clusterSrcIds = new Set(c.members.map((m) => m.source_id));
-    if (minSourcesFilter > 0 && clusterSrcIds.size < minSourcesFilter) return false;
-    if (selectedSourceId !== null && !clusterSrcIds.has(selectedSourceId)) return false;
-    return true;
-  });
+  const totalItems  = clustersData?.total_items ?? 0;
+  const totalPages  = clustersData?.total_pages ?? 1;
 
   const hasActiveFilter =
     originFilter !== "all" || showPinnedOnly || minSourcesFilter >= 3 || selectedSourceId !== null;
+
+  const paginationProps = {
+    page: clusterPage,
+    totalPages,
+    totalItems,
+    pageSize: clusterPageSize,
+    onPageChange: setClusterPage,
+    onPageSizeChange: (ps: number) => { setClusterPageSize(ps); setClusterPage(1); },
+  };
 
   return (
     <div className="page">
@@ -279,9 +374,9 @@ export default function OverlapPage() {
               <section style={{ marginBottom: "2rem" }}>
                 <h3>Overlap map</h3>
                 <p className="muted" style={{ marginBottom: "0.75rem" }}>
-                  Each circle represents one database. Overlapping areas indicate
-                  sources that share papers. Circle size is fixed; counts are shown
-                  inside. Click a circle to filter the paper groups below.
+                  Each circle represents one database. Circle size is proportional to
+                  total records; overlapping areas reflect pairwise shared paper-group
+                  counts. Click a circle to filter the paper groups below.
                 </p>
                 <EulerDiagram
                   visualData={visualData}
@@ -476,14 +571,16 @@ export default function OverlapPage() {
                 )}
               </div>
 
+              {/* Pagination — top */}
+              {totalItems > 0 && <PaginationStrip {...paginationProps} />}
+
               {/* Table */}
-              {filteredClusters.length === 0 && allClusters.length === 0 ? (
+              {allClusters.length === 0 && totalItems === 0 ? (
                 <p className="muted">
-                  No paper groups yet. Run overlap detection to find shared records,
-                  or link records manually above.
+                  {hasActiveFilter
+                    ? "No paper groups match the current filters."
+                    : "No paper groups yet. Run overlap detection to find shared records, or link records manually above."}
                 </p>
-              ) : filteredClusters.length === 0 ? (
-                <p className="muted">No paper groups match the current filters.</p>
               ) : (
                 <table className="import-table">
                   <thead>
@@ -497,7 +594,7 @@ export default function OverlapPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredClusters.map((c) => (
+                    {allClusters.map((c) => (
                       <ClusterRow
                         key={c.cluster_id}
                         cluster={c}
@@ -519,11 +616,8 @@ export default function OverlapPage() {
                 </table>
               )}
 
-              {filteredClusters.length > 0 && allClusters.length > filteredClusters.length && (
-                <p style={{ fontSize: "0.8rem", color: "#80868b", marginTop: "0.4rem" }}>
-                  Showing {filteredClusters.length} of {allClusters.length} paper groups.
-                </p>
-              )}
+              {/* Pagination — bottom */}
+              {totalItems > 0 && <PaginationStrip {...paginationProps} />}
             </section>
           </>
         )}
@@ -573,7 +667,7 @@ function ClusterRow({
   const isHighlightedBySource =
     selectedSourceId !== null && clusterSourceIds.includes(selectedSourceId);
 
-  const isHighlighted = isHighlightedByPair;  // source filter already filters rows out
+  const isHighlighted = isHighlightedByPair;
 
   return (
     <>
@@ -731,7 +825,7 @@ function SourceBadge({ name, color }: { name: string; color: string }) {
         fontSize: "0.7rem",
         fontWeight: 600,
         color,
-        background: color + "18",     // ~9% opacity
+        background: color + "18",
         border: `1px solid ${color}44`,
         borderRadius: "0.25rem",
         padding: "0.1rem 0.35rem",

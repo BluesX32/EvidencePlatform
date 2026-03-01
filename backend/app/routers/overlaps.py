@@ -279,26 +279,76 @@ async def get_overlap_summary(
 @router.get("/clusters")
 async def list_overlap_clusters(
     project_id: uuid.UUID,
-    scope: Optional[str] = Query(None, description="Filter by scope: 'within_source' | 'cross_source'"),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    # Pagination
+    page: int = Query(1, ge=1, description="1-based page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page (25/50/100 recommended)"),
+    # Filters
+    scope: Optional[str] = Query(None, description="'within_source' | 'cross_source'"),
+    source_id: Optional[uuid.UUID] = Query(None, description="Filter clusters containing this source"),
+    origin: Optional[str] = Query(None, description="'auto' | 'manual' | 'mixed'"),
+    locked: Optional[bool] = Query(None, description="True = pinned clusters only"),
+    min_sources: Optional[int] = Query(None, ge=2, description="Min distinct source count per cluster"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     List detected overlap clusters with member details.
 
-    Use ?scope=within_source to see intra-source duplicates.
-    Use ?scope=cross_source to see cross-database overlaps.
+    Supports server-side pagination (page/page_size) and filtering
+    by scope, source, origin, locked status, and minimum source count.
+    Returns total_items and total_pages for pagination controls.
     """
+    import math as _math
     await _require_project_access(project_id, current_user, db)
 
-    q = select(OverlapCluster).where(OverlapCluster.project_id == project_id)
+    # Build WHERE conditions
+    conditions = [OverlapCluster.project_id == project_id]
     if scope:
-        q = q.where(OverlapCluster.scope == scope)
-    q = q.order_by(OverlapCluster.created_at.desc()).offset(offset).limit(limit)
+        conditions.append(OverlapCluster.scope == scope)
+    if origin:
+        conditions.append(OverlapCluster.origin == origin)
+    if locked is not None:
+        conditions.append(OverlapCluster.locked == locked)
+    if source_id is not None:
+        conditions.append(
+            OverlapCluster.id.in_(
+                select(OverlapClusterMember.cluster_id).where(
+                    OverlapClusterMember.source_id == source_id
+                )
+            )
+        )
+    if min_sources is not None:
+        src_count_sq = (
+            select(func.count(func.distinct(OverlapClusterMember.source_id)))
+            .where(OverlapClusterMember.cluster_id == OverlapCluster.id)
+            .correlate(OverlapCluster)
+            .scalar_subquery()
+        )
+        conditions.append(src_count_sq >= min_sources)
 
-    clusters = (await db.execute(q)).scalars().all()
+    # COUNT query (no LIMIT/OFFSET)
+    total_items: int = (
+        await db.execute(select(func.count(OverlapCluster.id)).where(*conditions))
+    ).scalar() or 0
+    total_pages = max(1, _math.ceil(total_items / page_size)) if total_items else 1
+
+    # Correlated subquery for ORDER BY member count
+    mc_sq = (
+        select(func.count(OverlapClusterMember.id))
+        .where(OverlapClusterMember.cluster_id == OverlapCluster.id)
+        .correlate(OverlapCluster)
+        .scalar_subquery()
+    )
+
+    # Data query with LIMIT/OFFSET
+    data_q = (
+        select(OverlapCluster)
+        .where(*conditions)
+        .order_by(mc_sq.desc(), OverlapCluster.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    clusters = (await db.execute(data_q)).scalars().all()
 
     result = []
     for oc in clusters:
@@ -352,7 +402,13 @@ async def list_overlap_clusters(
             ],
         })
 
-    return {"clusters": result, "offset": offset, "limit": limit}
+    return {
+        "clusters": result,
+        "page": page,
+        "page_size": page_size,
+        "total_items": total_items,
+        "total_pages": total_pages,
+    }
 
 
 # ---------------------------------------------------------------------------

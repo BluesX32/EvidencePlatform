@@ -1,18 +1,20 @@
 /**
- * EulerDiagram — SVG-based translucent-circle overlap visualization.
+ * EulerDiagram — quantitative area-proportional Euler/Venn diagram.
  *
- * Renders each source as a translucent circle arranged in a deterministic
- * circular layout (petal pattern).  For 2–4 sources this resembles a classic
- * Venn diagram; for more sources it produces an overlapping-petal pattern that
- * conveys overlap structure without claiming area-proportional accuracy.
+ * Circle radii are proportional to total records per source (area ∝ total).
+ * Pairwise distances are optimised so overlap areas approximate the number of
+ * shared paper groups between each pair of sources under the active strategy.
+ *
+ * Layout is computed by iterative spring-relaxation in eulerLayout.ts.
  *
  * Interaction:
- *   - Hover a circle → show per-source stats in info bar below
+ *   - Hover a circle → show per-source stats in the info bar below
  *   - Click a circle → call onSourceClick(id) to filter the cluster list
  *   - Click again   → onSourceClick(null) to clear filter
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { OverlapVisualSummary, OverlapSourceItem } from "../api/client";
+import { layoutEuler } from "../utils/eulerLayout";
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 // Exported so OverlapPage can assign the same colour to source badges.
@@ -28,28 +30,9 @@ export const SOURCE_COLORS = [
 ];
 
 // ── Layout constants ──────────────────────────────────────────────────────────
-const SVG_W = 560;
-const SVG_H = 340;
-const CX = SVG_W / 2;
-const CY = SVG_H / 2;
-
-/**
- * Return the circle radius (r) and placement-ring radius (Rp) for N sources.
- * Values are empirically tuned so adjacent circles overlap by ~30–40%.
- */
-function circleParams(n: number): { r: number; Rp: number } {
-  if (n <= 1) return { r: 90, Rp: 0   };
-  if (n === 2) return { r: 90, Rp: 67  };
-  if (n === 3) return { r: 85, Rp: 80  };
-  if (n === 4) return { r: 80, Rp: 90  };
-  if (n === 5) return { r: 74, Rp: 100 };
-  if (n === 6) return { r: 68, Rp: 107 };
-  if (n === 7) return { r: 62, Rp: 112 };
-  return {
-    r:  Math.max(48, 62 - (n - 7) * 3),
-    Rp: Math.min(130, 112 + (n - 7) * 7),
-  };
-}
+const R_MAX = 85;       // max circle radius in layout space
+const ITERATIONS = 350; // relaxation steps
+const PAD = 22;         // viewBox padding around bounding box
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -70,29 +53,42 @@ export default function EulerDiagram({
 
   const { sources, matrix } = visualData;
   const n = sources.length;
-  if (n === 0) return null;
-
-  const { r, Rp } = circleParams(n);
 
   // Build lookup: source id → totals row
   const totalsMap: Record<string, OverlapSourceItem> = {};
   for (const t of sourceTotals) totalsMap[t.id] = t;
 
-  // Compute (x, y) for each source circle on the arrangement ring
-  const positions = sources.map((s, i) => {
-    const angle = (i * 2 * Math.PI) / n - Math.PI / 2;
-    return {
-      id:    s.id,
-      name:  s.name,
-      x:     n === 1 ? CX : CX + Rp * Math.cos(angle),
-      y:     n === 1 ? CY : CY + Rp * Math.sin(angle),
-      color: SOURCE_COLORS[i % SOURCE_COLORS.length],
-    };
-  });
+  // Run area-proportional layout (memoised on meaningful data changes)
+  const layoutInputs = useMemo(
+    () => sources.map((s) => ({ id: s.id, total: totalsMap[s.id]?.total ?? 0 })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sources.map((s) => s.id).join(","), sourceTotals.map((t) => t.total).join(",")]
+  );
+
+  const circles = useMemo(
+    () => layoutEuler(layoutInputs, matrix, R_MAX, ITERATIONS),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layoutInputs.map((s) => `${s.id}:${s.total}`).join("|"), matrix.flat().join(",")]
+  );
+
+  if (n === 0 || circles.length === 0) return null;
+
+  // Compute viewBox from bounding box of all circles
+  const minX = Math.min(...circles.map((c) => c.x - c.r)) - PAD;
+  const minY = Math.min(...circles.map((c) => c.y - c.r)) - PAD;
+  const maxX = Math.max(...circles.map((c) => c.x + c.r)) + PAD;
+  const maxY = Math.max(...circles.map((c) => c.y + c.r)) + PAD;
+  const vbW = maxX - minX;
+  const vbH = maxY - minY;
+
+  // Attach colour and name to each layout circle
+  const enriched = circles.map((c, i) => ({
+    ...c,
+    color: SOURCE_COLORS[i % SOURCE_COLORS.length],
+    name: sources.find((s) => s.id === c.id)?.name ?? c.id,
+  }));
 
   // Cross-source cluster connection count for the hovered source
-  // (sum of matrix row, excluding diagonal — a cluster spanning A+B+C
-  // increments [A,B], [A,C], [B,C] so this is a "connection count" not cluster count)
   const hoveredIdx = hoveredId
     ? sources.findIndex((s) => s.id === hoveredId)
     : -1;
@@ -102,11 +98,11 @@ export default function EulerDiagram({
       : 0;
 
   const hoveredTotals = hoveredId ? totalsMap[hoveredId] : null;
-  const maxLabelLen   = n <= 4 ? 13 : n <= 6 ? 11 : 9;
-  const fontSize      = n <= 4 ? 12 : n <= 6 ? 11 : 10;
+  const maxLabelLen = n <= 4 ? 13 : n <= 6 ? 11 : 9;
+  const fontSize = n <= 3 ? 13 : n <= 5 ? 12 : 11;
 
-  // Render order: dimmed circles first (behind), selected/hovered on top
-  const renderOrder = [...positions].sort((a, b) => {
+  // Render order: dimmed circles first, selected/hovered on top
+  const renderOrder = [...enriched].sort((a, b) => {
     const aFront = a.id === selectedSourceId || a.id === hoveredId ? 1 : 0;
     const bFront = b.id === selectedSourceId || b.id === hoveredId ? 1 : 0;
     return aFront - bFront;
@@ -115,8 +111,8 @@ export default function EulerDiagram({
   return (
     <div>
       <svg
-        viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-        style={{ width: "100%", maxWidth: SVG_W, display: "block" }}
+        viewBox={`${minX} ${minY} ${vbW} ${vbH}`}
+        style={{ width: "100%", maxWidth: 580, display: "block" }}
         aria-label="Source overlap map"
       >
         {renderOrder.map((pos) => {
@@ -124,7 +120,7 @@ export default function EulerDiagram({
           const isHovered  = hoveredId === pos.id;
           const isDimmed   = selectedSourceId !== null && !isSelected;
 
-          const fillOp  = isDimmed ? 0.07 : isSelected ? 0.30 : isHovered ? 0.26 : 0.20;
+          const fillOp   = isDimmed ? 0.07 : isSelected ? 0.32 : isHovered ? 0.28 : 0.20;
           const strokeOp = isDimmed ? 0.18 : 0.72;
           const sw       = isSelected || isHovered ? 2.5 : 1.5;
           const textColor = isDimmed ? "#c5c5c5" : "#3c4043";
@@ -136,6 +132,9 @@ export default function EulerDiagram({
               : pos.name;
 
           const totalRec = totalsMap[pos.id]?.total;
+          // Centre labels relative to circle centre; offset based on radius
+          const labelY    = totalRec !== undefined ? pos.y - pos.r * 0.12 : pos.y;
+          const subLabelY = pos.y + pos.r * 0.18;
 
           return (
             <g
@@ -148,17 +147,17 @@ export default function EulerDiagram({
               <circle
                 cx={pos.x}
                 cy={pos.y}
-                r={r}
+                r={pos.r}
                 fill={pos.color}
                 fillOpacity={fillOp}
                 stroke={pos.color}
                 strokeWidth={sw}
                 strokeOpacity={strokeOp}
               />
-              {/* Source name label */}
+              {/* Source name */}
               <text
                 x={pos.x}
-                y={totalRec !== undefined ? pos.y - 7 : pos.y}
+                y={labelY}
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fontSize={fontSize}
@@ -172,7 +171,7 @@ export default function EulerDiagram({
               {totalRec !== undefined && (
                 <text
                   x={pos.x}
-                  y={pos.y + 9}
+                  y={subLabelY}
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fontSize={fontSize - 1}
@@ -187,7 +186,7 @@ export default function EulerDiagram({
         })}
       </svg>
 
-      {/* ── Info bar below the SVG ───────────────────────────────────────── */}
+      {/* ── Info bar ───────────────────────────────────────────────────── */}
       <div
         style={{
           minHeight: 26,
@@ -204,7 +203,7 @@ export default function EulerDiagram({
             {" — "}
             {hoveredTotals.total.toLocaleString()} total &middot;{" "}
             {(hoveredTotals.unique_count ?? hoveredTotals.total).toLocaleString()} unique &middot;{" "}
-            {(hoveredTotals.internal_overlaps ?? 0)} within-source duplicates
+            {hoveredTotals.internal_overlaps ?? 0} within-source duplicates
             {crossCount > 0 && (
               <> &middot; {crossCount} cross-source cluster connection{crossCount !== 1 ? "s" : ""}</>
             )}
@@ -233,6 +232,12 @@ export default function EulerDiagram({
           </span>
         )}
       </div>
+
+      {/* ── Caption ────────────────────────────────────────────────────── */}
+      <p style={{ fontSize: "0.76rem", color: "#80868b", margin: "0.2rem 0.5rem 0" }}>
+        Circle size proportional to total records. Overlaps approximate pairwise
+        shared paper-group counts under the active strategy.
+      </p>
     </div>
   );
 }

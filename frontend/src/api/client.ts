@@ -370,17 +370,26 @@ export const overlapsApi = {
     api.get(`/projects/${projectId}/overlaps/preview`, {
       params: { strategy_id: strategyId },
     }),
-  /** List detected overlap clusters with member details. */
+  /** List detected overlap clusters with member details (server-side paginated). */
   listClusters: (
     projectId: string,
-    scope?: "within_source" | "cross_source",
-    limit = 50,
-    offset = 0
+    params?: {
+      scope?: "within_source" | "cross_source";
+      page?: number;
+      page_size?: number;
+      source_id?: string;
+      origin?: string;
+      locked?: boolean;
+      min_sources?: number;
+    }
   ) =>
-    api.get<{ clusters: OverlapClusterDetail[]; offset: number; limit: number }>(
-      `/projects/${projectId}/overlaps/clusters`,
-      { params: { scope, limit, offset } }
-    ),
+    api.get<{
+      clusters: OverlapClusterDetail[];
+      page: number;
+      page_size: number;
+      total_items: number;
+      total_pages: number;
+    }>(`/projects/${projectId}/overlaps/clusters`, { params }),
   /** Get NxN visual overlap matrix for a project. */
   getVisualSummary: (projectId: string) =>
     api.get<OverlapVisualSummary>(`/projects/${projectId}/overlaps/visual-summary`),
