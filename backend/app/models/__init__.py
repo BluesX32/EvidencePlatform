@@ -7,6 +7,9 @@ from app.models.record_source import RecordSource
 from app.models.match_strategy import MatchStrategy
 from app.models.dedup_job import DedupJob
 from app.models.match_log import MatchLog
+from app.models.overlap_cluster import OverlapCluster
+from app.models.overlap_cluster_member import OverlapClusterMember
+from app.models.overlap_strategy_run import OverlapStrategyRun
 from app.models.future import ProjectMember, Protocol, DedupPair, ScreeningDecision, ExtractionForm, ExtractedData
 
 __all__ = [
@@ -19,6 +22,9 @@ __all__ = [
     "MatchStrategy",
     "DedupJob",
     "MatchLog",
+    "OverlapCluster",
+    "OverlapClusterMember",
+    "OverlapStrategyRun",
     "ProjectMember",
     "Protocol",
     "DedupPair",

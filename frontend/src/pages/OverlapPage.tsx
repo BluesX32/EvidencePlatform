@@ -7,6 +7,8 @@ import {
   strategiesApi,
   type OverlapClusterDetail,
   type OverlapClusterMemberDetail,
+  type OverlapStrategyDetail,
+  type OverlapRunItem,
 } from "../api/client";
 import OverlapMatrix from "../components/OverlapMatrix";
 import EulerDiagram, { SOURCE_COLORS } from "../components/EulerDiagram";
@@ -157,6 +159,11 @@ export default function OverlapPage() {
   const [clusterPage, setClusterPage]         = useState(1);
   const [clusterPageSize, setClusterPageSize] = useState(50);
 
+  // Strategy history panel
+  const [showStrategyHistory, setShowStrategyHistory] = useState(false);
+  const [runsPage, setRunsPage]                       = useState(1);
+  const [expandedStrategyId, setExpandedStrategyId]   = useState<string | null>(null);
+
   // Reset to page 1 whenever any filter changes
   useEffect(() => {
     setClusterPage(1);
@@ -181,6 +188,21 @@ export default function OverlapPage() {
         min_sources: minSourcesFilter > 0 ? minSourcesFilter : undefined,
       }).then((r) => r.data),
     enabled: !!projectId,
+  });
+
+  // ── Strategy history queries (only fetched when panel is open) ───────────
+
+  const { data: strategyList } = useQuery({
+    queryKey: ["overlap-strategies", projectId],
+    queryFn: () => overlapsApi.listStrategies(projectId!).then((r) => r.data),
+    enabled: !!projectId && showStrategyHistory,
+  });
+
+  const { data: runsData } = useQuery({
+    queryKey: ["overlap-runs", projectId, runsPage],
+    queryFn: () =>
+      overlapsApi.listRuns(projectId!, { page: runsPage, page_size: 10 }).then((r) => r.data),
+    enabled: !!projectId && showStrategyHistory,
   });
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -618,6 +640,231 @@ export default function OverlapPage() {
 
               {/* Pagination — bottom */}
               {totalItems > 0 && <PaginationStrip {...paginationProps} />}
+            </section>
+
+            {/* ── Strategy History ─────────────────────────────────────── */}
+            <section style={{ marginTop: "2rem" }}>
+              <button
+                onClick={() => setShowStrategyHistory((v) => !v)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  fontSize: "1rem",
+                  fontWeight: 600,
+                  color: "#3c4043",
+                  padding: 0,
+                  marginBottom: showStrategyHistory ? "1rem" : 0,
+                }}
+              >
+                <span style={{ fontSize: "0.8em", color: "#80868b" }}>
+                  {showStrategyHistory ? "▼" : "▶"}
+                </span>
+                Strategy history
+              </button>
+
+              {showStrategyHistory && (
+                <>
+                  {/* ── Saved strategies ─────────────────────────────── */}
+                  <h4 style={{ fontSize: "0.9rem", fontWeight: 600, margin: "0 0 0.5rem", color: "#5f6368" }}>
+                    Saved strategies
+                  </h4>
+                  {!strategyList || strategyList.length === 0 ? (
+                    <p className="muted">No strategies found.</p>
+                  ) : (
+                    <table className="import-table" style={{ marginBottom: "1.5rem" }}>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Rules</th>
+                          <th>Last run</th>
+                          <th>Results</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(strategyList as OverlapStrategyDetail[]).map((s) => (
+                          <>
+                            <tr
+                              key={s.id}
+                              style={{ cursor: "pointer" }}
+                              onClick={() =>
+                                setExpandedStrategyId((prev) => (prev === s.id ? null : s.id))
+                              }
+                            >
+                              <td>
+                                <span style={{ fontWeight: 600 }}>{s.name}</span>
+                                {s.is_active && (
+                                  <span
+                                    style={{
+                                      marginLeft: "0.4rem",
+                                      fontSize: "0.68rem",
+                                      fontWeight: 700,
+                                      color: "#34a853",
+                                      border: "1px solid #b7dfc4",
+                                      borderRadius: "0.2rem",
+                                      padding: "0.05rem 0.3rem",
+                                    }}
+                                  >
+                                    Active
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ fontSize: "0.78rem", color: "#5f6368", maxWidth: 280 }}>
+                                {s.config_summary}
+                              </td>
+                              <td style={{ fontSize: "0.8rem", color: "#5f6368", whiteSpace: "nowrap" }}>
+                                {s.last_run
+                                  ? new Date(s.last_run.started_at).toLocaleString()
+                                  : <em style={{ color: "#aaa" }}>never run</em>}
+                              </td>
+                              <td style={{ fontSize: "0.8rem", color: "#5f6368" }}>
+                                {s.last_run ? (
+                                  <>
+                                    {(s.last_run.cross_source_groups ?? 0).toLocaleString()} cross-source
+                                    {s.last_run.within_source_groups !== null && (
+                                      <>, {s.last_run.within_source_groups.toLocaleString()} within</>
+                                    )}
+                                  </>
+                                ) : "—"}
+                              </td>
+                            </tr>
+                            {expandedStrategyId === s.id && (
+                              <tr key={`${s.id}-detail`}>
+                                <td colSpan={4} style={{ padding: "0.6rem 1rem", background: "#f8f9fa" }}>
+                                  <strong style={{ fontSize: "0.82rem" }}>Configuration:</strong>{" "}
+                                  <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
+                                    {s.config_summary}
+                                  </span>
+                                  {s.last_run && (
+                                    <div style={{ marginTop: "0.3rem", fontSize: "0.78rem", color: "#80868b" }}>
+                                      Last run:{" "}
+                                      {new Date(s.last_run.started_at).toLocaleString()}{" "}
+                                      · Status: {s.last_run.status}
+                                      {s.last_run.within_source_records !== null && (
+                                        <> · {s.last_run.within_source_records} within-source duplicate records</>
+                                      )}
+                                      {s.last_run.cross_source_records !== null && (
+                                        <> · {s.last_run.cross_source_records} cross-source overlapping records</>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {/* ── Run history ───────────────────────────────────── */}
+                  <h4 style={{ fontSize: "0.9rem", fontWeight: 600, margin: "0 0 0.5rem", color: "#5f6368" }}>
+                    Run history
+                  </h4>
+                  {!runsData || runsData.total_items === 0 ? (
+                    <p className="muted">No detection runs recorded yet.</p>
+                  ) : (
+                    <>
+                      <table className="import-table" style={{ marginBottom: "0.5rem" }}>
+                        <thead>
+                          <tr>
+                            <th>Started</th>
+                            <th>Strategy</th>
+                            <th>By</th>
+                            <th>Status</th>
+                            <th>Cross-source groups</th>
+                            <th>Within-source groups</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(runsData.runs as OverlapRunItem[]).map((r) => (
+                            <tr key={r.id}>
+                              <td style={{ whiteSpace: "nowrap", fontSize: "0.8rem" }}>
+                                {new Date(r.started_at).toLocaleString()}
+                              </td>
+                              <td style={{ fontSize: "0.8rem" }}>{r.strategy_name ?? "—"}</td>
+                              <td style={{ fontSize: "0.8rem" }}>{r.triggered_by}</td>
+                              <td>
+                                <span
+                                  style={{
+                                    fontSize: "0.72rem",
+                                    fontWeight: 600,
+                                    color:
+                                      r.status === "completed"
+                                        ? "#34a853"
+                                        : r.status === "failed"
+                                        ? "#c5221f"
+                                        : "#f9ab00",
+                                  }}
+                                >
+                                  {r.status}
+                                </span>
+                                {r.error_message && (
+                                  <span
+                                    title={r.error_message}
+                                    style={{ marginLeft: "0.25rem", fontSize: "0.72rem", color: "#c5221f" }}
+                                  >
+                                    ⚠
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ fontSize: "0.8rem" }}>
+                                {r.cross_source_groups !== null
+                                  ? r.cross_source_groups.toLocaleString()
+                                  : "—"}
+                              </td>
+                              <td style={{ fontSize: "0.8rem" }}>
+                                {r.within_source_groups !== null
+                                  ? r.within_source_groups.toLocaleString()
+                                  : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      {/* Run history pagination */}
+                      {runsData.total_pages > 1 && (
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "0.5rem",
+                            alignItems: "center",
+                            fontSize: "0.82rem",
+                            color: "#5f6368",
+                          }}
+                        >
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: "0.15rem 0.6rem", fontSize: "0.8rem" }}
+                            disabled={runsPage <= 1}
+                            onClick={() => setRunsPage((p) => p - 1)}
+                          >
+                            ← Prev
+                          </button>
+                          <span>
+                            Page {runsPage} / {runsData.total_pages}
+                          </span>
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: "0.15rem 0.6rem", fontSize: "0.8rem" }}
+                            disabled={runsPage >= runsData.total_pages}
+                            onClick={() => setRunsPage((p) => p + 1)}
+                          >
+                            Next →
+                          </button>
+                          <span style={{ color: "#80868b" }}>
+                            {runsData.total_items} total runs
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             </section>
           </>
         )}

@@ -355,6 +355,59 @@ export interface ClusterLockRequest {
   locked: boolean;
 }
 
+// ── Strategy history types ─────────────────────────────────────────────────
+
+export interface StrategyLastRun {
+  run_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "completed" | "failed";
+  within_source_groups: number | null;
+  within_source_records: number | null;
+  cross_source_groups: number | null;
+  cross_source_records: number | null;
+}
+
+export interface OverlapStrategyDetail {
+  id: string;
+  name: string;
+  preset: string;
+  is_active: boolean;
+  created_at: string;
+  /** Human-readable one-liner, e.g. "DOI · Title + Year + First Author · Fuzzy: off · Year: exact" */
+  config_summary: string;
+  selected_fields_detail: OverlapConfig | string[] | null;
+  last_run: StrategyLastRun | null;
+}
+
+export interface OverlapRunItem {
+  id: string;
+  strategy_id: string | null;
+  strategy_name: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "completed" | "failed";
+  triggered_by: "manual" | "auto";
+  within_source_groups: number | null;
+  within_source_records: number | null;
+  cross_source_groups: number | null;
+  cross_source_records: number | null;
+  sources_count: number | null;
+  error_message: string | null;
+}
+
+export interface OverlapRunDetail extends OverlapRunItem {
+  params_snapshot: OverlapConfig | null;
+}
+
+export interface PaginatedOverlapRuns {
+  runs: OverlapRunItem[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+}
+
 export const overlapsApi = {
   /** Get the latest overlap resolution summary for a project. */
   getSummary: (projectId: string) =>
@@ -410,4 +463,13 @@ export const overlapsApi = {
   /** Remove a user-added member from a cluster. */
   removeMember: (projectId: string, clusterId: string, recordSourceId: string) =>
     api.delete(`/projects/${projectId}/overlaps/${clusterId}/members/${recordSourceId}`),
+  /** List all strategies with config summary and last run info. */
+  listStrategies: (projectId: string) =>
+    api.get<OverlapStrategyDetail[]>(`/projects/${projectId}/overlaps/strategies`),
+  /** List paginated run history (most recent first). */
+  listRuns: (projectId: string, params?: { page?: number; page_size?: number }) =>
+    api.get<PaginatedOverlapRuns>(`/projects/${projectId}/overlaps/strategy-runs`, { params }),
+  /** Full run detail including params_snapshot. */
+  getRun: (projectId: string, runId: string) =>
+    api.get<OverlapRunDetail>(`/projects/${projectId}/overlaps/strategy-runs/${runId}`),
 };

@@ -588,6 +588,188 @@ async def manual_link_records_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# GET /overlaps/strategies — list strategies with config summary + last run
+# ---------------------------------------------------------------------------
+
+@router.get("/strategies")
+async def list_overlap_strategies(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all strategies for the project, enriched with:
+      - config_summary: human-readable one-line description of the config
+      - selected_fields_detail: raw OverlapConfig dict
+      - last_run: counts from the most recent completed run (or null)
+
+    Use this endpoint to show users what strategies exist and whether they
+    have been run, without navigating to the project settings page.
+    """
+    from app.repositories.overlap_run_repo import OverlapRunRepo
+    from app.services.overlap_service import _make_config_summary
+    from app.utils.overlap_detector import OverlapConfig as _OC
+
+    await _require_project_access(project_id, current_user, db)
+
+    strategies = (
+        await db.execute(
+            select(MatchStrategy)
+            .where(MatchStrategy.project_id == project_id)
+            .order_by(MatchStrategy.created_at.desc())
+        )
+    ).scalars().all()
+
+    result = []
+    for s in strategies:
+        sf = s.selected_fields
+        config = _OC.from_dict(sf) if sf and isinstance(sf, dict) else _OC.default()
+        summary = _make_config_summary(config)
+
+        last_run = await OverlapRunRepo.get_last_for_strategy(db, project_id, s.id)
+
+        result.append({
+            "id": str(s.id),
+            "name": s.name,
+            "preset": s.preset,
+            "is_active": s.is_active,
+            "created_at": s.created_at.isoformat(),
+            "config_summary": summary,
+            "selected_fields_detail": sf,
+            "last_run": {
+                "run_id": str(last_run.id),
+                "started_at": last_run.started_at.isoformat(),
+                "finished_at": last_run.finished_at.isoformat() if last_run.finished_at else None,
+                "status": last_run.status,
+                "within_source_groups": last_run.within_source_groups,
+                "within_source_records": last_run.within_source_records,
+                "cross_source_groups": last_run.cross_source_groups,
+                "cross_source_records": last_run.cross_source_records,
+            } if last_run else None,
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /overlaps/strategy-runs — paginated run history (most recent first)
+# ---------------------------------------------------------------------------
+
+@router.get("/strategy-runs")
+async def list_strategy_runs(
+    project_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return a paginated list of overlap detection runs for this project,
+    most recent first.
+
+    Each row includes run timing, status, result counts, and the strategy
+    name used.  The params_snapshot (full config) is omitted for brevity;
+    fetch /strategy-runs/{run_id} for the full detail.
+    """
+    import math as _math
+    from app.models.overlap_strategy_run import OverlapStrategyRun
+    from app.repositories.overlap_run_repo import OverlapRunRepo
+
+    await _require_project_access(project_id, current_user, db)
+
+    rows, total = await OverlapRunRepo.list_for_project(db, project_id, page, page_size)
+    total_pages = max(1, _math.ceil(total / page_size)) if total else 1
+
+    # Batch-load strategy names
+    strategy_ids = {r.strategy_id for r in rows if r.strategy_id}
+    strategy_names: dict = {}
+    if strategy_ids:
+        s_rows = (
+            await db.execute(
+                select(MatchStrategy.id, MatchStrategy.name).where(
+                    MatchStrategy.id.in_(strategy_ids)
+                )
+            )
+        ).all()
+        strategy_names = {r.id: r.name for r in s_rows}
+
+    return {
+        "runs": [
+            {
+                "id": str(r.id),
+                "strategy_id": str(r.strategy_id) if r.strategy_id else None,
+                "strategy_name": strategy_names.get(r.strategy_id) if r.strategy_id else None,
+                "started_at": r.started_at.isoformat(),
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "status": r.status,
+                "triggered_by": r.triggered_by,
+                "within_source_groups": r.within_source_groups,
+                "within_source_records": r.within_source_records,
+                "cross_source_groups": r.cross_source_groups,
+                "cross_source_records": r.cross_source_records,
+                "sources_count": r.sources_count,
+                "error_message": r.error_message,
+            }
+            for r in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total_items": total,
+        "total_pages": total_pages,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /overlaps/strategy-runs/{run_id} — full run detail with params_snapshot
+# ---------------------------------------------------------------------------
+
+@router.get("/strategy-runs/{run_id}")
+async def get_strategy_run(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return full detail for one overlap detection run, including the
+    params_snapshot (exact OverlapConfig used at run time).
+
+    Useful for auditing: even if the strategy config was later changed,
+    the snapshot shows exactly what was used for this specific run.
+    """
+    from app.models.overlap_strategy_run import OverlapStrategyRun
+    from app.repositories.overlap_run_repo import OverlapRunRepo
+
+    await _require_project_access(project_id, current_user, db)
+
+    run = await OverlapRunRepo.get_by_id(db, run_id)
+    if run is None or run.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    strategy_name = None
+    if run.strategy_id:
+        s = await db.get(MatchStrategy, run.strategy_id)
+        strategy_name = s.name if s else None
+
+    return {
+        "id": str(run.id),
+        "strategy_id": str(run.strategy_id) if run.strategy_id else None,
+        "strategy_name": strategy_name,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "status": run.status,
+        "triggered_by": run.triggered_by,
+        "within_source_groups": run.within_source_groups,
+        "within_source_records": run.within_source_records,
+        "cross_source_groups": run.cross_source_groups,
+        "cross_source_records": run.cross_source_records,
+        "sources_count": run.sources_count,
+        "params_snapshot": run.params_snapshot,
+        "error_message": run.error_message,
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /overlaps/{cluster_id}/lock — set or clear the locked flag
 # ---------------------------------------------------------------------------
 

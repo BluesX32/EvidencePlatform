@@ -54,6 +54,58 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Config helpers (pure — no DB)
+# ---------------------------------------------------------------------------
+
+def _make_config_snapshot(config: OverlapConfig) -> dict:
+    """Serialise an OverlapConfig to a JSON-safe dict for params_snapshot."""
+    return config.to_dict()
+
+
+def _make_config_summary(config: OverlapConfig) -> str:
+    """Return a human-readable one-line summary of an OverlapConfig.
+
+    Example: "DOI · PMID · Title + Year + First Author + Volume · Fuzzy: off · Year: exact"
+    """
+    fields = set(config.selected_fields)
+    parts: list = []
+
+    # Exact ID tiers
+    id_parts = [f for f in ["doi", "pmid"] if f in fields]
+    if id_parts:
+        parts.append(" + ".join(p.upper() for p in id_parts))
+
+    # Title-based tiers
+    if "title" in fields:
+        title_parts = ["Title"]
+        if "year" in fields:
+            title_parts.append("Year")
+        for fname, label in [
+            ("first_author", "First Author"),
+            ("all_authors", "All Authors"),
+            ("volume", "Volume"),
+            ("pages", "Pages"),
+            ("journal", "Journal"),
+        ]:
+            if fname in fields:
+                title_parts.append(label)
+        parts.append(" + ".join(title_parts))
+
+    # Fuzzy
+    if config.fuzzy_enabled:
+        pct = int(config.fuzzy_threshold * 100)
+        parts.append(f"Fuzzy: on ({pct}%)")
+    else:
+        parts.append("Fuzzy: off")
+
+    # Year tolerance
+    yt = config.year_tolerance
+    parts.append("Year: exact" if yt == 0 else f"Year: \u00b1{yt}")
+
+    return " \u00b7 ".join(parts) if parts else "Default"
+
+
+# ---------------------------------------------------------------------------
 # Lightweight result types (not persisted; used for preview and response)
 # ---------------------------------------------------------------------------
 
@@ -198,12 +250,69 @@ async def _do_overlap_detection(
     project_id: uuid.UUID,
     strategy_id: uuid.UUID,
 ) -> None:
+    from app.repositories.overlap_run_repo import OverlapRunRepo
+    from app.models.source import Source as SourceModel
+
+    # ── Phase 1: create run row in its own committed session ─────────────────
+    # Committed immediately so status=running is visible before detection starts.
+    run_id: uuid.UUID
+    async with SessionLocal() as init_db:
+        strategy = await init_db.get(MatchStrategy, strategy_id)
+        config = _load_config_for_project(strategy)
+        snapshot = _make_config_snapshot(config)
+        run = await OverlapRunRepo.create(
+            init_db, project_id, strategy_id, "manual", snapshot
+        )
+        run_id = run.id
+        await init_db.commit()
+
+    # ── Phase 2: detection (mirrors original pattern) ────────────────────────
     async with SessionLocal() as db:
         await DedupJobRepo.set_running(db, job_id)
         try:
             await _run_cross_source_detection(db, job_id, project_id, strategy_id)
+            # _run_cross_source_detection commits internally; collect result counts.
+            within_grp = (
+                await db.execute(
+                    select(func.count(OverlapCluster.id)).where(
+                        OverlapCluster.project_id == project_id,
+                        OverlapCluster.scope == "within_source",
+                    )
+                )
+            ).scalar_one()
+            within_rec = (
+                await db.execute(
+                    select(func.count(OverlapClusterMember.id))
+                    .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+                    .where(
+                        OverlapCluster.project_id == project_id,
+                        OverlapCluster.scope == "within_source",
+                        OverlapClusterMember.role == "duplicate",
+                    )
+                )
+            ).scalar_one()
+            job_row = await db.get(DedupJob, job_id)
+            src_n = (
+                await db.execute(
+                    select(func.count(SourceModel.id)).where(
+                        SourceModel.project_id == project_id
+                    )
+                )
+            ).scalar_one()
+            await OverlapRunRepo.set_completed(
+                db, run_id,
+                within_grp, within_rec,
+                job_row.clusters_created or 0 if job_row else 0,
+                job_row.merges or 0 if job_row else 0,
+                src_n,
+            )
+            await db.commit()
         except Exception as exc:
             await DedupJobRepo.set_failed(db, job_id, str(exc))
+            # Best-effort: mark the run row failed in a fresh session.
+            async with SessionLocal() as err_db:
+                await OverlapRunRepo.set_failed(err_db, run_id, str(exc)[:500])
+                await err_db.commit()
             raise
 
 
