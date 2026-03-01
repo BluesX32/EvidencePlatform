@@ -317,6 +317,7 @@ export interface OverlapClusterMemberDetail {
   added_by: "auto" | "user";
   note: string | null;
   title: string | null;
+  year: number | null;
   doi: string | null;
 }
 

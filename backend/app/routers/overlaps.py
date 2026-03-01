@@ -312,13 +312,16 @@ async def list_overlap_clusters(
                     OverlapClusterMember.note,
                     RecordSource.norm_title,
                     RecordSource.match_doi,
+                    RecordSource.match_year,
                     Source.name.label("source_name"),
+                    Record.title.label("orig_title"),
                 )
                 .join(
                     RecordSource,
                     RecordSource.id == OverlapClusterMember.record_source_id,
                 )
                 .join(Source, Source.id == OverlapClusterMember.source_id)
+                .join(Record, Record.id == RecordSource.record_id)
                 .where(OverlapClusterMember.cluster_id == oc.id)
             )
         ).all()
@@ -341,7 +344,8 @@ async def list_overlap_clusters(
                     "role": m.role,
                     "added_by": m.added_by,
                     "note": m.note,
-                    "title": m.norm_title,
+                    "title": m.orig_title or m.norm_title,
+                    "year": m.match_year,
                     "doi": m.match_doi,
                 }
                 for m in members

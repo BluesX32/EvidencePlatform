@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -6,8 +6,26 @@ import {
   dedupJobsApi,
   strategiesApi,
   type OverlapClusterDetail,
+  type OverlapClusterMemberDetail,
 } from "../api/client";
 import OverlapMatrix from "../components/OverlapMatrix";
+import EulerDiagram, { SOURCE_COLORS } from "../components/EulerDiagram";
+
+// ── Human-readable match evidence labels ─────────────────────────────────────
+
+function evidenceLabel(tier: number): string {
+  switch (tier) {
+    case 0: return "Manual link";
+    case 1: return "Exact ID (DOI/PMID)";
+    case 2: return "Title · Year · Author · Volume";
+    case 3: return "Title · Year · Author";
+    case 4: return "Title · Year";
+    case 5: return "Fuzzy title";
+    default: return `Tier ${tier}`;
+  }
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function OverlapPage() {
   const { id: projectId } = useParams<{ id: string }>();
@@ -48,17 +66,20 @@ export default function OverlapPage() {
 
   // ── State ─────────────────────────────────────────────────────────────────
 
-  const [highlightedPair, setHighlightedPair] = useState<[string, string] | null>(null);
-  const [showLinkForm, setShowLinkForm] = useState(false);
-  const [linkRecordIds, setLinkRecordIds] = useState("");
-  const [linkNote, setLinkNote] = useState("");
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const [highlightedPair, setHighlightedPair]     = useState<[string, string] | null>(null);
+  const [showLinkForm, setShowLinkForm]           = useState(false);
+  const [linkRecordIds, setLinkRecordIds]         = useState("");
+  const [linkNote, setLinkNote]                   = useState("");
+  const [linkError, setLinkError]                 = useState<string | null>(null);
 
-  // Cluster list filters
-  const [originFilter, setOriginFilter] = useState<"all" | "auto" | "manual" | "mixed">("all");
+  // Euler map + cluster list filter
+  const [selectedSourceId, setSelectedSourceId]   = useState<string | null>(null);
+  const [expandedClusterId, setExpandedClusterId] = useState<string | null>(null);
+
+  // Cluster list filter chips
+  const [originFilter, setOriginFilter]     = useState<"all" | "auto" | "manual" | "mixed">("all");
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [minSourcesFilter, setMinSourcesFilter] = useState(0);
-  const [selectedIntersection, setSelectedIntersection] = useState<string[] | null>(null);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -102,9 +123,18 @@ export default function OverlapPage() {
     lastCompletedDedup &&
     lastCompletedDedup.strategy_id !== activeStrategy.id;
 
+  // Stable color map: source_id → hex color (matches EulerDiagram colours)
+  const sourceColorMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    (visualData?.sources ?? []).forEach((s, i) => {
+      map[s.id] = SOURCE_COLORS[i % SOURCE_COLORS.length];
+    });
+    return map;
+  }, [visualData?.sources]);
+
   const allClusters: OverlapClusterDetail[] = clustersData?.clusters ?? [];
 
-  // Sort: member count desc, then source count desc
+  // Sort: member count desc → source count desc
   const sortedClusters = [...allClusters].sort((a, b) => {
     const byMembers = b.member_count - a.member_count;
     if (byMembers !== 0) return byMembers;
@@ -113,22 +143,18 @@ export default function OverlapPage() {
     return bS - aS;
   });
 
-  // Apply filters
+  // Apply all active filters
   const filteredClusters = sortedClusters.filter((c) => {
     if (originFilter !== "all" && c.origin !== originFilter) return false;
     if (showPinnedOnly && !c.locked) return false;
-    const clusterSourceIds = new Set(c.members.map((m) => m.source_id));
-    if (minSourcesFilter > 0 && clusterSourceIds.size < minSourcesFilter) return false;
-    if (selectedIntersection !== null) {
-      const matchesAll = selectedIntersection.every((sid) => clusterSourceIds.has(sid));
-      const exactMatch = clusterSourceIds.size === selectedIntersection.length;
-      if (!matchesAll || !exactMatch) return false;
-    }
+    const clusterSrcIds = new Set(c.members.map((m) => m.source_id));
+    if (minSourcesFilter > 0 && clusterSrcIds.size < minSourcesFilter) return false;
+    if (selectedSourceId !== null && !clusterSrcIds.has(selectedSourceId)) return false;
     return true;
   });
 
-  // Top intersections from visual data
-  const topIntersections = visualData?.top_intersections ?? [];
+  const hasActiveFilter =
+    originFilter !== "all" || showPinnedOnly || minSourcesFilter >= 3 || selectedSourceId !== null;
 
   return (
     <div className="page">
@@ -203,7 +229,7 @@ export default function OverlapPage() {
               <SummaryCard
                 title="Cross-Source Overlaps"
                 value={data.cross_source.cluster_count}
-                subtitle="unique papers in multiple databases"
+                subtitle="paper groups spanning multiple databases"
                 description="The same article found in records from two or more sources"
                 color="#e6f4ea"
                 border="#b7dfc4"
@@ -232,10 +258,7 @@ export default function OverlapPage() {
                         <td>
                           <Link
                             to={`/projects/${projectId}/records?source_id=${s.id}`}
-                            style={{
-                              textDecoration: "none",
-                              color: "var(--primary, #1a73e8)",
-                            }}
+                            style={{ textDecoration: "none", color: "var(--primary, #1a73e8)" }}
                           >
                             {s.name}
                           </Link>
@@ -251,14 +274,32 @@ export default function OverlapPage() {
               )}
             </section>
 
-            {/* ── Overlap matrix ────────────────────────────────────────────── */}
+            {/* ── Overlap map (Euler diagram) ───────────────────────────────── */}
             {visualData && visualData.sources.length >= 2 && (
               <section style={{ marginBottom: "2rem" }}>
-                <h3>Overlap matrix</h3>
+                <h3>Overlap map</h3>
                 <p className="muted" style={{ marginBottom: "0.75rem" }}>
-                  Each cell shows how many cross-source overlap clusters are shared
-                  between two sources. Diagonal cells show unique record counts.
-                  Click a non-zero cell to highlight that pair.
+                  Each circle represents one database. Overlapping areas indicate
+                  sources that share papers. Circle size is fixed; counts are shown
+                  inside. Click a circle to filter the paper groups below.
+                </p>
+                <EulerDiagram
+                  visualData={visualData}
+                  sourceTotals={data.sources}
+                  selectedSourceId={selectedSourceId}
+                  onSourceClick={setSelectedSourceId}
+                />
+              </section>
+            )}
+
+            {/* ── Pairwise overlap matrix (secondary) ──────────────────────── */}
+            {visualData && visualData.sources.length >= 2 && (
+              <section style={{ marginBottom: "2rem" }}>
+                <h3>Pairwise overlap counts</h3>
+                <p className="muted" style={{ marginBottom: "0.75rem" }}>
+                  Number of shared paper groups between every pair of sources.
+                  Diagonal cells show unique record counts per source.
+                  Click a cell to highlight matching groups below.
                 </p>
                 <OverlapMatrix
                   data={visualData}
@@ -270,9 +311,7 @@ export default function OverlapPage() {
                   }
                 />
                 {highlightedPair && (
-                  <p
-                    style={{ marginTop: "0.4rem", fontSize: "0.82rem", color: "#5f6368" }}
-                  >
+                  <p style={{ marginTop: "0.4rem", fontSize: "0.82rem", color: "#5f6368" }}>
                     Highlighted:{" "}
                     <strong>
                       {visualData.sources.find((s) => s.id === highlightedPair[0])?.name}
@@ -300,50 +339,7 @@ export default function OverlapPage() {
               </section>
             )}
 
-            {/* ── Multi-source intersections ────────────────────────────────── */}
-            {topIntersections.length > 0 && (
-              <section style={{ marginBottom: "2rem" }}>
-                <h3>Multi-source intersections</h3>
-                <p className="muted" style={{ marginBottom: "0.75rem" }}>
-                  Shows the most frequent source combinations among overlap clusters.
-                  Useful to understand how many papers appear across 3+ databases.
-                  Click a bar to filter the cluster list below to that combination.
-                </p>
-                <IntersectionsChart
-                  intersections={topIntersections}
-                  selectedIds={selectedIntersection}
-                  onSelect={(ids) =>
-                    setSelectedIntersection((prev) =>
-                      prev !== null &&
-                      prev.length === ids.length &&
-                      ids.every((id) => prev.includes(id))
-                        ? null
-                        : ids
-                    )
-                  }
-                />
-                {selectedIntersection !== null && (
-                  <p style={{ marginTop: "0.4rem", fontSize: "0.82rem", color: "#5f6368" }}>
-                    Filtering clusters by this combination.{" "}
-                    <button
-                      onClick={() => setSelectedIntersection(null)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "#1a73e8",
-                        fontSize: "0.82rem",
-                        padding: 0,
-                      }}
-                    >
-                      Clear filter
-                    </button>
-                  </p>
-                )}
-              </section>
-            )}
-
-            {/* ── Cross-source overlap clusters ─────────────────────────────── */}
+            {/* ── Same paper groups ─────────────────────────────────────────── */}
             <section style={{ marginBottom: "2rem" }}>
               <div
                 style={{
@@ -353,22 +349,23 @@ export default function OverlapPage() {
                   marginBottom: "0.5rem",
                 }}
               >
-                <h3 style={{ margin: 0 }}>Cross-source clusters</h3>
+                <h3 style={{ margin: 0 }}>Same paper groups</h3>
                 <button
                   className="btn-secondary"
                   style={{ fontSize: "0.82rem", padding: "0.25rem 0.6rem" }}
                   onClick={() => setShowLinkForm((v) => !v)}
                 >
-                  {showLinkForm ? "Cancel" : "+ Link records manually"}
+                  {showLinkForm ? "Cancel" : "+ Link records (same paper)"}
                 </button>
               </div>
 
               <p className="muted" style={{ marginBottom: "0.75rem", fontSize: "0.85rem" }}>
-                Each row is one overlap cluster — one "paper identity" containing member
-                records from multiple sources. Multiple clusters can share the same source
-                combination; each represents a distinct paper.
+                Each row is a <strong>paper group</strong>: records from different databases
+                that describe the same publication. Groups help you avoid screening the
+                same paper twice. Click a row to expand and see the individual records.
               </p>
 
+              {/* Manual link form */}
               {showLinkForm && (
                 <div
                   style={{
@@ -384,8 +381,8 @@ export default function OverlapPage() {
                   }}
                 >
                   <p style={{ margin: 0, fontSize: "0.85rem", color: "#3c4043" }}>
-                    Enter comma-separated <strong>record_source IDs</strong> to link
-                    into a new pinned overlap group.
+                    Enter comma-separated <strong>record_source IDs</strong> from
+                    different databases that refer to the same paper.
                   </p>
                   <input
                     className="input"
@@ -407,7 +404,7 @@ export default function OverlapPage() {
                       onClick={() => manualLink.mutate()}
                       style={{ fontSize: "0.85rem" }}
                     >
-                      {manualLink.isPending ? "Linking…" : "Link"}
+                      {manualLink.isPending ? "Linking…" : "Link records"}
                     </button>
                     {linkError && (
                       <span style={{ color: "#c5221f", fontSize: "0.82rem" }}>
@@ -441,8 +438,7 @@ export default function OverlapPage() {
                 ))}
                 <span
                   style={{
-                    width: 1,
-                    height: 18,
+                    width: 1, height: 18,
                     background: "#dadce0",
                     display: "inline-block",
                     margin: "0 0.3rem",
@@ -458,13 +454,13 @@ export default function OverlapPage() {
                   active={minSourcesFilter >= 3}
                   onClick={() => setMinSourcesFilter((v) => (v >= 3 ? 0 : 3))}
                 />
-                {(originFilter !== "all" || showPinnedOnly || minSourcesFilter >= 3 || selectedIntersection !== null) && (
+                {hasActiveFilter && (
                   <button
                     onClick={() => {
                       setOriginFilter("all");
                       setShowPinnedOnly(false);
                       setMinSourcesFilter(0);
-                      setSelectedIntersection(null);
+                      setSelectedSourceId(null);
                     }}
                     style={{
                       background: "none",
@@ -480,25 +476,24 @@ export default function OverlapPage() {
                 )}
               </div>
 
+              {/* Table */}
               {filteredClusters.length === 0 && allClusters.length === 0 ? (
                 <p className="muted">
-                  No cross-source overlap clusters yet. Run overlap detection to
-                  detect shared records, or link records manually above.
+                  No paper groups yet. Run overlap detection to find shared records,
+                  or link records manually above.
                 </p>
               ) : filteredClusters.length === 0 ? (
-                <p className="muted">No clusters match the current filters.</p>
+                <p className="muted">No paper groups match the current filters.</p>
               ) : (
                 <table className="import-table">
                   <thead>
                     <tr>
+                      <th style={{ minWidth: 200 }}>Title</th>
                       <th>Sources</th>
-                      <th>Members</th>
-                      <th>Tier / Basis</th>
+                      <th>Records</th>
+                      <th>Match evidence</th>
                       <th>Origin</th>
-                      <th title="Pinned clusters are preserved across re-runs">Pinned</th>
-                      <th style={{ color: "#80868b", fontWeight: 400, fontSize: "0.75rem" }}>
-                        ID
-                      </th>
+                      <th title="Pinned groups are preserved across re-runs">Pinned</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -506,19 +501,27 @@ export default function OverlapPage() {
                       <ClusterRow
                         key={c.cluster_id}
                         cluster={c}
+                        expanded={expandedClusterId === c.cluster_id}
+                        onToggleExpand={() =>
+                          setExpandedClusterId((prev) =>
+                            prev === c.cluster_id ? null : c.cluster_id
+                          )
+                        }
                         onToggleLock={(locked) =>
                           lockCluster.mutate({ clusterId: c.cluster_id, locked })
                         }
                         highlightedPair={highlightedPair}
-                        selectedIntersection={selectedIntersection}
+                        selectedSourceId={selectedSourceId}
+                        sourceColorMap={sourceColorMap}
                       />
                     ))}
                   </tbody>
                 </table>
               )}
+
               {filteredClusters.length > 0 && allClusters.length > filteredClusters.length && (
                 <p style={{ fontSize: "0.8rem", color: "#80868b", marginTop: "0.4rem" }}>
-                  Showing {filteredClusters.length} of {allClusters.length} clusters.
+                  Showing {filteredClusters.length} of {allClusters.length} paper groups.
                 </p>
               )}
             </section>
@@ -530,101 +533,218 @@ export default function OverlapPage() {
 }
 
 // ---------------------------------------------------------------------------
-// IntersectionsChart sub-component — horizontal bar chart
+// ClusterRow — expandable row for "Same paper groups" table
 // ---------------------------------------------------------------------------
 
-function IntersectionsChart({
-  intersections,
-  selectedIds,
-  onSelect,
+function ClusterRow({
+  cluster,
+  expanded,
+  onToggleExpand,
+  onToggleLock,
+  highlightedPair,
+  selectedSourceId,
+  sourceColorMap,
 }: {
-  intersections: { source_ids: string[]; source_names: string[]; count: number }[];
-  selectedIds: string[] | null;
-  onSelect: (ids: string[]) => void;
+  cluster: OverlapClusterDetail;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onToggleLock: (locked: boolean) => void;
+  highlightedPair: [string, string] | null;
+  selectedSourceId: string | null;
+  sourceColorMap: Record<string, string>;
 }) {
-  const maxCount = intersections[0]?.count ?? 1;
+  const canonical =
+    cluster.members.find((m) => m.role === "canonical") ?? cluster.members[0];
+
+  const title = canonical?.title ?? "(no title)";
+  const year  = canonical?.year ?? null;
+
+  const uniqueSources = cluster.members
+    .map((m) => ({ id: m.source_id, name: m.source_name }))
+    .filter((v, i, a) => a.findIndex((x) => x.id === v.id) === i);
+
+  const clusterSourceIds = uniqueSources.map((s) => s.id);
+
+  const isHighlightedByPair =
+    highlightedPair !== null &&
+    clusterSourceIds.includes(highlightedPair[0]) &&
+    clusterSourceIds.includes(highlightedPair[1]);
+
+  const isHighlightedBySource =
+    selectedSourceId !== null && clusterSourceIds.includes(selectedSourceId);
+
+  const isHighlighted = isHighlightedByPair;  // source filter already filters rows out
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", maxWidth: 640 }}>
-      {intersections.map((item, i) => {
-        const label = [...item.source_names].sort().join(" + ");
-        const widthPct = (item.count / maxCount) * 100;
-        const isSelected =
-          selectedIds !== null &&
-          selectedIds.length === item.source_ids.length &&
-          item.source_ids.every((id) => selectedIds.includes(id));
-
-        return (
-          <div
-            key={i}
-            onClick={() => onSelect(item.source_ids)}
-            title={`Click to ${isSelected ? "clear" : "filter clusters to"}: ${label}`}
+    <>
+      <tr
+        onClick={onToggleExpand}
+        style={{
+          cursor: "pointer",
+          background: isHighlighted ? "#fce8e6" : isHighlightedBySource ? "#e8f0fe" : undefined,
+          outline: isHighlighted ? "2px solid #ea4335" : undefined,
+        }}
+      >
+        {/* Title + year */}
+        <td style={{ maxWidth: 260 }}>
+          <span
+            title={title}
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.6rem",
-              cursor: "pointer",
-              padding: "0.25rem 0.4rem",
-              borderRadius: "0.25rem",
-              background: isSelected ? "#e8f0fe" : "transparent",
-              border: isSelected ? "1px solid #c5d9f7" : "1px solid transparent",
+              display: "block",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: "0.85rem",
+              color: "#3c4043",
             }}
           >
-            <span
-              style={{
-                fontSize: "0.78rem",
-                color: "#3c4043",
-                minWidth: 200,
-                maxWidth: 200,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-              }}
-              title={label}
-            >
-              {label}
-            </span>
-            <div
-              style={{
-                flexGrow: 1,
-                height: 14,
-                background: "#f1f3f4",
-                borderRadius: 3,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  width: `${widthPct}%`,
-                  height: "100%",
-                  background: isSelected ? "#1a73e8" : "#c5d9f7",
-                  borderRadius: 3,
-                  transition: "width 0.15s",
-                }}
-              />
-            </div>
-            <span
-              style={{
-                fontSize: "0.8rem",
-                fontWeight: 600,
-                color: isSelected ? "#1a73e8" : "#3c4043",
-                minWidth: 28,
-                textAlign: "right",
-                flexShrink: 0,
-              }}
-            >
-              {item.count}
-            </span>
+            {title.length > 65 ? title.slice(0, 65) + "…" : title}
+          </span>
+          {year !== null && (
+            <span style={{ fontSize: "0.75rem", color: "#80868b" }}>{year}</span>
+          )}
+        </td>
+
+        {/* Source badges */}
+        <td style={{ verticalAlign: "middle" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.2rem" }}>
+            {uniqueSources.map((s) => (
+              <SourceBadge key={s.id} name={s.name} color={sourceColorMap[s.id] ?? "#5f6368"} />
+            ))}
           </div>
-        );
-      })}
-    </div>
+        </td>
+
+        {/* Member count */}
+        <td style={{ textAlign: "center" }}>{cluster.member_count}</td>
+
+        {/* Match evidence */}
+        <td style={{ fontSize: "0.78rem", color: "#5f6368", whiteSpace: "nowrap" }}>
+          {evidenceLabel(cluster.match_tier)}
+        </td>
+
+        {/* Origin */}
+        <td>
+          <OriginBadge origin={cluster.origin} />
+        </td>
+
+        {/* Pin */}
+        <td onClick={(e) => e.stopPropagation()}>
+          <button
+            title={
+              cluster.locked
+                ? "Pinned — preserved across re-runs. Click to unpin."
+                : "Not pinned — may be replaced on re-run. Click to pin."
+            }
+            onClick={() => onToggleLock(!cluster.locked)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "0.15rem",
+              lineHeight: 1,
+              color: cluster.locked ? "#1a73e8" : "#bdc1c6",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <PinIcon pinned={cluster.locked} />
+          </button>
+        </td>
+      </tr>
+
+      {/* Expanded member rows */}
+      {expanded &&
+        cluster.members.map((m) => (
+          <MemberRow key={m.record_source_id} member={m} sourceColorMap={sourceColorMap} />
+        ))}
+    </>
   );
 }
 
 // ---------------------------------------------------------------------------
-// FilterChip sub-component
+// MemberRow — one record inside an expanded ClusterRow
+// ---------------------------------------------------------------------------
+
+function MemberRow({
+  member,
+  sourceColorMap,
+}: {
+  member: OverlapClusterMemberDetail;
+  sourceColorMap: Record<string, string>;
+}) {
+  const color = sourceColorMap[member.source_id] ?? "#5f6368";
+  return (
+    <tr style={{ background: "#fafafa" }}>
+      <td
+        colSpan={6}
+        style={{ paddingLeft: "1.5rem", paddingTop: "0.3rem", paddingBottom: "0.3rem" }}
+      >
+        <div style={{ display: "flex", alignItems: "baseline", gap: "0.6rem", flexWrap: "wrap" }}>
+          <SourceBadge name={member.source_name} color={color} />
+          <span style={{ fontSize: "0.82rem", color: "#3c4043" }}>
+            {member.title ?? <em style={{ color: "#aaa" }}>no title</em>}
+          </span>
+          {member.year !== null && (
+            <span style={{ fontSize: "0.75rem", color: "#80868b" }}>{member.year}</span>
+          )}
+          {member.doi && (
+            <span style={{ fontSize: "0.75rem", color: "#80868b", fontFamily: "monospace" }}>
+              {member.doi}
+            </span>
+          )}
+          {member.role === "canonical" && (
+            <span
+              style={{
+                fontSize: "0.68rem",
+                color: "#34a853",
+                fontWeight: 600,
+                border: "1px solid #b7dfc4",
+                borderRadius: "0.2rem",
+                padding: "0.05rem 0.25rem",
+              }}
+            >
+              canonical
+            </span>
+          )}
+          {member.added_by === "user" && member.note && (
+            <span style={{ fontSize: "0.75rem", color: "#80868b", fontStyle: "italic" }}>
+              "{member.note}"
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SourceBadge — coloured chip for one source database
+// ---------------------------------------------------------------------------
+
+function SourceBadge({ name, color }: { name: string; color: string }) {
+  const short = name.length > 9 ? name.slice(0, 9) + "…" : name;
+  return (
+    <span
+      title={name}
+      style={{
+        display: "inline-block",
+        fontSize: "0.7rem",
+        fontWeight: 600,
+        color,
+        background: color + "18",     // ~9% opacity
+        border: `1px solid ${color}44`,
+        borderRadius: "0.25rem",
+        padding: "0.1rem 0.35rem",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {short}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FilterChip
 // ---------------------------------------------------------------------------
 
 function FilterChip({
@@ -656,113 +776,15 @@ function FilterChip({
 }
 
 // ---------------------------------------------------------------------------
-// ClusterRow sub-component
-// ---------------------------------------------------------------------------
-
-function ClusterRow({
-  cluster,
-  onToggleLock,
-  highlightedPair,
-  selectedIntersection,
-}: {
-  cluster: OverlapClusterDetail;
-  onToggleLock: (locked: boolean) => void;
-  highlightedPair: [string, string] | null;
-  selectedIntersection: string[] | null;
-}) {
-  const sourceNames = cluster.members
-    .map((m) => m.source_name)
-    .filter((v, i, a) => a.indexOf(v) === i)
-    .join(", ");
-
-  const clusterSourceIds = cluster.members
-    .map((m) => m.source_id)
-    .filter((v, i, a) => a.indexOf(v) === i);
-
-  const isHighlightedByPair =
-    highlightedPair !== null &&
-    clusterSourceIds.includes(highlightedPair[0]) &&
-    clusterSourceIds.includes(highlightedPair[1]);
-
-  const isHighlightedByIntersection =
-    selectedIntersection !== null &&
-    selectedIntersection.length === clusterSourceIds.length &&
-    selectedIntersection.every((id) => clusterSourceIds.includes(id));
-
-  const isHighlighted = isHighlightedByPair || isHighlightedByIntersection;
-
-  const shortId = cluster.cluster_id.slice(-6);
-
-  return (
-    <tr
-      style={{
-        background: isHighlighted ? "#fce8e6" : undefined,
-        outline: isHighlighted ? "2px solid #ea4335" : undefined,
-      }}
-    >
-      <td style={{ fontSize: "0.83rem" }}>{sourceNames}</td>
-      <td>{cluster.member_count}</td>
-      <td style={{ fontSize: "0.8rem", color: "#5f6368" }}>
-        {cluster.match_tier === 0 ? "—" : `Tier ${cluster.match_tier}`} /{" "}
-        {cluster.match_basis}
-      </td>
-      <td>
-        <OriginBadge origin={cluster.origin} />
-      </td>
-      <td>
-        <button
-          title={
-            cluster.locked
-              ? "Pinned — this cluster is preserved across re-runs. Click to unpin."
-              : "Not pinned — may be replaced on re-run. Click to pin."
-          }
-          onClick={() => onToggleLock(!cluster.locked)}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: "0.15rem",
-            lineHeight: 1,
-            color: cluster.locked ? "#1a73e8" : "#bdc1c6",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <PinIcon pinned={cluster.locked} />
-        </button>
-      </td>
-      <td
-        style={{
-          fontFamily: "monospace",
-          fontSize: "0.72rem",
-          color: "#80868b",
-          letterSpacing: "0.03em",
-        }}
-      >
-        …{shortId}
-      </td>
-    </tr>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PinIcon sub-component — thumbtack SVG
+// PinIcon — thumbtack SVG (filled = pinned, outline = not pinned)
 // ---------------------------------------------------------------------------
 
 function PinIcon({ pinned }: { pinned: boolean }) {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       {pinned ? (
-        /* Filled thumbtack — pinned */
         <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z" />
       ) : (
-        /* Outline thumbtack — not pinned */
         <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a5.927 5.927 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707-.195-.195.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a5.922 5.922 0 0 1 1.013.16l3.134-3.133a2.772 2.772 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146z" />
       )}
     </svg>
@@ -770,14 +792,14 @@ function PinIcon({ pinned }: { pinned: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
-// OriginBadge sub-component
+// OriginBadge
 // ---------------------------------------------------------------------------
 
 function OriginBadge({ origin }: { origin: string }) {
   const styles: Record<string, { color: string; bg: string; border: string; label: string }> = {
-    auto: { color: "#5f6368", bg: "#f1f3f4", border: "#dadce0", label: "Auto" },
+    auto:   { color: "#5f6368", bg: "#f1f3f4", border: "#dadce0", label: "Auto"   },
     manual: { color: "#1a73e8", bg: "#e8f0fe", border: "#c5d9f7", label: "Manual" },
-    mixed: { color: "#e37400", bg: "#fef7e0", border: "#f9ab00", label: "Mixed" },
+    mixed:  { color: "#e37400", bg: "#fef7e0", border: "#f9ab00", label: "Mixed"  },
   };
   const s = styles[origin] ?? styles.auto;
   return (
@@ -801,7 +823,7 @@ function OriginBadge({ origin }: { origin: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// SummaryCard sub-component
+// SummaryCard
 // ---------------------------------------------------------------------------
 
 function SummaryCard({
@@ -840,20 +862,9 @@ function SummaryCard({
       >
         {title}
       </p>
-      <p style={{ fontSize: "2rem", fontWeight: 700, margin: "0 0 0.1rem" }}>
-        {value}
-      </p>
-      <p style={{ fontSize: "0.8rem", color: "#5f6368", margin: 0 }}>
-        {subtitle}
-      </p>
-      <p
-        style={{
-          fontSize: "0.78rem",
-          color: "#80868b",
-          marginTop: "0.4rem",
-          lineHeight: 1.4,
-        }}
-      >
+      <p style={{ fontSize: "2rem", fontWeight: 700, margin: "0 0 0.1rem" }}>{value}</p>
+      <p style={{ fontSize: "0.8rem", color: "#5f6368", margin: 0 }}>{subtitle}</p>
+      <p style={{ fontSize: "0.78rem", color: "#80868b", marginTop: "0.4rem", lineHeight: 1.4 }}>
         {description}
       </p>
     </div>
