@@ -2,6 +2,12 @@
 
 Each row is one slot in the shuffled screening queue for a corpus.
 canonical_key is either "pg:{cluster_id}" or "rec:{record_id}".
+
+status tracks where in the workflow this item is:
+  pending   — not yet reviewed in this corpus
+  skipped   — reviewer explicitly skipped (not useful now)
+  decided   — TA decision submitted (include/exclude/borderline)
+  extracted — extraction completed (implies include)
 """
 from __future__ import annotations
 
@@ -29,6 +35,8 @@ class CorpusQueueItem(Base):
     # "pg:{uuid}" | "rec:{uuid}"
     canonical_key: Mapped[str] = mapped_column(String(100), nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # "pending" | "skipped" | "decided" | "extracted"
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

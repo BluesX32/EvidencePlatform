@@ -3,11 +3,19 @@ Screening service — VS4.
 
 Provides the core business logic for:
   - generate_queue      : build deterministic-random screening queue
-  - get_next_item       : fetch next unreviewed TA item with record metadata
-  - submit_decision     : record TA/FT decision (with optional borderline escalation)
+  - get_next_item       : fetch next pending item with record metadata
+  - skip_item           : mark a queue item as skipped (not useful now)
+  - submit_decision     : record TA decision (with borderline escalation)
   - submit_extraction   : save extraction and update saturation counters
   - _resolve_canonical_key / _build_cluster_map : canonical key helpers
   - _fetch_record_for_key : enrich a canonical key with display metadata
+
+Saturation logic:
+  extraction.extracted_json["framework_updated"] drives the counter:
+    True  → consecutive_no_novelty resets to 0
+    False → consecutive_no_novelty += 1
+  When counter >= saturation_threshold: corpus.stopped_at is set.
+  Saturation can fire without exhausting the queue (saturation-first design).
 """
 from __future__ import annotations
 
@@ -38,7 +46,7 @@ logger = logging.getLogger(__name__)
 def _resolve_canonical_key(
     record_id: uuid.UUID, cluster_map: Dict[uuid.UUID, uuid.UUID]
 ) -> str:
-    """Return "pg:{cluster_id}" if the record is in a cross-source cluster, else "rec:{record_id}"."""
+    """Return "pg:{cluster_id}" if in a cross-source cluster, else "rec:{record_id}"."""
     cluster_id = cluster_map.get(record_id)
     if cluster_id is not None:
         return f"pg:{cluster_id}"
@@ -50,10 +58,7 @@ async def _build_cluster_map(
     project_id: uuid.UUID,
     record_ids: List[uuid.UUID],
 ) -> Dict[uuid.UUID, uuid.UUID]:
-    """
-    Return {record_id: cluster_id} for records that belong to a cross-source
-    overlap cluster in this project.
-    """
+    """Return {record_id: cluster_id} for records in a cross-source cluster."""
     if not record_ids:
         return {}
     result = await db.execute(
@@ -69,8 +74,6 @@ async def _build_cluster_map(
             RecordSource.record_id.in_(record_ids),
         )
     )
-    # If a record is in multiple clusters (shouldn't happen but defensively handled),
-    # the first cluster_id encountered wins.
     cluster_map: Dict[uuid.UUID, uuid.UUID] = {}
     for row in result.all():
         if row.record_id not in cluster_map:
@@ -90,21 +93,17 @@ async def generate_queue(
     """
     Build (or re-build) the screening queue for a corpus.
 
-    Steps:
-    1. Fetch all record_ids from record_sources where source_id IN corpus.source_ids.
-    2. Build cluster_map for cross-source dedup.
-    3. Resolve canonical_key per record; deduplicate within corpus.
-    4. Find canonical_keys already finally decided in other corpora of this project.
-    5. Filter out prior-decided keys.
-    6. Shuffle with random.Random(seed).
-    7. Delete old queue, insert new items.
-    8. Update corpus queue metadata.
-    9. Return summary dict.
+    1. Fetch record_ids for sources in corpus.source_ids
+    2. Build cluster_map
+    3. Resolve + deduplicate canonical_keys
+    4. Filter out keys already finally decided in other corpora of this project
+    5. Shuffle with random.Random(seed)
+    6. Delete old queue, insert new items (all status='pending')
+    7. Update corpus queue metadata
     """
     project_id = corpus.project_id
     source_ids = corpus.source_ids or []
 
-    # Step 1: fetch record_ids
     if source_ids:
         rs_result = await db.execute(
             select(RecordSource.record_id)
@@ -119,10 +118,8 @@ async def generate_queue(
     else:
         record_ids = []
 
-    # Step 2: cluster map
     cluster_map = await _build_cluster_map(db, project_id, record_ids)
 
-    # Step 3: resolve canonical keys, deduplicate within corpus
     seen: set = set()
     canonical_keys: List[str] = []
     for rid in record_ids:
@@ -131,7 +128,7 @@ async def generate_queue(
             seen.add(key)
             canonical_keys.append(key)
 
-    # Step 4: find prior-decided canonical_keys across other corpora in this project
+    # Prior decisions across other corpora in this project
     from app.models.corpus_decision import CorpusDecision
     prior_result = await db.execute(
         select(CorpusDecision.canonical_key)
@@ -146,70 +143,65 @@ async def generate_queue(
     )
     prior_keys: set = set(prior_result.scalars().all())
 
-    # Step 5: filter
     before_count = len(canonical_keys)
     canonical_keys = [k for k in canonical_keys if k not in prior_keys]
     excluded_count = before_count - len(canonical_keys)
 
-    # Step 6: shuffle
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     rng = random.Random(seed)
     rng.shuffle(canonical_keys)
 
-    # Step 7: delete old queue and insert new
     await ScreeningRepo.delete_queue(db, corpus.id)
     await ScreeningRepo.insert_queue_items(db, corpus.id, canonical_keys)
-
-    # Step 8: update corpus metadata
     await CorpusRepo.update_queue_meta(db, corpus, len(canonical_keys), seed)
 
     logger.info(
         "generate_queue corpus=%s queue_size=%d excluded=%d seed=%d",
-        corpus.id,
-        len(canonical_keys),
-        excluded_count,
-        seed,
+        corpus.id, len(canonical_keys), excluded_count, seed,
     )
-
-    return {
-        "queue_size": len(canonical_keys),
-        "excluded_count": excluded_count,
-        "seed": seed,
-    }
+    return {"queue_size": len(canonical_keys), "excluded_count": excluded_count, "seed": seed}
 
 
 # ---------------------------------------------------------------------------
-# Next item
+# Next item (status-based)
 # ---------------------------------------------------------------------------
 
 async def get_next_item(
     db: AsyncSession,
     corpus: Corpus,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Return the next unreviewed TA item with record enrichment, or None if
-    the queue is exhausted.
-    """
-    decided_keys = await ScreeningRepo.get_decided_keys(db, corpus.id, stage="TA")
-    item = await ScreeningRepo.get_next_undecided(db, corpus.id, decided_keys)
+    """Return the next pending queue item with record enrichment, or None if done."""
+    item = await ScreeningRepo.get_next_pending(db, corpus.id)
     if item is None:
         return None
-
     record_data = await _fetch_record_for_key(db, item.canonical_key, corpus.project_id)
-    total = corpus.queue_size
-    position = item.order_index + 1
     return {
         "canonical_key": item.canonical_key,
         "order_index": item.order_index,
-        "position": position,
-        "total": total,
+        "position": item.order_index + 1,
+        "total": corpus.queue_size,
         **record_data,
     }
 
 
 # ---------------------------------------------------------------------------
-# Record fetch
+# Skip item
+# ---------------------------------------------------------------------------
+
+async def skip_item(
+    db: AsyncSession,
+    corpus: Corpus,
+    canonical_key: str,
+) -> Dict[str, Any]:
+    """Mark a queue item as skipped and return the next pending item."""
+    await ScreeningRepo.mark_item_status(db, corpus.id, canonical_key, "skipped")
+    next_item = await get_next_item(db, corpus)
+    return {"skipped": canonical_key, "next": next_item}
+
+
+# ---------------------------------------------------------------------------
+# Record fetch helpers
 # ---------------------------------------------------------------------------
 
 async def _fetch_record_for_key(
@@ -217,10 +209,7 @@ async def _fetch_record_for_key(
     canonical_key: str,
     project_id: uuid.UUID,
 ) -> Dict[str, Any]:
-    """
-    Return display data for a canonical_key:
-      title, abstract, year, authors, doi, source_names (list)
-    """
+    """Return display data (title, abstract, year, authors, doi, source_names)."""
     if canonical_key.startswith("rec:"):
         record_id = uuid.UUID(canonical_key[4:])
         return await _fetch_standalone_record(db, record_id, project_id)
@@ -231,9 +220,7 @@ async def _fetch_record_for_key(
 
 
 async def _fetch_standalone_record(
-    db: AsyncSession,
-    record_id: uuid.UUID,
-    project_id: uuid.UUID,
+    db: AsyncSession, record_id: uuid.UUID, project_id: uuid.UUID,
 ) -> Dict[str, Any]:
     result = await db.execute(
         select(
@@ -264,28 +251,16 @@ async def _fetch_standalone_record(
 
 
 async def _fetch_cluster_record(
-    db: AsyncSession,
-    cluster_id: uuid.UUID,
-    project_id: uuid.UUID,
+    db: AsyncSession, cluster_id: uuid.UUID, project_id: uuid.UUID,
 ) -> Dict[str, Any]:
-    """
-    For a cross-source cluster: take the canonical-role member's record and
-    aggregate all source names from the cluster.
-    """
-    # Prefer canonical member; fall back to first member if none
+    """Use the canonical-role member's record; aggregate source names."""
     result = await db.execute(
         select(
-            Record.title,
-            Record.abstract,
-            Record.year,
-            Record.authors,
-            Record.normalized_doi,
+            Record.title, Record.abstract, Record.year,
+            Record.authors, Record.normalized_doi,
         )
         .join(RecordSource, RecordSource.record_id == Record.id)
-        .join(
-            OverlapClusterMember,
-            OverlapClusterMember.record_source_id == RecordSource.id,
-        )
+        .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
         .where(
             OverlapClusterMember.cluster_id == cluster_id,
             OverlapClusterMember.role == "canonical",
@@ -294,46 +269,33 @@ async def _fetch_cluster_record(
     )
     row = result.one_or_none()
     if row is None:
-        # Fall back to any member
         result = await db.execute(
             select(
-                Record.title,
-                Record.abstract,
-                Record.year,
-                Record.authors,
-                Record.normalized_doi,
+                Record.title, Record.abstract, Record.year,
+                Record.authors, Record.normalized_doi,
             )
             .join(RecordSource, RecordSource.record_id == Record.id)
-            .join(
-                OverlapClusterMember,
-                OverlapClusterMember.record_source_id == RecordSource.id,
-            )
+            .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
             .where(OverlapClusterMember.cluster_id == cluster_id)
             .limit(1)
         )
         row = result.one_or_none()
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None, "doi": None, "source_names": []}
-
-    # Aggregate source names
     src_result = await db.execute(
         select(Source.name)
         .join(RecordSource, RecordSource.source_id == Source.id)
-        .join(
-            OverlapClusterMember,
-            OverlapClusterMember.record_source_id == RecordSource.id,
-        )
+        .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
         .where(OverlapClusterMember.cluster_id == cluster_id)
         .distinct()
     )
-    source_names = list(src_result.scalars().all())
     return {
         "title": row.title,
         "abstract": row.abstract,
         "year": row.year,
         "authors": row.authors,
         "doi": row.normalized_doi,
-        "source_names": source_names,
+        "source_names": list(src_result.scalars().all()),
     }
 
 
@@ -351,10 +313,7 @@ async def submit_decision(
     notes: Optional[str],
     reviewer_id: Optional[uuid.UUID],
 ) -> Dict[str, Any]:
-    """
-    Record a TA or FT decision. If decision is "borderline", also create a
-    CorpusBorderlineCase row.
-    """
+    """Record a TA decision. Also marks the queue item as 'decided' and creates borderline case if needed."""
     dec = await ScreeningRepo.insert_decision(
         db,
         corpus_id=corpus.id,
@@ -365,6 +324,10 @@ async def submit_decision(
         notes=notes,
         reviewer_id=reviewer_id,
     )
+    # Update queue item status
+    if stage == "TA":
+        await ScreeningRepo.mark_item_status(db, corpus.id, canonical_key, "decided")
+
     borderline_id = None
     if decision == "borderline":
         bc = await ScreeningRepo.insert_borderline(
@@ -387,7 +350,7 @@ async def submit_decision(
 
 
 # ---------------------------------------------------------------------------
-# Extraction submission
+# Extraction submission — saturation-first design
 # ---------------------------------------------------------------------------
 
 async def submit_extraction(
@@ -395,23 +358,33 @@ async def submit_extraction(
     corpus: Corpus,
     canonical_key: str,
     extracted_json: dict,
-    novelty_flag: bool,
-    novelty_notes: Optional[str],
     reviewer_id: Optional[uuid.UUID],
 ) -> Dict[str, Any]:
     """
-    Upsert an extraction row and update saturation counters on the corpus.
+    Upsert an extraction row and update saturation counters.
+
+    Saturation is driven by extracted_json["framework_updated"]:
+      True  → reset consecutive_no_novelty to 0
+      False → increment consecutive_no_novelty
+    Saturation can fire without exhausting the queue (saturation-first design).
     """
+    framework_updated: bool = bool(extracted_json.get("framework_updated", True))
+    framework_update_note: str = extracted_json.get("framework_update_note", "") or ""
+
     ext = await ScreeningRepo.upsert_extraction(
         db,
         corpus_id=corpus.id,
         canonical_key=canonical_key,
         extracted_json=extracted_json,
-        novelty_flag=novelty_flag,
-        novelty_notes=novelty_notes,
+        novelty_flag=framework_updated,
+        novelty_notes=framework_update_note or None,
         reviewer_id=reviewer_id,
     )
-    await CorpusRepo.update_saturation(db, corpus, novelty_flag)
+    # Mark queue item as extracted (implies decided+included)
+    await ScreeningRepo.mark_item_status(db, corpus.id, canonical_key, "extracted")
+
+    await CorpusRepo.update_saturation(db, corpus, framework_updated)
+
     return {
         "id": ext.id,
         "corpus_id": ext.corpus_id,

@@ -3,6 +3,11 @@ Screening repository.
 
 Handles queue items, decisions, borderline cases, extractions,
 and second reviews for a corpus.
+
+Queue item lifecycle:
+  pending → skipped  (reviewer skips)
+  pending → decided  (TA decision submitted)
+  decided → extracted (extraction saved)
 """
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.corpus_borderline_case import CorpusBorderlineCase
@@ -38,16 +43,52 @@ class ScreeningRepo:
         corpus_id: uuid.UUID,
         canonical_keys: List[str],
     ) -> None:
-        """Insert queue items in order (order_index = position in list)."""
+        """Insert queue items in order (order_index = position in list), all pending."""
         items = [
             CorpusQueueItem(
                 corpus_id=corpus_id,
                 canonical_key=key,
                 order_index=idx,
+                status="pending",
             )
             for idx, key in enumerate(canonical_keys)
         ]
         db.add_all(items)
+        await db.flush()
+
+    @staticmethod
+    async def get_next_pending(
+        db: AsyncSession,
+        corpus_id: uuid.UUID,
+    ) -> Optional[CorpusQueueItem]:
+        """Return the lowest-order-index queue item with status='pending'."""
+        result = await db.execute(
+            select(CorpusQueueItem)
+            .where(
+                CorpusQueueItem.corpus_id == corpus_id,
+                CorpusQueueItem.status == "pending",
+            )
+            .order_by(CorpusQueueItem.order_index)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def mark_item_status(
+        db: AsyncSession,
+        corpus_id: uuid.UUID,
+        canonical_key: str,
+        status: str,
+    ) -> None:
+        """Update the status of a queue item by canonical_key."""
+        await db.execute(
+            update(CorpusQueueItem)
+            .where(
+                CorpusQueueItem.corpus_id == corpus_id,
+                CorpusQueueItem.canonical_key == canonical_key,
+            )
+            .values(status=status)
+        )
         await db.flush()
 
     @staticmethod
@@ -74,13 +115,14 @@ class ScreeningRepo:
         )
         return result.scalar_one()
 
+    # Backwards-compat alias used by the FT tab (still needed)
     @staticmethod
     async def get_next_undecided(
         db: AsyncSession,
         corpus_id: uuid.UUID,
         decided_keys: set,
     ) -> Optional[CorpusQueueItem]:
-        """Return the lowest-order-index queue item not yet decided at TA stage."""
+        """Deprecated: use get_next_pending instead. Kept for FT tab compat."""
         result = await db.execute(
             select(CorpusQueueItem)
             .where(CorpusQueueItem.corpus_id == corpus_id)
@@ -124,7 +166,7 @@ class ScreeningRepo:
     async def get_decided_keys(
         db: AsyncSession, corpus_id: uuid.UUID, stage: str
     ) -> set:
-        """Return set of canonical_keys that have a non-borderline decision for stage."""
+        """Return set of canonical_keys with a final (non-borderline) decision for stage."""
         result = await db.execute(
             select(CorpusDecision.canonical_key)
             .where(
@@ -155,7 +197,6 @@ class ScreeningRepo:
     async def list_included_keys(
         db: AsyncSession, corpus_id: uuid.UUID, stage: str
     ) -> List[str]:
-        """Return canonical_keys that have been included at the given stage."""
         result = await db.execute(
             select(CorpusDecision.canonical_key)
             .where(
@@ -241,7 +282,6 @@ class ScreeningRepo:
         reviewer_id: Optional[uuid.UUID],
     ) -> CorpusExtraction:
         """Insert or update extraction (UNIQUE on corpus_id + canonical_key)."""
-        # Try existing
         result = await db.execute(
             select(CorpusExtraction).where(
                 CorpusExtraction.corpus_id == corpus_id,

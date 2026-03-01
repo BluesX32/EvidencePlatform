@@ -3,27 +3,29 @@ Corpora & Screening API endpoints — VS4.
 
 All endpoints are scoped under /projects/{project_id}/corpora.
 
-POST   /                                   create corpus
-GET    /                                   list corpora
-GET    /{corpus_id}                        corpus detail + saturation stats
-POST   /{corpus_id}/queue/generate         generate (or re-generate) queue
-GET    /{corpus_id}/queue/next             next unreviewed TA item
-GET    /{corpus_id}/queue                  paginated queue list
-POST   /{corpus_id}/decisions              submit TA or FT decision
-GET    /{corpus_id}/decisions              list decisions
-GET    /{corpus_id}/borderline             list borderline cases
-POST   /{corpus_id}/borderline/{case_id}/resolve   resolve borderline
-POST   /{corpus_id}/extractions            save extraction
-GET    /{corpus_id}/extractions            list extractions
-POST   /{corpus_id}/second-reviews         submit second review
+POST   /                                     create corpus
+GET    /                                     list corpora
+GET    /{corpus_id}                          corpus detail + saturation stats
+POST   /{corpus_id}/queue/generate           generate (or re-generate) queue
+GET    /{corpus_id}/queue/next               next pending item
+POST   /{corpus_id}/queue/skip               skip current item (not useful now)
+GET    /{corpus_id}/queue                    paginated queue list
+POST   /{corpus_id}/decisions                submit TA or FT decision
+GET    /{corpus_id}/decisions                list decisions
+GET    /{corpus_id}/borderline               list borderline cases
+POST   /{corpus_id}/borderline/{case_id}/resolve  resolve borderline
+POST   /{corpus_id}/extractions              save extraction (triggers saturation)
+GET    /{corpus_id}/extractions              list extractions
+POST   /{corpus_id}/second-reviews           submit second review
 """
 from __future__ import annotations
 
+import math
 import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -33,9 +35,9 @@ from app.repositories.corpus_repo import CorpusRepo
 from app.repositories.project_repo import ProjectRepo
 from app.repositories.screening_repo import ScreeningRepo
 from app.services.screening_service import (
-    _fetch_record_for_key,
     generate_queue,
     get_next_item,
+    skip_item,
     submit_decision,
     submit_extraction,
 )
@@ -44,7 +46,7 @@ router = APIRouter(prefix="/projects/{project_id}/corpora", tags=["corpora"])
 
 
 # ---------------------------------------------------------------------------
-# Shared helper
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 async def _require_project(
@@ -78,37 +80,51 @@ async def _require_corpus(
 class CorpusCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    # Accept string UUIDs from the frontend and coerce them to uuid.UUID
     source_ids: List[uuid.UUID] = []
     saturation_threshold: int = 10
+
+    @validator("source_ids", pre=True, each_item=True)
+    def coerce_source_uuid(cls, v: Any) -> uuid.UUID:
+        if isinstance(v, uuid.UUID):
+            return v
+        try:
+            return uuid.UUID(str(v))
+        except (ValueError, AttributeError):
+            raise ValueError(f"Invalid UUID: {v!r}")
 
 
 class GenerateQueueRequest(BaseModel):
     seed: Optional[int] = None
 
 
+class SkipRequest(BaseModel):
+    canonical_key: str
+
+
 class DecisionCreate(BaseModel):
     canonical_key: str
-    stage: str  # "TA" | "FT"
-    decision: str  # "include" | "exclude" | "borderline"
+    stage: str       # "TA" | "FT"
+    decision: str    # "include" | "exclude" | "borderline"
     reason_code: Optional[str] = None
     notes: Optional[str] = None
 
 
 class ResolveRequest(BaseModel):
-    resolution_decision: str  # "include" | "exclude"
+    resolution_decision: str   # "include" | "exclude"
     resolution_notes: Optional[str] = None
 
 
 class ExtractionCreate(BaseModel):
     canonical_key: str
     extracted_json: Dict[str, Any]
-    novelty_flag: bool = True
-    novelty_notes: Optional[str] = None
+    # framework_updated is also stored inside extracted_json;
+    # the service reads it from there.
 
 
 class SecondReviewCreate(BaseModel):
     canonical_key: str
-    stage: str  # "TA" | "FT" | "extraction"
+    stage: str    # "TA" | "FT" | "extraction"
     agree: bool
     notes: Optional[str] = None
 
@@ -158,7 +174,6 @@ async def get_corpus(
 ):
     await _require_project(project_id, current_user, db)
     corpus = await _require_corpus(corpus_id, project_id, db)
-    # Compute screened / included counts
     ta_decided = await ScreeningRepo.get_decided_keys(db, corpus_id, stage="TA")
     ta_included = await ScreeningRepo.list_included_keys(db, corpus_id, stage="TA")
     out = _corpus_out(corpus)
@@ -201,6 +216,24 @@ async def next_queue_item(
     return {"done": False, **item}
 
 
+@router.post("/{corpus_id}/queue/skip")
+async def skip_queue_item_endpoint(
+    project_id: uuid.UUID,
+    corpus_id: uuid.UUID,
+    body: SkipRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark current item as skipped and return the next pending item."""
+    await _require_project(project_id, current_user, db)
+    corpus = await _require_corpus(corpus_id, project_id, db)
+    result = await skip_item(db, corpus, body.canonical_key)
+    await db.commit()
+    if result["next"] is None:
+        return {"skipped": result["skipped"], "done": True}
+    return {"skipped": result["skipped"], "done": False, **result["next"]}
+
+
 @router.get("/{corpus_id}/queue")
 async def list_queue(
     project_id: uuid.UUID,
@@ -212,7 +245,6 @@ async def list_queue(
 ):
     await _require_project(project_id, current_user, db)
     await _require_corpus(corpus_id, project_id, db)
-    import math
     total = await ScreeningRepo.count_queue(db, corpus_id)
     offset = (page - 1) * page_size
     items = await ScreeningRepo.get_queue_page(db, corpus_id, offset, page_size)
@@ -222,7 +254,7 @@ async def list_queue(
         "page_size": page_size,
         "total_pages": max(1, math.ceil(total / page_size)) if total else 1,
         "items": [
-            {"canonical_key": i.canonical_key, "order_index": i.order_index}
+            {"canonical_key": i.canonical_key, "order_index": i.order_index, "status": i.status}
             for i in items
         ],
     }
@@ -317,7 +349,7 @@ async def resolve_borderline_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# Extractions
+# Extractions (saturation-first)
 # ---------------------------------------------------------------------------
 
 @router.post("/{corpus_id}/extractions", status_code=201)
@@ -328,6 +360,11 @@ async def create_extraction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Save an extraction for a canonical key.
+    extracted_json must contain framework_updated (bool) and framework_update_note (str).
+    Saturation counter is updated based on framework_updated.
+    """
     await _require_project(project_id, current_user, db)
     corpus = await _require_corpus(corpus_id, project_id, db)
     result = await submit_extraction(
@@ -335,8 +372,6 @@ async def create_extraction(
         corpus=corpus,
         canonical_key=body.canonical_key,
         extracted_json=body.extracted_json,
-        novelty_flag=body.novelty_flag,
-        novelty_notes=body.novelty_notes,
         reviewer_id=current_user.id,
     )
     await db.commit()
@@ -402,7 +437,7 @@ def _corpus_out(c) -> dict:
         "project_id": c.project_id,
         "name": c.name,
         "description": c.description,
-        "source_ids": c.source_ids or [],
+        "source_ids": [str(sid) for sid in (c.source_ids or [])],
         "saturation_threshold": c.saturation_threshold,
         "consecutive_no_novelty": c.consecutive_no_novelty,
         "total_extracted": c.total_extracted,

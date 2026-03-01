@@ -1,5 +1,10 @@
 import React from "react";
-import type { Term } from "../api/client";
+
+export interface Term {
+  term: string;
+  snippet: string;
+  notes: string;
+}
 
 interface TermListProps {
   label: string;

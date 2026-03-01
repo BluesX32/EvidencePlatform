@@ -549,19 +549,25 @@ export interface BorderlineCase {
   created_at: string;
 }
 
-export interface Term {
-  term: string;
+export interface Snippet {
   snippet: string;
-  notes: string;
+  note: string;
+  tag?: string;
 }
 
+/**
+ * Conceptual framework extraction schema (v1).
+ * framework_updated drives the saturation counter:
+ *   true  → reset consecutive_no_novelty to 0
+ *   false → increment counter
+ */
 export interface ExtractionJson {
-  severity_terms: Term[];
-  framework_terms: Term[];
-  relationship_terms: Term[];
-  context: { disease: string; setting: string; population: string; notes: string };
-  novelty_flag: boolean;
-  novelty_notes: string;
+  levels: string[];
+  dimensions: string[];
+  snippets: Snippet[];
+  free_note: string;
+  framework_updated: boolean;
+  framework_update_note: string;
 }
 
 export interface CorpusExtraction {
@@ -602,6 +608,12 @@ export const corporaApi = {
   nextItem: (projectId: string, corpusId: string) =>
     api.get<ScreeningNextResponse>(
       `/projects/${projectId}/corpora/${corpusId}/queue/next`
+    ),
+
+  skipItem: (projectId: string, corpusId: string, canonical_key: string) =>
+    api.post<ScreeningNextResponse & { skipped: string; done: boolean }>(
+      `/projects/${projectId}/corpora/${corpusId}/queue/skip`,
+      { canonical_key }
     ),
 
   listQueue: (projectId: string, corpusId: string, params?: { page?: number; page_size?: number }) =>
@@ -647,8 +659,6 @@ export const corporaApi = {
     body: {
       canonical_key: string;
       extracted_json: ExtractionJson;
-      novelty_flag: boolean;
-      novelty_notes?: string;
     }
   ) => api.post<CorpusExtraction>(`/projects/${projectId}/corpora/${corpusId}/extractions`, body),
 

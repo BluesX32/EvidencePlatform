@@ -8,8 +8,8 @@ import {
   type BorderlineCase,
   type CorpusExtraction,
   type ExtractionJson,
+  type Snippet,
 } from "../api/client";
-import { TermList } from "../components/TermList";
 
 type Tab = "screen" | "fulltext" | "extract" | "committee";
 
@@ -22,14 +22,26 @@ const EXCLUDE_REASONS = [
   { value: "other", label: "Other" },
 ];
 
+const LEVELS = [
+  "gene",
+  "molecular",
+  "cellular",
+  "tissue/organ",
+  "patient/clinical",
+  "population",
+  "societal",
+];
+
+const DIMENSIONS = ["objective", "subjective", "societal"];
+
 function emptyExtraction(): ExtractionJson {
   return {
-    severity_terms: [],
-    framework_terms: [],
-    relationship_terms: [],
-    context: { disease: "", setting: "", population: "", notes: "" },
-    novelty_flag: true,
-    novelty_notes: "",
+    levels: [],
+    dimensions: [],
+    snippets: [],
+    free_note: "",
+    framework_updated: true,
+    framework_update_note: "",
   };
 }
 
@@ -107,6 +119,11 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
     queryFn: () => corporaApi.nextItem(projectId, corpusId).then((r) => r.data),
   });
 
+  const invalidateNext = () => {
+    qc.invalidateQueries({ queryKey: ["corpus-next", projectId, corpusId] });
+    qc.invalidateQueries({ queryKey: ["corpus", projectId, corpusId] });
+  };
+
   const decisionMutation = useMutation({
     mutationFn: (body: {
       decision: "include" | "exclude" | "borderline";
@@ -119,10 +136,15 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
         reason_code: body.reason_code,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["corpus-next", projectId, corpusId] });
-      qc.invalidateQueries({ queryKey: ["corpus", projectId, corpusId] });
+      invalidateNext();
       setExcludeOpen(false);
     },
+  });
+
+  const skipMutation = useMutation({
+    mutationFn: () =>
+      corporaApi.skipItem(projectId, corpusId, nextData!.canonical_key!),
+    onSuccess: () => invalidateNext(),
   });
 
   if (isLoading) return <p style={{ color: "#888" }}>Loading next item…</p>;
@@ -145,7 +167,7 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
           <div style={{ fontSize: "2rem" }}>✓</div>
           <div style={{ fontWeight: 600, marginTop: "0.5rem" }}>No more items to screen</div>
           <div style={{ fontSize: "0.875rem", color: "#888", marginTop: "0.25rem" }}>
-            All papers in this corpus have been screened at the title/abstract stage.
+            All papers in this corpus have been reviewed at the title/abstract stage.
           </div>
         </div>
       ) : nextData ? (
@@ -217,7 +239,7 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={() => decisionMutation.mutate({ decision: "include" })}
-              disabled={decisionMutation.isPending}
+              disabled={decisionMutation.isPending || skipMutation.isPending}
               style={btnStyle("#2e7d32")}
             >
               Include
@@ -226,7 +248,7 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
             <div style={{ position: "relative" }}>
               <button
                 onClick={() => setExcludeOpen((o) => !o)}
-                disabled={decisionMutation.isPending}
+                disabled={decisionMutation.isPending || skipMutation.isPending}
                 style={btnStyle("#c00")}
               >
                 Exclude ▾
@@ -248,12 +270,9 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
                   {EXCLUDE_REASONS.map((r) => (
                     <button
                       key={r.value}
-                      onClick={() => {
-                        decisionMutation.mutate({
-                          decision: "exclude",
-                          reason_code: r.value,
-                        });
-                      }}
+                      onClick={() =>
+                        decisionMutation.mutate({ decision: "exclude", reason_code: r.value })
+                      }
                       style={{
                         display: "block",
                         width: "100%",
@@ -274,10 +293,26 @@ function ScreenTab({ projectId, corpusId }: { projectId: string; corpusId: strin
 
             <button
               onClick={() => decisionMutation.mutate({ decision: "borderline" })}
-              disabled={decisionMutation.isPending}
+              disabled={decisionMutation.isPending || skipMutation.isPending}
               style={btnStyle("#e65100")}
             >
               Borderline
+            </button>
+
+            <button
+              onClick={() => skipMutation.mutate()}
+              disabled={decisionMutation.isPending || skipMutation.isPending}
+              style={{
+                padding: "0.5rem 1rem",
+                background: "none",
+                color: "#888",
+                border: "1px solid #ccc",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: "0.875rem",
+              }}
+            >
+              Skip
             </button>
           </div>
         </div>
@@ -297,9 +332,13 @@ function FullTextTab({ projectId, corpusId }: { projectId: string; corpusId: str
   const { data: decisions = [] } = useQuery({
     queryKey: ["corpus-decisions-ta", projectId, corpusId],
     queryFn: () =>
-      corporaApi
-        .listDecisions(projectId, corpusId, { stage: "TA" })
-        .then((r) => r.data),
+      corporaApi.listDecisions(projectId, corpusId, { stage: "TA" }).then((r) => r.data),
+  });
+
+  const { data: ftDecisions = [] } = useQuery({
+    queryKey: ["corpus-decisions-ft", projectId, corpusId],
+    queryFn: () =>
+      corporaApi.listDecisions(projectId, corpusId, { stage: "FT" }).then((r) => r.data),
   });
 
   const ftDecisionMutation = useMutation({
@@ -325,19 +364,7 @@ function FullTextTab({ projectId, corpusId }: { projectId: string; corpusId: str
     },
   });
 
-  // Get FT decisions to know which TA-included papers are still pending
-  const { data: ftDecisions = [] } = useQuery({
-    queryKey: ["corpus-decisions-ft", projectId, corpusId],
-    queryFn: () =>
-      corporaApi
-        .listDecisions(projectId, corpusId, { stage: "FT" })
-        .then((r) => r.data),
-  });
-
-  const taIncluded = decisions.filter(
-    (d: CorpusDecision) => d.decision === "include"
-  );
-  // Deduplicate by canonical_key (keep latest)
+  const taIncluded = decisions.filter((d: CorpusDecision) => d.decision === "include");
   const taIncludedUniq = Array.from(
     new Map(taIncluded.map((d: CorpusDecision) => [d.canonical_key, d])).values()
   );
@@ -385,10 +412,7 @@ function FullTextTab({ projectId, corpusId }: { projectId: string; corpusId: str
                       <div style={{ display: "flex", gap: "0.5rem" }}>
                         <button
                           onClick={() =>
-                            ftDecisionMutation.mutate({
-                              key: d.canonical_key,
-                              decision: "include",
-                            })
+                            ftDecisionMutation.mutate({ key: d.canonical_key, decision: "include" })
                           }
                           style={{ ...smallBtn, background: "#2e7d32", color: "#fff" }}
                         >
@@ -460,7 +484,7 @@ function FullTextTab({ projectId, corpusId }: { projectId: string; corpusId: str
 }
 
 // ---------------------------------------------------------------------------
-// Tab 3: Extract
+// Tab 3: Extract (conceptual framework form)
 // ---------------------------------------------------------------------------
 
 function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: string }) {
@@ -483,9 +507,7 @@ function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: stri
 
   const extractedKeys = new Set(extractions.map((e: CorpusExtraction) => e.canonical_key));
   const ftIncludedUniq = Array.from(
-    new Map(
-      ftDecisions.map((d: CorpusDecision) => [d.canonical_key, d])
-    ).values()
+    new Map(ftDecisions.map((d: CorpusDecision) => [d.canonical_key, d])).values()
   );
 
   const saveMutation = useMutation({
@@ -493,8 +515,6 @@ function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: stri
       corporaApi.submitExtraction(projectId, corpusId, {
         canonical_key: key,
         extracted_json: form,
-        novelty_flag: form.novelty_flag,
-        novelty_notes: form.novelty_notes || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["corpus-extractions", projectId, corpusId] });
@@ -507,8 +527,33 @@ function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: stri
   const openExtract = (key: string) => {
     setExpandedKey(key);
     const existing = extractions.find((e: CorpusExtraction) => e.canonical_key === key);
-    setForm(existing ? existing.extracted_json : emptyExtraction());
+    setForm(existing ? { ...emptyExtraction(), ...existing.extracted_json } : emptyExtraction());
   };
+
+  const toggleChip = (field: "levels" | "dimensions", value: string) => {
+    setForm((f) => {
+      const arr = f[field];
+      return {
+        ...f,
+        [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value],
+      };
+    });
+  };
+
+  const addSnippet = () =>
+    setForm((f) => ({
+      ...f,
+      snippets: [...f.snippets, { snippet: "", note: "", tag: "" }],
+    }));
+
+  const updateSnippet = (idx: number, patch: Partial<Snippet>) =>
+    setForm((f) => ({
+      ...f,
+      snippets: f.snippets.map((s, i) => (i === idx ? { ...s, ...patch } : s)),
+    }));
+
+  const removeSnippet = (idx: number) =>
+    setForm((f) => ({ ...f, snippets: f.snippets.filter((_, i) => i !== idx) }));
 
   return (
     <div>
@@ -523,12 +568,9 @@ function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: stri
             return (
               <div
                 key={d.canonical_key}
-                style={{
-                  border: "1px solid #ddd",
-                  borderRadius: 8,
-                  overflow: "hidden",
-                }}
+                style={{ border: "1px solid #ddd", borderRadius: 8, overflow: "hidden" }}
               >
+                {/* Row header */}
                 <div
                   style={{
                     display: "flex",
@@ -563,65 +605,144 @@ function ExtractTab({ projectId, corpusId }: { projectId: string; corpusId: stri
                   </button>
                 </div>
 
+                {/* Extraction form */}
                 {isExpanded && (
                   <div style={{ padding: "1rem", borderTop: "1px solid #eee" }}>
-                    <TermList
-                      label="Severity Terms"
-                      items={form.severity_terms}
-                      onChange={(items) => setForm((f) => ({ ...f, severity_terms: items }))}
-                    />
-                    <TermList
-                      label="Framework Terms"
-                      items={form.framework_terms}
-                      onChange={(items) => setForm((f) => ({ ...f, framework_terms: items }))}
-                    />
-                    <TermList
-                      label="Relationship Terms"
-                      items={form.relationship_terms}
-                      onChange={(items) =>
-                        setForm((f) => ({ ...f, relationship_terms: items }))
-                      }
-                    />
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
-                      {(["disease", "setting", "population", "notes"] as const).map((field) => (
-                        <div key={field}>
-                          <label style={labelStyle}>
-                            {field.charAt(0).toUpperCase() + field.slice(1)}
-                          </label>
-                          <input
-                            type="text"
-                            value={form.context[field]}
-                            onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                context: { ...f.context, [field]: e.target.value },
-                              }))
-                            }
-                            style={inputStyle}
-                          />
-                        </div>
-                      ))}
+                    {/* Levels */}
+                    <div style={{ marginBottom: "0.875rem" }}>
+                      <label style={labelStyle}>Levels of analysis</label>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.25rem" }}>
+                        {LEVELS.map((lv) => (
+                          <button
+                            key={lv}
+                            onClick={() => toggleChip("levels", lv)}
+                            style={chipStyle(form.levels.includes(lv))}
+                          >
+                            {lv}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
-                    <div style={{ marginBottom: "0.75rem" }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={form.novelty_flag}
-                          onChange={(e) =>
-                            setForm((f) => ({ ...f, novelty_flag: e.target.checked }))
+                    {/* Dimensions */}
+                    <div style={{ marginBottom: "0.875rem" }}>
+                      <label style={labelStyle}>Dimensions</label>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.25rem" }}>
+                        {DIMENSIONS.map((dim) => (
+                          <button
+                            key={dim}
+                            onClick={() => toggleChip("dimensions", dim)}
+                            style={chipStyle(form.dimensions.includes(dim))}
+                          >
+                            {dim}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Snippets */}
+                    <div style={{ marginBottom: "0.875rem" }}>
+                      <label style={labelStyle}>Snippets</label>
+                      {form.snippets.map((snip, idx) => (
+                        <div
+                          key={idx}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "2fr 1fr 1fr auto",
+                            gap: "0.4rem",
+                            marginBottom: "0.4rem",
+                            alignItems: "center",
+                          }}
+                        >
+                          <input
+                            placeholder="Snippet text…"
+                            value={snip.snippet}
+                            onChange={(e) => updateSnippet(idx, { snippet: e.target.value })}
+                            style={inputStyle}
+                          />
+                          <input
+                            placeholder="Note"
+                            value={snip.note}
+                            onChange={(e) => updateSnippet(idx, { note: e.target.value })}
+                            style={inputStyle}
+                          />
+                          <input
+                            placeholder="Tag (optional)"
+                            value={snip.tag ?? ""}
+                            onChange={(e) => updateSnippet(idx, { tag: e.target.value })}
+                            style={inputStyle}
+                          />
+                          <button
+                            onClick={() => removeSnippet(idx)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              color: "#c00",
+                              cursor: "pointer",
+                              fontSize: "1rem",
+                              padding: "0 0.25rem",
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={addSnippet}
+                        style={{
+                          background: "none",
+                          border: "1px dashed #aaa",
+                          borderRadius: 4,
+                          color: "#555",
+                          cursor: "pointer",
+                          fontSize: "0.8rem",
+                          padding: "0.25rem 0.6rem",
+                          marginTop: "0.25rem",
+                        }}
+                      >
+                        + Add snippet
+                      </button>
+                    </div>
+
+                    {/* Free note */}
+                    <div style={{ marginBottom: "0.875rem" }}>
+                      <label style={labelStyle}>Free note</label>
+                      <textarea
+                        rows={3}
+                        value={form.free_note}
+                        onChange={(e) => setForm((f) => ({ ...f, free_note: e.target.value }))}
+                        placeholder="Observations, context, emerging concepts…"
+                        style={{ ...inputStyle, resize: "vertical" }}
+                      />
+                    </div>
+
+                    {/* Framework updated? */}
+                    <div style={{ marginBottom: "1rem" }}>
+                      <label style={labelStyle}>Did this paper update the framework?</label>
+                      <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.25rem" }}>
+                        <button
+                          onClick={() =>
+                            setForm((f) => ({ ...f, framework_updated: true, framework_update_note: "" }))
                           }
-                        />
-                        <span style={{ fontWeight: 500 }}>New concepts found?</span>
-                      </label>
-                      {form.novelty_flag && (
+                          style={chipStyle(form.framework_updated)}
+                        >
+                          Yes — new concepts found
+                        </button>
+                        <button
+                          onClick={() => setForm((f) => ({ ...f, framework_updated: false }))}
+                          style={chipStyle(!form.framework_updated)}
+                        >
+                          No — no new concepts
+                        </button>
+                      </div>
+                      {!form.framework_updated && (
                         <input
                           type="text"
-                          placeholder="Describe the novel concepts…"
-                          value={form.novelty_notes}
+                          placeholder="Why not? (optional)"
+                          value={form.framework_update_note}
                           onChange={(e) =>
-                            setForm((f) => ({ ...f, novelty_notes: e.target.value }))
+                            setForm((f) => ({ ...f, framework_update_note: e.target.value }))
                           }
                           style={{ ...inputStyle, marginTop: "0.4rem" }}
                         />
@@ -667,7 +788,6 @@ function CommitteeTab({ projectId, corpusId }: { projectId: string; corpusId: st
     }: {
       caseId: string;
       decision: "include" | "exclude";
-      canonical_key: string;
     }) =>
       corporaApi.resolveBorderline(projectId, corpusId, caseId, {
         resolution_decision: decision,
@@ -714,9 +834,7 @@ function CommitteeTab({ projectId, corpusId }: { projectId: string; corpusId: st
                       type="text"
                       placeholder="Committee notes…"
                       value={notes[c.id] ?? ""}
-                      onChange={(e) =>
-                        setNotes((n) => ({ ...n, [c.id]: e.target.value }))
-                      }
+                      onChange={(e) => setNotes((n) => ({ ...n, [c.id]: e.target.value }))}
                       style={{ ...inputStyle, maxWidth: 400 }}
                     />
                   </div>
@@ -724,11 +842,7 @@ function CommitteeTab({ projectId, corpusId }: { projectId: string; corpusId: st
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <button
                     onClick={() =>
-                      resolveMutation.mutate({
-                        caseId: c.id,
-                        decision: "include",
-                        canonical_key: c.canonical_key,
-                      })
+                      resolveMutation.mutate({ caseId: c.id, decision: "include" })
                     }
                     style={{ ...smallBtn, background: "#2e7d32", color: "#fff" }}
                   >
@@ -736,11 +850,7 @@ function CommitteeTab({ projectId, corpusId }: { projectId: string; corpusId: st
                   </button>
                   <button
                     onClick={() =>
-                      resolveMutation.mutate({
-                        caseId: c.id,
-                        decision: "exclude",
-                        canonical_key: c.canonical_key,
-                      })
+                      resolveMutation.mutate({ caseId: c.id, decision: "exclude" })
                     }
                     style={{ ...smallBtn, background: "#c00", color: "#fff" }}
                   >
@@ -777,7 +887,6 @@ function SaturationBar({ corpus }: { corpus: Corpus }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-        {/* Block progress */}
         {Array.from({ length: saturation_threshold }).map((_, i) => (
           <div
             key={i}
@@ -793,9 +902,7 @@ function SaturationBar({ corpus }: { corpus: Corpus }) {
       <span style={{ fontSize: "0.875rem", color: "#444" }}>
         {consecutive_no_novelty} / {saturation_threshold} consecutive non-novel
       </span>
-      <span style={{ fontSize: "0.875rem", color: "#666" }}>
-        {total_extracted} extracted
-      </span>
+      <span style={{ fontSize: "0.875rem", color: "#666" }}>{total_extracted} extracted</span>
       {stopped_at ? (
         <span style={{ color: "#2e7d32", fontWeight: 600, fontSize: "0.875rem" }}>
           Saturated — stopping rule fired
@@ -820,6 +927,17 @@ const btnStyle = (bg: string): React.CSSProperties => ({
   cursor: "pointer",
   fontWeight: 600,
   fontSize: "0.9rem",
+});
+
+const chipStyle = (active: boolean): React.CSSProperties => ({
+  padding: "0.3rem 0.75rem",
+  border: active ? "2px solid #1a73e8" : "1px solid #ccc",
+  borderRadius: 20,
+  background: active ? "#e8f0fe" : "#fff",
+  cursor: "pointer",
+  fontSize: "0.85rem",
+  color: active ? "#1a73e8" : "#555",
+  fontWeight: active ? 600 : 400,
 });
 
 const smallBtn: React.CSSProperties = {
