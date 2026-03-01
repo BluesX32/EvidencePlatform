@@ -454,6 +454,11 @@ export default function ProjectPage() {
               Overlap Resolution
             </Link>
           )}
+          {(project?.record_count ?? 0) > 0 && (
+            <Link to={`/projects/${id}/corpora`} className="btn-secondary">
+              Screening
+            </Link>
+          )}
         </div>
 
         {/* ── Sources ──────────────────────────────────────────────────────── */}

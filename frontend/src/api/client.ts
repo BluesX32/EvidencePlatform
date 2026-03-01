@@ -474,3 +474,191 @@ export const overlapsApi = {
   getRun: (projectId: string, runId: string) =>
     api.get<OverlapRunDetail>(`/projects/${projectId}/overlaps/strategy-runs/${runId}`),
 };
+
+// ── Corpora & Screening (VS4) ─────────────────────────────────────────────────
+
+export interface Corpus {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  source_ids: string[];
+  saturation_threshold: number;
+  consecutive_no_novelty: number;
+  total_extracted: number;
+  stopped_at: string | null;
+  queue_seed: number | null;
+  queue_generated_at: string | null;
+  queue_size: number;
+  created_at: string;
+  // Only present on GET /{corpus_id}
+  ta_screened?: number;
+  ta_included?: number;
+}
+
+export interface ScreeningItem {
+  canonical_key: string;
+  order_index: number;
+  position: number;
+  total: number;
+  title: string | null;
+  abstract: string | null;
+  year: number | null;
+  authors: string[] | null;
+  doi: string | null;
+  source_names: string[];
+}
+
+export interface ScreeningNextResponse {
+  done: boolean;
+  canonical_key?: string;
+  order_index?: number;
+  position?: number;
+  total?: number;
+  title?: string | null;
+  abstract?: string | null;
+  year?: number | null;
+  authors?: string[] | null;
+  doi?: string | null;
+  source_names?: string[];
+}
+
+export interface CorpusDecision {
+  id: string;
+  corpus_id: string;
+  canonical_key: string;
+  stage: "TA" | "FT";
+  decision: "include" | "exclude" | "borderline";
+  reason_code: string | null;
+  notes: string | null;
+  reviewer_id: string | null;
+  created_at: string;
+  borderline_case_id?: string | null;
+}
+
+export interface BorderlineCase {
+  id: string;
+  corpus_id: string;
+  canonical_key: string;
+  stage: "TA" | "FT";
+  status: "open" | "resolved";
+  resolution_decision: string | null;
+  resolution_notes: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface Term {
+  term: string;
+  snippet: string;
+  notes: string;
+}
+
+export interface ExtractionJson {
+  severity_terms: Term[];
+  framework_terms: Term[];
+  relationship_terms: Term[];
+  context: { disease: string; setting: string; population: string; notes: string };
+  novelty_flag: boolean;
+  novelty_notes: string;
+}
+
+export interface CorpusExtraction {
+  id: string;
+  corpus_id: string;
+  canonical_key: string;
+  extracted_json: ExtractionJson;
+  novelty_flag: boolean;
+  novelty_notes: string | null;
+  reviewer_id: string | null;
+  created_at: string;
+}
+
+export interface GenerateQueueResponse {
+  queue_size: number;
+  excluded_count: number;
+  seed: number;
+}
+
+export const corporaApi = {
+  create: (
+    projectId: string,
+    body: { name: string; description?: string; source_ids: string[]; saturation_threshold?: number }
+  ) => api.post<Corpus>(`/projects/${projectId}/corpora`, body),
+
+  list: (projectId: string) =>
+    api.get<Corpus[]>(`/projects/${projectId}/corpora`),
+
+  get: (projectId: string, corpusId: string) =>
+    api.get<Corpus>(`/projects/${projectId}/corpora/${corpusId}`),
+
+  generateQueue: (projectId: string, corpusId: string, seed?: number) =>
+    api.post<GenerateQueueResponse>(
+      `/projects/${projectId}/corpora/${corpusId}/queue/generate`,
+      { seed: seed ?? null }
+    ),
+
+  nextItem: (projectId: string, corpusId: string) =>
+    api.get<ScreeningNextResponse>(
+      `/projects/${projectId}/corpora/${corpusId}/queue/next`
+    ),
+
+  listQueue: (projectId: string, corpusId: string, params?: { page?: number; page_size?: number }) =>
+    api.get(`/projects/${projectId}/corpora/${corpusId}/queue`, { params }),
+
+  submitDecision: (
+    projectId: string,
+    corpusId: string,
+    body: {
+      canonical_key: string;
+      stage: "TA" | "FT";
+      decision: "include" | "exclude" | "borderline";
+      reason_code?: string;
+      notes?: string;
+    }
+  ) => api.post<CorpusDecision>(`/projects/${projectId}/corpora/${corpusId}/decisions`, body),
+
+  listDecisions: (
+    projectId: string,
+    corpusId: string,
+    params?: { stage?: string; canonical_key?: string }
+  ) => api.get<CorpusDecision[]>(`/projects/${projectId}/corpora/${corpusId}/decisions`, { params }),
+
+  listBorderline: (projectId: string, corpusId: string, status?: string) =>
+    api.get<BorderlineCase[]>(`/projects/${projectId}/corpora/${corpusId}/borderline`, {
+      params: status ? { status } : undefined,
+    }),
+
+  resolveBorderline: (
+    projectId: string,
+    corpusId: string,
+    caseId: string,
+    body: { resolution_decision: string; resolution_notes?: string }
+  ) =>
+    api.post<BorderlineCase>(
+      `/projects/${projectId}/corpora/${corpusId}/borderline/${caseId}/resolve`,
+      body
+    ),
+
+  submitExtraction: (
+    projectId: string,
+    corpusId: string,
+    body: {
+      canonical_key: string;
+      extracted_json: ExtractionJson;
+      novelty_flag: boolean;
+      novelty_notes?: string;
+    }
+  ) => api.post<CorpusExtraction>(`/projects/${projectId}/corpora/${corpusId}/extractions`, body),
+
+  listExtractions: (projectId: string, corpusId: string) =>
+    api.get<CorpusExtraction[]>(`/projects/${projectId}/corpora/${corpusId}/extractions`),
+
+  submitSecondReview: (
+    projectId: string,
+    corpusId: string,
+    body: { canonical_key: string; stage: string; agree: boolean; notes?: string }
+  ) =>
+    api.post(`/projects/${projectId}/corpora/${corpusId}/second-reviews`, body),
+};
