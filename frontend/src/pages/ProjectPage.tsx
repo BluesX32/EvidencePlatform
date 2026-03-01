@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -35,15 +35,81 @@ const FIELD_DEFS: FieldDef[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Preset configurations
+// ---------------------------------------------------------------------------
+
+interface PresetDef {
+  label: string;
+  tooltip: string;
+  fields: string[];
+  warn?: boolean;
+}
+
+const PRESETS: PresetDef[] = [
+  {
+    label: "Recommended",
+    tooltip: "DOI · PMID · Title + Year + First Author + Volume — good balance of precision and recall",
+    fields: ["doi", "pmid", "title", "year", "first_author", "volume"],
+  },
+  {
+    label: "Strict",
+    tooltip: "Requires more fields to match — fewer false positives, may miss some duplicates",
+    fields: ["doi", "pmid", "title", "year", "first_author", "volume", "journal"],
+  },
+  {
+    label: "Loose",
+    tooltip: "Title + Year only — faster but may produce false positives for short titles",
+    fields: ["doi", "pmid", "title", "year"],
+    warn: true,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Live rule summary (mirrors _make_config_summary on the backend)
+// ---------------------------------------------------------------------------
+
+function buildRuleSummary(
+  fields: Set<string>,
+  fuzzyEnabled: boolean,
+  fuzzyThreshold: number,
+  yearTolerance: number,
+): string {
+  const parts: string[] = [];
+
+  const ids = ["doi", "pmid"].filter((f) => fields.has(f));
+  if (ids.length) parts.push(ids.map((f) => f.toUpperCase()).join(" + "));
+
+  if (fields.has("title")) {
+    const titleParts = ["Title"];
+    if (fields.has("year"))         titleParts.push("Year");
+    if (fields.has("first_author")) titleParts.push("First Author");
+    if (fields.has("all_authors"))  titleParts.push("All Authors");
+    if (fields.has("volume"))       titleParts.push("Volume");
+    if (fields.has("pages"))        titleParts.push("Pages");
+    if (fields.has("journal"))      titleParts.push("Journal");
+    parts.push(titleParts.join(" + "));
+  }
+
+  if (fuzzyEnabled) {
+    parts.push(`Fuzzy: on (${Math.round(fuzzyThreshold * 100)}%)`);
+  } else {
+    parts.push("Fuzzy: off");
+  }
+  parts.push(yearTolerance === 0 ? "Year: exact" : `Year: ±${yearTolerance}`);
+
+  return parts.join(" · ") || "No fields selected";
+}
+
+// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
 function statusBadge(status: ImportJob["status"]) {
   const colors: Record<string, string> = {
-    pending: "#888",
+    pending:    "#888",
     processing: "#1a73e8",
-    completed: "#188038",
-    failed: "#c5221f",
+    completed:  "#188038",
+    failed:     "#c5221f",
   };
   return (
     <span style={{ color: colors[status] ?? "#888", fontWeight: 600 }}>
@@ -83,6 +149,44 @@ function FieldChip({
   );
 }
 
+// Simple auto-dismiss toast
+function Toast({ message, type, onDismiss }: { message: string; type: "success" | "error"; onDismiss: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 6000);
+    return () => clearTimeout(t);
+  }, [onDismiss]);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: "1.5rem",
+        right: "1.5rem",
+        zIndex: 1000,
+        background: type === "success" ? "#e6f4ea" : "#fce8e6",
+        border: `1px solid ${type === "success" ? "#b7dfc4" : "#f28b82"}`,
+        borderRadius: "0.5rem",
+        padding: "0.75rem 1.25rem",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+        maxWidth: 420,
+        fontSize: "0.88rem",
+        color: type === "success" ? "#188038" : "#c5221f",
+        display: "flex",
+        alignItems: "center",
+        gap: "0.75rem",
+      }}
+    >
+      <span style={{ flex: 1 }}>{message}</span>
+      <button
+        onClick={onDismiss}
+        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1rem", lineHeight: 1, color: "inherit", padding: 0 }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
@@ -103,6 +207,9 @@ export default function ProjectPage() {
   const [yearTolerance, setYearTolerance] = useState(DEFAULT_OVERLAP_CONFIG.year_tolerance);
   const [newStrategyName, setNewStrategyName] = useState("");
   const [overlapError, setOverlapError] = useState<string | null>(null);
+
+  // Toast
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -155,7 +262,14 @@ export default function ProjectPage() {
   const isJobRunning =
     lastDedupJob?.status === "pending" || lastDedupJob?.status === "running";
 
+  // Derived strategy state
   const enabledFieldCount = selectedFields.size;
+  const fuzzyValid = !fuzzyEnabled || (fuzzyThreshold >= 0.70 && fuzzyThreshold <= 1.0);
+  const canSave = newStrategyName.trim().length > 0 && enabledFieldCount > 0 && fuzzyValid;
+  const ruleSummary = buildRuleSummary(selectedFields, fuzzyEnabled, fuzzyThreshold, yearTolerance);
+
+  // Last completed import
+  const lastImport = jobs?.find((j) => j.status === "completed");
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -167,6 +281,7 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["strategies-active", id] });
       setNewStrategyName("");
       setOverlapError(null);
+      setToast({ message: "Strategy saved and activated.", type: "success" });
     },
     onError: (err: any) => {
       const detail = err.response?.data?.detail ?? "Failed to create strategy";
@@ -181,6 +296,10 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       queryClient.invalidateQueries({ queryKey: ["overlap", id] });
       setOverlapError(null);
+      setToast({
+        message: "Overlap detection started. Results will appear on the Overlap Resolution page once complete.",
+        type: "success",
+      });
     },
     onError: (err: any) => {
       const detail =
@@ -226,20 +345,23 @@ export default function ProjectPage() {
     });
   }
 
+  function handlePreset(fields: readonly string[]) {
+    setSelectedFields(new Set(fields));
+  }
+
   function handleRunOverlap() {
     if (activeStrategy) runOverlapDetection.mutate(activeStrategy.id);
   }
 
   function handleSaveAndRun() {
-    const name = newStrategyName.trim();
-    if (!name) return;
+    if (!canSave) return;
     const overlapConfig: OverlapConfig = {
       selected_fields: Array.from(selectedFields),
       fuzzy_enabled: fuzzyEnabled,
       fuzzy_threshold: fuzzyThreshold,
       year_tolerance: yearTolerance,
     };
-    createStrategy.mutate({ name, overlapConfig });
+    createStrategy.mutate({ name: newStrategyName.trim(), overlapConfig });
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -248,6 +370,14 @@ export default function ProjectPage() {
 
   return (
     <div className="page">
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onDismiss={() => setToast(null)}
+        />
+      )}
+
       <header className="page-header">
         <Link to="/projects" className="back-link">← Projects</Link>
       </header>
@@ -269,6 +399,46 @@ export default function ProjectPage() {
             )}
           </div>
         </div>
+
+        {/* ── Status bar ───────────────────────────────────────────────────── */}
+        {(lastImport || lastDedupJob || isJobRunning) && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "1.25rem",
+              background: "#f8f9fa",
+              border: "1px solid #dadce0",
+              borderRadius: "0.375rem",
+              padding: "0.5rem 0.9rem",
+              marginBottom: "1rem",
+              fontSize: "0.82rem",
+              color: "#5f6368",
+            }}
+          >
+            {lastImport && (
+              <span>
+                <strong style={{ color: "#3c4043" }}>Last import:</strong>{" "}
+                {lastImport.filename}{" "}
+                · {lastImport.record_count?.toLocaleString() ?? "?"} records{" "}
+                · {new Date(lastImport.completed_at ?? lastImport.created_at).toLocaleString()}
+              </span>
+            )}
+            {isJobRunning && (
+              <span style={{ color: "#1a73e8" }}>
+                ⏳ Overlap detection running…
+              </span>
+            )}
+            {!isJobRunning && lastDedupJob?.status === "completed" && (
+              <span>
+                <strong style={{ color: "#3c4043" }}>Last overlap run:</strong>{" "}
+                {lastDedupJob.strategy?.name ?? activeStrategy?.name ?? "—"}{" "}
+                · {lastDedupJob.clusters_created?.toLocaleString() ?? 0} groups{" "}
+                · {new Date(lastDedupJob.completed_at!).toLocaleString()}
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="action-bar">
           <Link to={`/projects/${id}/import`} className="btn-primary">
@@ -392,9 +562,37 @@ export default function ProjectPage() {
           )}
           {isJobRunning && (
             <p style={{ color: "#1a73e8", marginBottom: "0.75rem" }}>
-              Overlap detection running…
+              ⏳ Overlap detection running…
             </p>
           )}
+
+          {/* ── Preset buttons ─────────────────────────────────────────────── */}
+          <div style={{ marginBottom: "0.75rem" }}>
+            <span style={{ fontSize: "0.82rem", color: "#5f6368", marginRight: "0.5rem" }}>
+              Presets:
+            </span>
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                title={p.tooltip}
+                onClick={() => handlePreset(p.fields)}
+                style={{
+                  marginRight: "0.4rem",
+                  padding: "0.2rem 0.65rem",
+                  borderRadius: "0.3rem",
+                  border: "1px solid #dadce0",
+                  background: "#f8f9fa",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                  color: p.warn ? "#e37400" : "#3c4043",
+                }}
+              >
+                {p.label}
+                {p.warn && " ⚠"}
+              </button>
+            ))}
+          </div>
 
           {/* Strategy builder — field chip selector */}
           <div style={{ marginBottom: "1.25rem" }}>
@@ -422,13 +620,25 @@ export default function ProjectPage() {
               ))}
             </div>
 
+            {/* Live rule summary */}
+            <p
+              style={{
+                fontSize: "0.8rem",
+                color: enabledFieldCount === 0 ? "#c5221f" : "#5f6368",
+                marginBottom: "0.5rem",
+                fontStyle: "italic",
+              }}
+            >
+              Rule: {ruleSummary}
+            </p>
+
             {/* Fuzzy matching toggle + options */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: "1rem",
-                marginTop: "0.75rem",
+                marginTop: "0.25rem",
                 flexWrap: "wrap",
               }}
             >
@@ -490,15 +700,11 @@ export default function ProjectPage() {
             {activeStrategy && (
               <button
                 className="btn-primary"
-                disabled={
-                  isJobRunning ||
-                  runOverlapDetection.isPending ||
-                  enabledFieldCount === 0
-                }
+                disabled={isJobRunning || runOverlapDetection.isPending}
                 onClick={handleRunOverlap}
                 title="Run overlap detection with the active strategy"
               >
-                {isJobRunning ? "Running…" : "Run overlap detection"}
+                {isJobRunning ? "⏳ Running…" : "Run overlap detection"}
               </button>
             )}
 
@@ -513,15 +719,19 @@ export default function ProjectPage() {
               />
               <button
                 className={activeStrategy ? "btn-secondary" : "btn-primary"}
-                disabled={
-                  !newStrategyName.trim() ||
-                  createStrategy.isPending ||
-                  enabledFieldCount === 0
-                }
+                disabled={!canSave || createStrategy.isPending}
                 onClick={handleSaveAndRun}
-                title="Save these rules as a new strategy and activate it"
+                title={
+                  !newStrategyName.trim()
+                    ? "Enter a strategy name"
+                    : enabledFieldCount === 0
+                    ? "Select at least one field"
+                    : !fuzzyValid
+                    ? "Fuzzy threshold must be between 70% and 100%"
+                    : "Save these rules as a new strategy and activate it"
+                }
               >
-                Save &amp; activate
+                {createStrategy.isPending ? "Saving…" : "Save & activate"}
               </button>
             </div>
           </div>

@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   overlapsApi,
   dedupJobsApi,
@@ -111,6 +111,82 @@ function PaginationStrip({
 export default function OverlapPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ── URL-synced state helpers ──────────────────────────────────────────────
+
+  function getParam(key: string, fallback: string): string {
+    return searchParams.get(key) ?? fallback;
+  }
+  function getIntParam(key: string, fallback: number): number {
+    const v = searchParams.get(key);
+    return v ? parseInt(v, 10) : fallback;
+  }
+  function getBoolParam(key: string, fallback: boolean): boolean {
+    const v = searchParams.get(key);
+    return v ? v === "true" : fallback;
+  }
+
+  // Initialise state from URL
+  const [originFilter, setOriginFilterState]     = useState<"all" | "auto" | "manual" | "mixed">(() =>
+    (getParam("origin", "all") as "all" | "auto" | "manual" | "mixed")
+  );
+  const [showPinnedOnly, setShowPinnedOnlyState] = useState<boolean>(() => getBoolParam("pinned", false));
+  const [minSourcesFilter, setMinSourcesState]   = useState<number>(() => getIntParam("min_sources", 0));
+  const [selectedSourceId, setSelectedSourceIdState] = useState<string | null>(() => searchParams.get("source") ?? null);
+  const [clusterPage, setClusterPageState]       = useState<number>(() => getIntParam("page", 1));
+  const [clusterPageSize, setClusterPageSizeState] = useState<number>(() => getIntParam("page_size", 50));
+  const [clusterSearch, setClusterSearchState]   = useState<string>(() => getParam("q", ""));
+
+  // URL-synced setters
+  const updateParams = useCallback((updates: Record<string, string | null>) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      for (const [k, v] of Object.entries(updates)) {
+        if (v === null || v === "" || v === "all" || v === "false" || v === "0") {
+          next.delete(k);
+        } else {
+          next.set(k, v);
+        }
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  function setOriginFilter(v: typeof originFilter) {
+    setOriginFilterState(v);
+    updateParams({ origin: v, page: null });
+    setClusterPageState(1);
+  }
+  function setShowPinnedOnly(v: boolean) {
+    setShowPinnedOnlyState(v);
+    updateParams({ pinned: v ? "true" : null, page: null });
+    setClusterPageState(1);
+  }
+  function setMinSourcesFilter(v: number) {
+    setMinSourcesState(v);
+    updateParams({ min_sources: v > 0 ? String(v) : null, page: null });
+    setClusterPageState(1);
+  }
+  function setSelectedSourceId(v: string | null) {
+    setSelectedSourceIdState(v);
+    updateParams({ source: v, page: null });
+    setClusterPageState(1);
+  }
+  function setClusterPage(v: number) {
+    setClusterPageState(v);
+    updateParams({ page: v > 1 ? String(v) : null });
+  }
+  function setClusterPageSize(v: number) {
+    setClusterPageSizeState(v);
+    setClusterPageState(1);
+    updateParams({ page_size: v !== 50 ? String(v) : null, page: null });
+  }
+  function setClusterSearch(v: string) {
+    setClusterSearchState(v);
+    setClusterPageState(1);
+    updateParams({ q: v || null, page: null });
+  }
 
   // ── Queries ───────────────────────────────────────────────────────────────
 
@@ -138,36 +214,30 @@ export default function OverlapPage() {
     enabled: !!projectId,
   });
 
-  // ── State ─────────────────────────────────────────────────────────────────
+  // ── Other UI state (not URL-synced) ───────────────────────────────────────
 
   const [highlightedPair, setHighlightedPair]     = useState<[string, string] | null>(null);
   const [showLinkForm, setShowLinkForm]           = useState(false);
   const [linkRecordIds, setLinkRecordIds]         = useState("");
   const [linkNote, setLinkNote]                   = useState("");
   const [linkError, setLinkError]                 = useState<string | null>(null);
-
-  // Euler map + cluster list filter
-  const [selectedSourceId, setSelectedSourceId]   = useState<string | null>(null);
   const [expandedClusterId, setExpandedClusterId] = useState<string | null>(null);
-
-  // Cluster list filter chips (all server-side)
-  const [originFilter, setOriginFilter]         = useState<"all" | "auto" | "manual" | "mixed">("all");
-  const [showPinnedOnly, setShowPinnedOnly]     = useState(false);
-  const [minSourcesFilter, setMinSourcesFilter] = useState(0);
-
-  // Pagination
-  const [clusterPage, setClusterPage]         = useState(1);
-  const [clusterPageSize, setClusterPageSize] = useState(50);
 
   // Strategy history panel
   const [showStrategyHistory, setShowStrategyHistory] = useState(false);
   const [runsPage, setRunsPage]                       = useState(1);
   const [expandedStrategyId, setExpandedStrategyId]   = useState<string | null>(null);
 
-  // Reset to page 1 whenever any filter changes
+  // Diagnostics panel
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // ── Debounced search ──────────────────────────────────────────────────────
+
+  const [debouncedSearch, setDebouncedSearch] = useState(clusterSearch);
   useEffect(() => {
-    setClusterPage(1);
-  }, [originFilter, showPinnedOnly, minSourcesFilter, selectedSourceId]);
+    const t = setTimeout(() => setDebouncedSearch(clusterSearch), 350);
+    return () => clearTimeout(t);
+  }, [clusterSearch]);
 
   // ── Clusters query (server-side filtered + paginated) ─────────────────────
 
@@ -176,6 +246,7 @@ export default function OverlapPage() {
       "overlap-clusters", projectId,
       clusterPage, clusterPageSize,
       originFilter, showPinnedOnly, minSourcesFilter, selectedSourceId,
+      debouncedSearch,
     ],
     queryFn: () =>
       overlapsApi.listClusters(projectId!, {
@@ -186,6 +257,7 @@ export default function OverlapPage() {
         origin: originFilter !== "all" ? originFilter : undefined,
         locked: showPinnedOnly ? true : undefined,
         min_sources: minSourcesFilter > 0 ? minSourcesFilter : undefined,
+        q: debouncedSearch || undefined,
       }).then((r) => r.data),
     enabled: !!projectId,
   });
@@ -262,7 +334,8 @@ export default function OverlapPage() {
   const totalPages  = clustersData?.total_pages ?? 1;
 
   const hasActiveFilter =
-    originFilter !== "all" || showPinnedOnly || minSourcesFilter >= 3 || selectedSourceId !== null;
+    originFilter !== "all" || showPinnedOnly || minSourcesFilter >= 3 ||
+    selectedSourceId !== null || debouncedSearch.length > 0;
 
   const paginationProps = {
     page: clusterPage,
@@ -270,7 +343,7 @@ export default function OverlapPage() {
     totalItems,
     pageSize: clusterPageSize,
     onPageChange: setClusterPage,
-    onPageSizeChange: (ps: number) => { setClusterPageSize(ps); setClusterPage(1); },
+    onPageSizeChange: (ps: number) => setClusterPageSize(ps),
   };
 
   return (
@@ -400,6 +473,68 @@ export default function OverlapPage() {
                   total records; overlapping areas reflect pairwise shared paper-group
                   counts. Click a circle to filter the paper groups below.
                 </p>
+
+                {/* Source legend */}
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "0.6rem",
+                    marginBottom: "0.6rem",
+                  }}
+                >
+                  {visualData.sources.map((s, i) => {
+                    const color = SOURCE_COLORS[i % SOURCE_COLORS.length];
+                    const isSelected = selectedSourceId === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedSourceId(isSelected ? null : s.id)}
+                        title={`${isSelected ? "Clear filter: " : "Filter by: "}${s.name}`}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.35rem",
+                          padding: "0.2rem 0.55rem",
+                          borderRadius: "1rem",
+                          border: `1.5px solid ${isSelected ? color : color + "88"}`,
+                          background: isSelected ? color + "22" : "transparent",
+                          cursor: "pointer",
+                          fontSize: "0.78rem",
+                          fontWeight: isSelected ? 700 : 500,
+                          color: "#3c4043",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: "50%",
+                            background: color,
+                            flexShrink: 0,
+                          }}
+                        />
+                        {s.name}
+                      </button>
+                    );
+                  })}
+                  {selectedSourceId && (
+                    <button
+                      onClick={() => setSelectedSourceId(null)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "#c5221f",
+                        fontSize: "0.78rem",
+                        padding: "0.2rem 0.3rem",
+                      }}
+                    >
+                      ✕ Clear
+                    </button>
+                  )}
+                </div>
+
                 <EulerDiagram
                   visualData={visualData}
                   sourceTotals={data.sources}
@@ -532,7 +667,7 @@ export default function OverlapPage() {
                 </div>
               )}
 
-              {/* Filter chips */}
+              {/* Filter chips + search */}
               <div
                 style={{
                   display: "flex",
@@ -564,20 +699,24 @@ export default function OverlapPage() {
                 <FilterChip
                   label="Pinned only"
                   active={showPinnedOnly}
-                  onClick={() => setShowPinnedOnly((v) => !v)}
+                  onClick={() => setShowPinnedOnly(!showPinnedOnly)}
                 />
                 <FilterChip
                   label="3+ sources"
                   active={minSourcesFilter >= 3}
-                  onClick={() => setMinSourcesFilter((v) => (v >= 3 ? 0 : 3))}
+                  onClick={() => setMinSourcesFilter(minSourcesFilter >= 3 ? 0 : 3)}
                 />
                 {hasActiveFilter && (
                   <button
                     onClick={() => {
-                      setOriginFilter("all");
-                      setShowPinnedOnly(false);
-                      setMinSourcesFilter(0);
-                      setSelectedSourceId(null);
+                      setOriginFilterState("all");
+                      setShowPinnedOnlyState(false);
+                      setMinSourcesState(0);
+                      setSelectedSourceIdState(null);
+                      setClusterSearchState("");
+                      setDebouncedSearch("");
+                      setClusterPageState(1);
+                      setSearchParams({}, { replace: true });
                     }}
                     style={{
                       background: "none",
@@ -591,6 +730,17 @@ export default function OverlapPage() {
                     ✕ Clear all filters
                   </button>
                 )}
+              </div>
+
+              {/* Title search */}
+              <div style={{ marginBottom: "0.75rem", maxWidth: 360 }}>
+                <input
+                  className="input"
+                  placeholder="Search by title…"
+                  value={clusterSearch}
+                  onChange={(e) => setClusterSearch(e.target.value)}
+                  style={{ width: "100%", fontSize: "0.85rem" }}
+                />
               </div>
 
               {/* Pagination — top */}
@@ -864,6 +1014,75 @@ export default function OverlapPage() {
                     </>
                   )}
                 </>
+              )}
+            </section>
+
+            {/* ── Diagnostics panel ────────────────────────────────────── */}
+            <section style={{ marginTop: "1.5rem" }}>
+              <button
+                onClick={() => setShowDiagnostics((v) => !v)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  fontSize: "0.85rem",
+                  color: "#80868b",
+                  padding: 0,
+                  marginBottom: showDiagnostics ? "0.75rem" : 0,
+                }}
+              >
+                <span style={{ fontSize: "0.8em" }}>
+                  {showDiagnostics ? "▼" : "▶"}
+                </span>
+                Diagnostics
+              </button>
+
+              {showDiagnostics && (
+                <div
+                  style={{
+                    background: "#f8f9fa",
+                    border: "1px solid #dadce0",
+                    borderRadius: "0.375rem",
+                    padding: "0.75rem 1rem",
+                    fontSize: "0.82rem",
+                    color: "#5f6368",
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                    gap: "0.4rem 1.5rem",
+                  }}
+                >
+                  <div>
+                    <strong>Sources:</strong> {data.sources.length}
+                  </div>
+                  <div>
+                    <strong>Total records (across sources):</strong>{" "}
+                    {data.sources.reduce((s, r) => s + r.total, 0).toLocaleString()}
+                  </div>
+                  <div>
+                    <strong>Cross-source paper groups:</strong>{" "}
+                    {data.cross_source.cluster_count.toLocaleString()}
+                  </div>
+                  <div>
+                    <strong>Within-source duplicate groups:</strong>{" "}
+                    {data.within_source.cluster_count.toLocaleString()}
+                  </div>
+                  {lastCompletedDedup && (
+                    <div>
+                      <strong>Last overlap run ID:</strong>{" "}
+                      <code style={{ fontSize: "0.78rem", wordBreak: "break-all" }}>
+                        {lastCompletedDedup.id}
+                      </code>
+                    </div>
+                  )}
+                  {activeStrategy && (
+                    <div>
+                      <strong>Active strategy:</strong> {activeStrategy.name}
+                    </div>
+                  )}
+                </div>
               )}
             </section>
           </>

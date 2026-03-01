@@ -288,6 +288,7 @@ async def list_overlap_clusters(
     origin: Optional[str] = Query(None, description="'auto' | 'manual' | 'mixed'"),
     locked: Optional[bool] = Query(None, description="True = pinned clusters only"),
     min_sources: Optional[int] = Query(None, ge=2, description="Min distinct source count per cluster"),
+    q: Optional[str] = Query(None, description="Title contains search (case-insensitive)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -325,6 +326,18 @@ async def list_overlap_clusters(
             .scalar_subquery()
         )
         conditions.append(src_count_sq >= min_sources)
+    if q:
+        # Filter clusters where any member's record title contains q
+        title_exists = (
+            select(OverlapClusterMember.cluster_id)
+            .where(OverlapClusterMember.cluster_id == OverlapCluster.id)
+            .join(RecordSource, RecordSource.id == OverlapClusterMember.record_source_id)
+            .join(Record, Record.id == RecordSource.record_id)
+            .where(Record.title.ilike(f"%{q}%"))
+            .correlate(OverlapCluster)
+            .exists()
+        )
+        conditions.append(title_exists)
 
     # COUNT query (no LIMIT/OFFSET)
     total_items: int = (
