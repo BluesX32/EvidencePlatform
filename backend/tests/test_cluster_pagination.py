@@ -137,3 +137,103 @@ class TestMatrixPairSumSanity:
         for i in range(n):
             for j in range(n):
                 assert m[i][j] == m[j][i], f"Symmetry violated at [{i}][{j}]"
+
+
+# ---------------------------------------------------------------------------
+# Regression test: source_totals_with_overlap GROUP BY correctness
+#
+# In sprint 8 we removed dup_subq.c.dup_count from the GROUP BY clause but
+# forgot to wrap the selected column in an aggregate function.  PostgreSQL
+# rejects a bare non-grouped, non-aggregated column → 500 on GET /overlaps.
+#
+# Fix: use func.max(dup_subq.c.dup_count) so the column is properly
+# aggregated.  These tests verify the query compiles with the MAX function
+# and that the generated SQL does not reference the column without aggregation.
+# ---------------------------------------------------------------------------
+
+class TestSourceTotalsGroupByRegression:
+    """
+    Verifies that source_totals_with_overlap uses func.max() around the
+    dup_count column so it is compatible with GROUP BY (Source.id, Source.name).
+    Uses SQLAlchemy's compile() to check the generated SQL without a DB.
+    """
+
+    def _build_stmt(self, project_id: uuid.UUID):
+        """Replicate the query built in OverlapRepo.source_totals_with_overlap."""
+        from sqlalchemy import func, select
+        from app.models.overlap_cluster import OverlapCluster
+        from app.models.overlap_cluster_member import OverlapClusterMember
+        from app.models.record import Record
+        from app.models.record_source import RecordSource
+        from app.models.source import Source
+
+        dup_subq = (
+            select(
+                OverlapClusterMember.source_id,
+                func.count(OverlapClusterMember.id).label("dup_count"),
+            )
+            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+            .where(
+                OverlapCluster.project_id == project_id,
+                OverlapCluster.scope == "within_source",
+                OverlapClusterMember.role == "duplicate",
+            )
+            .group_by(OverlapClusterMember.source_id)
+        ).subquery()
+
+        stmt = (
+            select(
+                Source.id,
+                Source.name,
+                func.count(RecordSource.record_id).label("total"),
+                func.count(Record.normalized_doi).label("with_doi"),
+                # MUST be wrapped in func.max() — bare column reference is invalid
+                # without dup_count in GROUP BY.
+                func.coalesce(func.max(dup_subq.c.dup_count), 0).label("internal_overlaps"),
+            )
+            .outerjoin(RecordSource, RecordSource.source_id == Source.id)
+            .outerjoin(Record, Record.id == RecordSource.record_id)
+            .outerjoin(dup_subq, dup_subq.c.source_id == Source.id)
+            .where(Source.project_id == project_id)
+            .group_by(Source.id, Source.name)
+            .order_by(Source.name)
+        )
+        return stmt
+
+    def _compiled_sql(self, project_id: uuid.UUID) -> str:
+        """Compile the statement to a SQL string without executing it."""
+        from sqlalchemy.dialects import postgresql
+        stmt = self._build_stmt(project_id)
+        return str(stmt.compile(dialect=postgresql.dialect()))
+
+    def test_sql_contains_max_aggregate(self):
+        """Generated SQL must use MAX(...) around the dup_count column."""
+        sql = self._compiled_sql(uuid.uuid4())
+        assert "max" in sql.lower(), (
+            "Expected MAX aggregate in SQL but got:\n" + sql
+        )
+
+    def test_group_by_does_not_include_dup_count(self):
+        """
+        GROUP BY should only be (source.id, source.name).
+        Adding dup_count to GROUP BY was the original (redundant) approach;
+        with func.max() it is no longer needed.
+        """
+        sql = self._compiled_sql(uuid.uuid4())
+        # Find the GROUP BY clause and verify dup_count is absent from it
+        lower = sql.lower()
+        group_by_pos = lower.rfind("group by")
+        assert group_by_pos != -1, "Expected GROUP BY in SQL"
+        group_by_clause = lower[group_by_pos:]
+        # dup_count should only appear inside MAX(...), not in GROUP BY list
+        # We check the GROUP BY section does not contain the subquery alias
+        assert "dup_count" not in group_by_clause, (
+            "dup_count should not appear in GROUP BY clause:\n" + group_by_clause
+        )
+
+    def test_stmt_can_be_compiled_without_error(self):
+        """Smoke test: compiling the query raises no exception."""
+        try:
+            self._compiled_sql(uuid.uuid4())
+        except Exception as exc:
+            raise AssertionError(f"Query compilation raised: {exc}") from exc

@@ -283,7 +283,7 @@ export default function OverlapPage() {
           </div>
         )}
 
-        {!data && !isLoading && (
+        {!data && !isLoading && !error && (
           <div
             style={{
               background: "#f8f9fa",

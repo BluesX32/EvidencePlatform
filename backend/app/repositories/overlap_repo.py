@@ -88,7 +88,11 @@ class OverlapRepo:
                 Source.name,
                 func.count(RecordSource.record_id).label("total"),
                 func.count(Record.normalized_doi).label("with_doi"),
-                func.coalesce(dup_subq.c.dup_count, 0).label("internal_overlaps"),
+                # Use MAX to aggregate the subquery column so it is compatible with
+                # GROUP BY (Source.id, Source.name) without adding dup_count to the
+                # GROUP BY clause.  The subquery produces at most one row per source_id
+                # so MAX returns the single value (or NULL → coalesced to 0).
+                func.coalesce(func.max(dup_subq.c.dup_count), 0).label("internal_overlaps"),
             )
             .outerjoin(RecordSource, RecordSource.source_id == Source.id)
             .outerjoin(Record, Record.id == RecordSource.record_id)
