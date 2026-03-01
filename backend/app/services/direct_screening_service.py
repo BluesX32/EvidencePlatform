@@ -7,7 +7,7 @@ Public API:
   get_project_sources_with_stats(db, project_id) → List[Dict]
   get_next_item(db, project_id, source_id, mode, reviewer_id) → Dict
   submit_decision(db, project_id, record_id, cluster_id, stage, decision,
-                  reason_code, notes, reviewer_id) → Dict
+                  reason_code, notes, reviewer_id, auto_ta_include) → Dict
   submit_extraction(db, project_id, record_id, cluster_id, extracted_json,
                     reviewer_id) → Dict
 
@@ -220,7 +220,7 @@ async def get_project_sources_with_stats(
 
 
 # ---------------------------------------------------------------------------
-# Next item (CTE-based, concurrency-safe)
+# Next item — Sequential (screen / fulltext / extract)
 # ---------------------------------------------------------------------------
 
 _NEXT_ITEM_SQL = text("""
@@ -385,6 +385,129 @@ LIMIT 1
 """)
 
 
+# ---------------------------------------------------------------------------
+# Next item — Mixed (TA + FT in same session)
+# ---------------------------------------------------------------------------
+
+_NEXT_ITEM_SQL_MIXED = text("""
+WITH
+  -- Records whose source is in scope
+  records_in_scope AS (
+    SELECT DISTINCT r.id AS record_id, r.created_at
+    FROM records r
+    JOIN record_sources rs ON rs.record_id = r.id
+    WHERE r.project_id = :project_id
+      AND (:source_id IS NULL OR rs.source_id = :source_id)
+  ),
+  clustered_records AS (
+    SELECT DISTINCT rs.record_id
+    FROM record_sources rs
+    JOIN overlap_cluster_members ocm ON ocm.record_source_id = rs.id
+    JOIN overlap_clusters oc ON oc.id = ocm.cluster_id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+  ),
+  standalone_in_scope AS (
+    SELECT ris.record_id, ris.created_at
+    FROM records_in_scope ris
+    WHERE ris.record_id NOT IN (SELECT record_id FROM clustered_records)
+  ),
+  clusters_in_scope AS (
+    SELECT DISTINCT oc.id AS cluster_id, MIN(r.created_at) AS created_at
+    FROM overlap_clusters oc
+    JOIN overlap_cluster_members ocm ON ocm.cluster_id = oc.id
+    JOIN record_sources rs ON rs.id = ocm.record_source_id
+    JOIN records r ON r.id = rs.record_id
+    JOIN records_in_scope ris ON ris.record_id = r.id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+    GROUP BY oc.id
+  ),
+  active_claims AS (
+    SELECT record_id, cluster_id
+    FROM screening_claims
+    WHERE project_id = :project_id
+      AND claimed_at > now() - interval '30 minutes'
+  ),
+  -- Mixed standalone: not TA-excluded AND no FT decision
+  -- Priority 0 = unscreened (no TA decision), Priority 1 = TA-included awaiting FT
+  available_standalone AS (
+    SELECT
+      NULL::uuid AS cluster_id,
+      s.record_id,
+      s.created_at,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.record_id = s.record_id
+          AND sd.stage = 'TA' AND sd.decision = 'include'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      ) THEN 1 ELSE 0 END AS priority
+    FROM standalone_in_scope s
+    WHERE s.record_id NOT IN (
+        SELECT record_id FROM active_claims WHERE record_id IS NOT NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.record_id = s.record_id
+          AND sd.stage = 'TA' AND sd.decision = 'exclude'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.record_id = s.record_id
+          AND sd.stage = 'FT'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      )
+  ),
+  -- Mixed clusters: same logic
+  available_clusters AS (
+    SELECT
+      c.cluster_id,
+      NULL::uuid AS record_id,
+      c.created_at,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.cluster_id = c.cluster_id
+          AND sd.stage = 'TA' AND sd.decision = 'include'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      ) THEN 1 ELSE 0 END AS priority
+    FROM clusters_in_scope c
+    WHERE c.cluster_id NOT IN (
+        SELECT cluster_id FROM active_claims WHERE cluster_id IS NOT NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.cluster_id = c.cluster_id
+          AND sd.stage = 'TA' AND sd.decision = 'exclude'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM screening_decisions sd
+        WHERE sd.project_id = :project_id
+          AND sd.cluster_id = c.cluster_id
+          AND sd.stage = 'FT'
+          AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+      )
+  ),
+  available AS (
+    SELECT cluster_id, record_id, created_at, priority FROM available_clusters
+    UNION ALL
+    SELECT cluster_id, record_id, created_at, priority FROM available_standalone
+  )
+SELECT cluster_id, record_id
+FROM available
+ORDER BY priority, created_at
+LIMIT 1
+""")
+
+
+# ---------------------------------------------------------------------------
+# get_next_item
+# ---------------------------------------------------------------------------
+
 async def get_next_item(
     db: AsyncSession,
     project_id: uuid.UUID,
@@ -395,14 +518,22 @@ async def get_next_item(
     """
     Return the next available item for screening/review/extraction.
 
+    mode: "screen" | "fulltext" | "extract" | "mixed"
+
     Inserts a screening_claim row (soft lock) before returning metadata.
     Returns {"done": True} when no items are available.
     """
+    logger.info(
+        "get_next_item project=%s source=%s mode=%s reviewer=%s",
+        project_id, source_id, mode, reviewer_id,
+    )
+
     source_uuid: Optional[uuid.UUID] = None
     if source_id and source_id != "all":
         try:
             source_uuid = uuid.UUID(source_id)
         except ValueError:
+            logger.warning("get_next_item invalid source_id=%s", source_id)
             return {"done": True}
 
     reviewer_uuid_str = str(reviewer_id) if reviewer_id else None
@@ -414,69 +545,133 @@ async def get_next_item(
         "reviewer_id": reviewer_uuid_str,
     }
 
-    result = await db.execute(_NEXT_ITEM_SQL, params)
-    row = result.one_or_none()
+    try:
+        if mode == "mixed":
+            result = await db.execute(_NEXT_ITEM_SQL_MIXED, params)
+        else:
+            result = await db.execute(_NEXT_ITEM_SQL, params)
 
-    if row is None:
-        return {"done": True}
+        row = result.one_or_none()
 
-    found_record_id: Optional[uuid.UUID] = row.record_id
-    found_cluster_id: Optional[uuid.UUID] = row.cluster_id
+        if row is None:
+            logger.info("get_next_item done=True (no items available)")
+            return {"done": True}
 
-    # Insert soft-lock claim (upsert via ON CONFLICT DO UPDATE to refresh claimed_at)
-    if found_record_id is not None:
-        await db.execute(
-            text(
-                "INSERT INTO screening_claims (id, project_id, record_id, reviewer_id, claimed_at) "
-                "VALUES (gen_random_uuid(), :project_id, :record_id, :reviewer_id, now()) "
-                "ON CONFLICT (project_id, record_id) WHERE record_id IS NOT NULL "
-                "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
-            ),
-            {
+        found_record_id: Optional[uuid.UUID] = row.record_id
+        found_cluster_id: Optional[uuid.UUID] = row.cluster_id
+
+        # Insert soft-lock claim (upsert via ON CONFLICT DO UPDATE to refresh claimed_at)
+        if found_record_id is not None:
+            await db.execute(
+                text(
+                    "INSERT INTO screening_claims (id, project_id, record_id, reviewer_id, claimed_at) "
+                    "VALUES (gen_random_uuid(), :project_id, :record_id, :reviewer_id, now()) "
+                    "ON CONFLICT (project_id, record_id) WHERE record_id IS NOT NULL "
+                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                ),
+                {
+                    "project_id": project_id,
+                    "record_id": found_record_id,
+                    "reviewer_id": reviewer_id,
+                },
+            )
+        else:
+            await db.execute(
+                text(
+                    "INSERT INTO screening_claims (id, project_id, cluster_id, reviewer_id, claimed_at) "
+                    "VALUES (gen_random_uuid(), :project_id, :cluster_id, :reviewer_id, now()) "
+                    "ON CONFLICT (project_id, cluster_id) WHERE cluster_id IS NOT NULL "
+                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                ),
+                {
+                    "project_id": project_id,
+                    "cluster_id": found_cluster_id,
+                    "reviewer_id": reviewer_id,
+                },
+            )
+
+        # Fetch record metadata
+        if found_record_id is not None:
+            meta = await _fetch_standalone_record(db, found_record_id, project_id)
+        else:
+            meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
+
+        # Compute remaining count (approximate — items available for this reviewer+mode)
+        if mode == "mixed":
+            count_sql = (
+                "SELECT COUNT(*) FROM ("
+                + _NEXT_ITEM_SQL_MIXED.text.replace("ORDER BY priority, created_at\nLIMIT 1", "")
+                + ") _avail"
+            )
+        else:
+            count_sql = (
+                "SELECT COUNT(*) FROM ("
+                + _NEXT_ITEM_SQL.text.replace("ORDER BY created_at\nLIMIT 1", "")
+                + ") _avail"
+            )
+
+        remaining_result = await db.execute(text(count_sql), params)
+        remaining = remaining_result.scalar() or 0
+
+        # Fetch current reviewer's TA/FT decisions for this item
+        ta_decision: Optional[str] = None
+        ft_decision: Optional[str] = None
+        if reviewer_id is not None:
+            dec_params = {
                 "project_id": project_id,
+                "reviewer_id": reviewer_uuid_str,
                 "record_id": found_record_id,
-                "reviewer_id": reviewer_id,
-            },
-        )
-    else:
-        await db.execute(
-            text(
-                "INSERT INTO screening_claims (id, project_id, cluster_id, reviewer_id, claimed_at) "
-                "VALUES (gen_random_uuid(), :project_id, :cluster_id, :reviewer_id, now()) "
-                "ON CONFLICT (project_id, cluster_id) WHERE cluster_id IS NOT NULL "
-                "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
-            ),
-            {
-                "project_id": project_id,
                 "cluster_id": found_cluster_id,
-                "reviewer_id": reviewer_id,
-            },
+            }
+            ta_row = await db.execute(
+                text("""
+                    SELECT decision FROM screening_decisions
+                    WHERE project_id = :project_id AND stage = 'TA'
+                      AND reviewer_id = :reviewer_id
+                      AND (
+                        (:record_id IS NOT NULL AND record_id = :record_id)
+                        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
+                      )
+                    LIMIT 1
+                """),
+                dec_params,
+            )
+            ta_decision = ta_row.scalar_one_or_none()
+
+            ft_row = await db.execute(
+                text("""
+                    SELECT decision FROM screening_decisions
+                    WHERE project_id = :project_id AND stage = 'FT'
+                      AND reviewer_id = :reviewer_id
+                      AND (
+                        (:record_id IS NOT NULL AND record_id = :record_id)
+                        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
+                      )
+                    LIMIT 1
+                """),
+                dec_params,
+            )
+            ft_decision = ft_row.scalar_one_or_none()
+
+        found_key = f"cluster:{found_cluster_id}" if found_cluster_id else f"record:{found_record_id}"
+        logger.info("get_next_item found=%s remaining=%d", found_key, remaining)
+
+        return {
+            "done": False,
+            "record_id": str(found_record_id) if found_record_id else None,
+            "cluster_id": str(found_cluster_id) if found_cluster_id else None,
+            "remaining": remaining,
+            "ta_decision": ta_decision,
+            "ft_decision": ft_decision,
+            **meta,
+        }
+
+    except Exception:
+        logger.exception(
+            "get_next_item unhandled error project=%s source=%s mode=%s",
+            project_id, source_id, mode,
         )
-
-    # Fetch record metadata
-    if found_record_id is not None:
-        meta = await _fetch_standalone_record(db, found_record_id, project_id)
-    else:
-        meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
-
-    # Compute remaining count (approximate — items available for this reviewer+mode)
-    remaining_result = await db.execute(
-        text(
-            "SELECT COUNT(*) FROM ("
-            + _NEXT_ITEM_SQL.text.replace("ORDER BY created_at\nLIMIT 1", "")
-            + ") _avail"
-        ),
-        params,
-    )
-    remaining = remaining_result.scalar() or 0
-
-    return {
-        "done": False,
-        "record_id": str(found_record_id) if found_record_id else None,
-        "cluster_id": str(found_cluster_id) if found_cluster_id else None,
-        "remaining": remaining,
-        **meta,
-    }
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -584,8 +779,43 @@ async def submit_decision(
     reason_code: Optional[str],
     notes: Optional[str],
     reviewer_id: Optional[uuid.UUID],
+    auto_ta_include: bool = False,
 ) -> Dict[str, Any]:
-    """Insert a screening decision and release the soft lock."""
+    """
+    Insert a screening decision and release the soft lock.
+
+    When auto_ta_include=True and stage='FT' and no TA decision exists for this
+    reviewer, automatically inserts a TA=include decision first (mixed strategy).
+    """
+    # Auto-create TA=include when submitting FT in mixed mode without prior TA
+    if auto_ta_include and stage == "FT" and reviewer_id is not None:
+        existing_ta_q = select(ScreeningDecision).where(
+            ScreeningDecision.project_id == project_id,
+            ScreeningDecision.stage == "TA",
+            ScreeningDecision.reviewer_id == reviewer_id,
+        )
+        if record_id is not None:
+            existing_ta_q = existing_ta_q.where(ScreeningDecision.record_id == record_id)
+        else:
+            existing_ta_q = existing_ta_q.where(ScreeningDecision.cluster_id == cluster_id)
+
+        existing_ta = await db.execute(existing_ta_q)
+        if existing_ta.scalar_one_or_none() is None:
+            ta = ScreeningDecision(
+                project_id=project_id,
+                record_id=record_id,
+                cluster_id=cluster_id,
+                stage="TA",
+                decision="include",
+                reviewer_id=reviewer_id,
+            )
+            db.add(ta)
+            await db.flush()
+            logger.info(
+                "auto_ta_include: inserted TA=include for record=%s cluster=%s",
+                record_id, cluster_id,
+            )
+
     dec = ScreeningDecision(
         project_id=project_id,
         record_id=record_id,

@@ -12,6 +12,7 @@ Covers:
   6. done_when_all_decided     — empty available pool → done: True
   7. multi_source_dedup        — two records in same cluster → one screening slot
   8. claim_blocks_concurrent   — claimed item excluded from second reviewer's query
+  9. mixed_mode                — TA+FT in one session; priority ordering; auto-TA-include
 """
 from __future__ import annotations
 
@@ -58,6 +59,24 @@ def _is_active_claim(claim: dict) -> bool:
     return (datetime.now(tz=timezone.utc) - claim["claimed_at"]).total_seconds() < 1800
 
 
+def _slot_decisions(
+    slot: dict,
+    decisions: List[dict],
+    stage_filter: str,
+    reviewer_id=None,
+    decision_filter: Optional[str] = None,
+) -> List[dict]:
+    """Return decisions matching slot + stage (+ optional reviewer + decision)."""
+    return [
+        d for d in decisions
+        if d["record_id"] == slot["record_id"]
+        and d["cluster_id"] == slot["cluster_id"]
+        and d["stage"] == stage_filter
+        and (reviewer_id is None or d["reviewer_id"] == reviewer_id)
+        and (decision_filter is None or d["decision"] == decision_filter)
+    ]
+
+
 def _simulate_next_item(
     slots: List[dict],
     decisions: List[dict],
@@ -68,6 +87,8 @@ def _simulate_next_item(
     """
     Pure equivalent of get_next_item's CTE logic.
 
+    Supports modes: screen, fulltext, extract, mixed.
+    For mixed: returns slots ordered by priority (unscreened=0 before TA-included=1).
     Returns the first available slot (by list order = created_at order) or None.
     """
     active_claims = {
@@ -76,33 +97,56 @@ def _simulate_next_item(
         if _is_active_claim(c)
     }
 
+    if mode == "mixed":
+        # Build candidate list with priority
+        candidates = []
+        for slot in slots:
+            key = (slot["record_id"], slot["cluster_id"])
+            if key in active_claims:
+                continue
+            ta_excl = _slot_decisions(slot, decisions, "TA", reviewer_id, "exclude")
+            ft_any  = _slot_decisions(slot, decisions, "FT", reviewer_id)
+            if ta_excl or ft_any:
+                continue  # excluded or FT done
+            ta_incl = _slot_decisions(slot, decisions, "TA", reviewer_id, "include")
+            priority = 1 if ta_incl else 0
+            candidates.append((priority, slot))
+        # Sort by priority (0 = unscreened first, 1 = TA-included second)
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1] if candidates else None
+
     for slot in slots:
         key = (slot["record_id"], slot["cluster_id"])
         if key in active_claims:
             continue
 
-        # Filter decisions relevant to this slot + reviewer
-        def slot_decisions(stage_filter: str, decision_filter: Optional[str] = None):
-            return [
-                d for d in decisions
-                if d["record_id"] == slot["record_id"]
-                and d["cluster_id"] == slot["cluster_id"]
-                and d["stage"] == stage_filter
-                and (reviewer_id is None or d["reviewer_id"] == reviewer_id)
-                and (decision_filter is None or d["decision"] == decision_filter)
-            ]
-
         if mode == "screen":
-            if not slot_decisions("TA"):
+            if not _slot_decisions(slot, decisions, "TA", reviewer_id):
                 return slot
         elif mode == "fulltext":
-            if slot_decisions("TA", "include") and not slot_decisions("FT"):
+            if (_slot_decisions(slot, decisions, "TA", reviewer_id, "include")
+                    and not _slot_decisions(slot, decisions, "FT", reviewer_id)):
                 return slot
         elif mode == "extract":
-            if slot_decisions("FT", "include"):
+            if _slot_decisions(slot, decisions, "FT", reviewer_id, "include"):
                 return slot
 
     return None
+
+
+def _simulate_auto_ta_include(
+    slot: dict,
+    decisions: List[dict],
+    reviewer_id,
+) -> List[dict]:
+    """
+    Simulate auto-TA-include: if no TA decision exists for this reviewer+slot,
+    insert a TA=include decision. Returns updated decisions list.
+    """
+    existing = _slot_decisions(slot, decisions, "TA", reviewer_id)
+    if not existing:
+        decisions = decisions + [_make_decision(slot, "TA", "include", reviewer_id)]
+    return decisions
 
 
 def _simulate_get_sources_slots(
@@ -329,3 +373,77 @@ class TestClaimBlocksConcurrent:
         result = _simulate_next_item([slot_a, slot_b], [], [claim], "screen")
         assert result is not None
         assert result["record_id"] == slot_b["record_id"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Mixed mode: TA + FT in same session
+# ---------------------------------------------------------------------------
+
+class TestMixedMode:
+    def test_mixed_shows_unscreened_before_ta_included(self):
+        """Unscreened item has lower priority than TA-included-no-FT in mixed queue."""
+        reviewer = uuid.uuid4()
+        slot_unscreened = _make_slot(record_id=uuid.uuid4())
+        slot_ta_included = _make_slot(record_id=uuid.uuid4())
+
+        decisions = [_make_decision(slot_ta_included, "TA", "include", reviewer)]
+
+        # List TA-included first, but unscreened should come first (priority 0 < 1)
+        result = _simulate_next_item(
+            [slot_ta_included, slot_unscreened], decisions, [], "mixed", reviewer
+        )
+        assert result is not None
+        assert result["record_id"] == slot_unscreened["record_id"]
+
+    def test_mixed_excludes_ta_excluded(self):
+        """TA-excluded items do not appear in mixed queue."""
+        reviewer = uuid.uuid4()
+        slot = _make_slot(record_id=uuid.uuid4())
+        decisions = [_make_decision(slot, "TA", "exclude", reviewer)]
+
+        result = _simulate_next_item([slot], decisions, [], "mixed", reviewer)
+        assert result is None
+
+    def test_mixed_excludes_ft_decided(self):
+        """Items with any FT decision are removed from mixed queue."""
+        reviewer = uuid.uuid4()
+        slot = _make_slot(record_id=uuid.uuid4())
+        decisions = [
+            _make_decision(slot, "TA", "include", reviewer),
+            _make_decision(slot, "FT", "include", reviewer),
+        ]
+
+        result = _simulate_next_item([slot], decisions, [], "mixed", reviewer)
+        assert result is None
+
+    def test_mixed_shows_ta_included_no_ft(self):
+        """TA-included items with no FT decision appear in mixed queue (priority 1)."""
+        reviewer = uuid.uuid4()
+        slot = _make_slot(record_id=uuid.uuid4())
+        decisions = [_make_decision(slot, "TA", "include", reviewer)]
+
+        result = _simulate_next_item([slot], decisions, [], "mixed", reviewer)
+        assert result is not None
+        assert result["record_id"] == slot["record_id"]
+
+    def test_auto_ta_include_inserts_when_no_ta_exists(self):
+        """_simulate_auto_ta_include adds TA=include when none exists for reviewer."""
+        reviewer = uuid.uuid4()
+        slot = _make_slot(record_id=uuid.uuid4())
+        decisions: list = []
+
+        decisions = _simulate_auto_ta_include(slot, decisions, reviewer)
+
+        ta_decisions = _slot_decisions(slot, decisions, "TA", reviewer, "include")
+        assert len(ta_decisions) == 1
+
+    def test_auto_ta_include_skips_when_ta_already_exists(self):
+        """_simulate_auto_ta_include does not duplicate if TA decision already present."""
+        reviewer = uuid.uuid4()
+        slot = _make_slot(record_id=uuid.uuid4())
+        decisions = [_make_decision(slot, "TA", "include", reviewer)]
+
+        decisions = _simulate_auto_ta_include(slot, decisions, reviewer)
+
+        ta_decisions = _slot_decisions(slot, decisions, "TA", reviewer)
+        assert len(ta_decisions) == 1  # still only one

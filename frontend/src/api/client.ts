@@ -499,6 +499,10 @@ export interface ScreeningNextItem {
   doi?: string | null;
   source_names?: string[];
   remaining?: number;
+  /** Current reviewer's TA decision for this item, if any ("include" | "exclude" | null) */
+  ta_decision?: string | null;
+  /** Current reviewer's FT decision for this item, if any */
+  ft_decision?: string | null;
 }
 
 export interface ScreeningDecision {
@@ -551,7 +555,7 @@ export const screeningApi = {
 
   nextItem: (
     projectId: string,
-    params: { source_id: string; mode: "screen" | "fulltext" | "extract" }
+    params: { source_id: string; mode: string; strategy?: string }
   ) =>
     api.get<ScreeningNextItem>(`/projects/${projectId}/screening/next`, { params }),
 
@@ -564,6 +568,7 @@ export const screeningApi = {
       decision: "include" | "exclude";
       reason_code?: string;
       notes?: string;
+      strategy?: string;
     }
   ) => api.post<ScreeningDecision>(`/projects/${projectId}/screening/decisions`, body),
 

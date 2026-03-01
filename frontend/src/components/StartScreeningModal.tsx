@@ -5,6 +5,7 @@ import { screeningApi } from "../api/client";
 import type { ScreeningSource } from "../api/client";
 
 type ScreeningMode = "screen" | "fulltext" | "extract";
+type Strategy = "sequential" | "mixed";
 
 interface ModeCardDef {
   mode: ScreeningMode;
@@ -43,9 +44,21 @@ interface Props {
   onClose: () => void;
 }
 
+// Shared card button style
+const cardBtn = (selected: boolean): React.CSSProperties => ({
+  textAlign: "left",
+  padding: "1rem 1.25rem",
+  border: `1.5px solid ${selected ? "#1a73e8" : "#dadce0"}`,
+  borderRadius: "0.5rem",
+  background: selected ? "#f0f4ff" : "#fff",
+  cursor: "pointer",
+  width: "100%",
+});
+
 export default function StartScreeningModal({ projectId, onClose }: Props) {
   const navigate = useNavigate();
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
   const [selectedMode, setSelectedMode] = useState<ScreeningMode | null>(null);
   const [selectedSource, setSelectedSource] = useState<string>("all");
 
@@ -54,19 +67,6 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
     queryFn: () => screeningApi.getSources(projectId).then((r) => r.data),
   });
 
-  const modeDef = MODE_CARDS.find((m) => m.mode === selectedMode);
-
-  function handleModeSelect(mode: ScreeningMode) {
-    setSelectedMode(mode);
-    setStep(2);
-  }
-
-  function handleStart() {
-    if (!selectedMode) return;
-    navigate(`/projects/${projectId}/screen?mode=${selectedMode}&source=${selectedSource}`);
-    onClose();
-  }
-
   // Sort: "all" row first, then sources alphabetically
   const sortedSources = sources
     ? [
@@ -74,6 +74,25 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
         ...sources.filter((s) => s.id !== "all"),
       ].filter(Boolean)
     : [];
+
+  function handleStrategySelect(strategy: Strategy) {
+    setSelectedStrategy(strategy);
+    setStep(2);
+  }
+
+  function handleStart() {
+    if (selectedStrategy === "mixed") {
+      navigate(
+        `/projects/${projectId}/screen?strategy=mixed&mode=mixed&source=${selectedSource}`
+      );
+    } else {
+      if (!selectedMode) return;
+      navigate(
+        `/projects/${projectId}/screen?strategy=sequential&mode=${selectedMode}&source=${selectedSource}`
+      );
+    }
+    onClose();
+  }
 
   return (
     <div
@@ -93,9 +112,11 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
           background: "#fff",
           borderRadius: "0.75rem",
           padding: "2rem",
-          width: "min(90vw, 560px)",
+          width: "min(90vw, 580px)",
           boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
           position: "relative",
+          maxHeight: "90vh",
+          overflowY: "auto",
         }}
       >
         {/* Close button */}
@@ -117,49 +138,48 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
           ✕
         </button>
 
-        {/* ── Step 1: Mode selection ─────────────────────────────────── */}
+        {/* ── Step 1: Strategy selection ─────────────────────────────── */}
         {step === 1 && (
           <>
             <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>Start Screening</h2>
             <p style={{ margin: "0 0 1.5rem", color: "#5f6368", fontSize: "0.9rem" }}>
-              Choose what you want to do.
+              Choose a workflow strategy.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              {MODE_CARDS.map((card) => (
-                <button
-                  key={card.mode}
-                  onClick={() => handleModeSelect(card.mode)}
-                  style={{
-                    textAlign: "left",
-                    padding: "1rem 1.25rem",
-                    border: "1.5px solid #dadce0",
-                    borderRadius: "0.5rem",
-                    background: "#fff",
-                    cursor: "pointer",
-                    transition: "border-color 0.12s, background 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.borderColor = "#1a73e8";
-                    (e.currentTarget as HTMLButtonElement).style.background = "#f8f9ff";
-                  }}
-                  onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.borderColor = "#dadce0";
-                    (e.currentTarget as HTMLButtonElement).style.background = "#fff";
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{card.title}</div>
-                  <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>{card.description}</div>
-                </button>
-              ))}
+              <button
+                style={cardBtn(false)}
+                onClick={() => handleStrategySelect("sequential")}
+              >
+                <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                  Sequential
+                </div>
+                <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
+                  Classic gating: Title/Abstract first, then Full-text, then Extraction.
+                  Each stage unlocks after the previous.
+                </div>
+              </button>
+              <button
+                style={cardBtn(false)}
+                onClick={() => handleStrategySelect("mixed")}
+              >
+                <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                  Mixed / Parallel
+                </div>
+                <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
+                  Saturation-driven: screen title/abstract and review full-text in the
+                  same session. Include at TA, then immediately decide on full-text —
+                  no waiting.
+                </div>
+              </button>
             </div>
           </>
         )}
 
         {/* ── Step 2: Source selection ───────────────────────────────── */}
-        {step === 2 && modeDef && (
+        {step === 2 && (
           <>
             <button
-              onClick={() => setStep(1)}
+              onClick={() => { setStep(1); setSelectedSource("all"); }}
               style={{
                 background: "none",
                 border: "none",
@@ -172,9 +192,11 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
             >
               ← Back
             </button>
-            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>{modeDef.title}</h2>
+            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>
+              {selectedStrategy === "mixed" ? "Mixed Screening" : "Choose Source"}
+            </h2>
             <p style={{ margin: "0 0 1.25rem", color: "#5f6368", fontSize: "0.9rem" }}>
-              Select which database to screen.
+              Select which database to work with.
             </p>
 
             {isLoading ? (
@@ -191,8 +213,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                 }}
               >
                 {sortedSources.map((src, i) => {
-                  const rem = modeDef.remaining(src);
-                  const isDisabled = rem <= 0;
+                  const isDisabled = src.record_count <= 0;
                   const isSelected = selectedSource === src.id;
                   return (
                     <label
@@ -221,26 +242,17 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                           {src.name}
                         </div>
                         <div style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                          {modeDef.countLabel(src)}
+                          {src.record_count} records · {src.ta_included} TA included · {src.ft_included} FT included
                         </div>
                       </div>
-                      {rem > 0 && (
-                        <span
-                          style={{
-                            background: "#e8f0fe",
-                            color: "#1a73e8",
-                            borderRadius: "1rem",
-                            padding: "0.15rem 0.6rem",
-                            fontSize: "0.8rem",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {rem} remaining
-                        </span>
-                      )}
-                      {rem === 0 && (
-                        <span style={{ fontSize: "0.82rem", color: "#888" }}>Done</span>
-                      )}
+                      <span
+                        style={{
+                          fontSize: "0.82rem",
+                          color: src.record_count > 0 ? "#1a73e8" : "#888",
+                        }}
+                      >
+                        {src.record_count > 0 ? `${src.record_count} slots` : "Empty"}
+                      </span>
                     </label>
                   );
                 })}
@@ -248,10 +260,122 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
             )}
 
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              {selectedStrategy === "mixed" ? (
+                <button
+                  className="btn-primary"
+                  onClick={handleStart}
+                  disabled={!selectedSource}
+                >
+                  Start →
+                </button>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={() => setStep(3)}
+                  disabled={!selectedSource}
+                >
+                  Next →
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── Step 3: Mode selection (Sequential only) ───────────────── */}
+        {step === 3 && selectedStrategy === "sequential" && (
+          <>
+            <button
+              onClick={() => setStep(2)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: "#1a73e8",
+                fontSize: "0.9rem",
+                padding: 0,
+                marginBottom: "1rem",
+              }}
+            >
+              ← Back
+            </button>
+            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>Choose Task</h2>
+            <p style={{ margin: "0 0 1.5rem", color: "#5f6368", fontSize: "0.9rem" }}>
+              What would you like to do in this session?
+            </p>
+
+            {/* Source context pill */}
+            {selectedSource && sortedSources.length > 0 && (
+              <div
+                style={{
+                  display: "inline-block",
+                  background: "#f1f3f4",
+                  borderRadius: "1rem",
+                  padding: "0.2rem 0.75rem",
+                  fontSize: "0.82rem",
+                  color: "#5f6368",
+                  marginBottom: "1rem",
+                }}
+              >
+                {sortedSources.find((s) => s.id === selectedSource)?.name ?? selectedSource}
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              {MODE_CARDS.map((card) => {
+                const src = sortedSources.find((s) => s.id === selectedSource);
+                const rem = src ? card.remaining(src) : 0;
+                const isDisabled = rem <= 0;
+                const isSelected = selectedMode === card.mode;
+                return (
+                  <button
+                    key={card.mode}
+                    onClick={() => !isDisabled && setSelectedMode(card.mode)}
+                    disabled={isDisabled}
+                    style={{
+                      ...cardBtn(isSelected),
+                      opacity: isDisabled ? 0.5 : 1,
+                      cursor: isDisabled ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                          {card.title}
+                        </div>
+                        <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
+                          {card.description}
+                        </div>
+                      </div>
+                      {src && (
+                        <span
+                          style={{
+                            marginLeft: "1rem",
+                            flexShrink: 0,
+                            fontSize: "0.8rem",
+                            color: rem > 0 ? "#1a73e8" : "#888",
+                            fontWeight: rem > 0 ? 600 : 400,
+                          }}
+                        >
+                          {rem > 0 ? `${rem} pending` : "Done"}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.25rem" }}>
               <button
                 className="btn-primary"
                 onClick={handleStart}
-                disabled={!selectedSource}
+                disabled={!selectedMode}
               >
                 Start →
               </button>

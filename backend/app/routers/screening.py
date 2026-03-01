@@ -4,14 +4,15 @@ Direct screening API endpoints (migration 009+).
 All endpoints are scoped under /projects/{project_id}/screening.
 
 GET  /sources     → ScreeningSource[] (source list with stats for modal)
-GET  /next        → ?source_id=<uuid|all>&mode=screen|fulltext|extract
-POST /decisions   → {record_id?, cluster_id?, stage, decision, reason_code?, notes?}
+GET  /next        → ?source_id=<uuid|all>&mode=screen|fulltext|extract|mixed&strategy=sequential|mixed
+POST /decisions   → {record_id?, cluster_id?, stage, decision, reason_code?, notes?, strategy?}
 GET  /decisions   → ?stage=TA|FT
 POST /extractions → {record_id?, cluster_id?, extracted_json}
 GET  /extractions → ExtractionRecord[]
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.extraction_record import ExtractionRecord
 from app.models.screening_decision import ScreeningDecision
+from app.models.source import Source
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 from app.services.direct_screening_service import (
@@ -34,6 +36,7 @@ from app.services.direct_screening_service import (
 )
 
 router = APIRouter(prefix="/projects/{project_id}/screening", tags=["screening"])
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +56,31 @@ async def _require_project(
     return project
 
 
+async def _validate_source(
+    source_id_str: str,
+    project_id: uuid.UUID,
+    db: AsyncSession,
+) -> uuid.UUID:
+    """Parse and validate source_id belongs to the project. Returns the source UUID."""
+    try:
+        source_uuid = uuid.UUID(source_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SOURCE", "message": f"Invalid source_id: {source_id_str!r}"},
+        )
+    row = await db.execute(
+        select(Source).where(Source.id == source_uuid, Source.project_id == project_id)
+    )
+    if row.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SOURCE",
+                    "message": "source_id does not belong to this project"},
+        )
+    return source_uuid
+
+
 # ---------------------------------------------------------------------------
 # Request schemas
 # ---------------------------------------------------------------------------
@@ -64,6 +92,7 @@ class DecisionCreate(BaseModel):
     decision: str      # "include" | "exclude"
     reason_code: Optional[str] = None
     notes: Optional[str] = None
+    strategy: str = "sequential"   # "sequential" | "mixed"
 
 
 class ExtractionCreate(BaseModel):
@@ -91,30 +120,63 @@ async def list_sources_with_stats(
 async def next_item(
     project_id: uuid.UUID,
     source_id: Optional[str] = Query(None, description="UUID or 'all'"),
-    mode: str = Query("screen", description="screen | fulltext | extract"),
+    mode: str = Query("screen", description="screen | fulltext | extract | mixed"),
+    strategy: str = Query("sequential", description="sequential | mixed"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return the next available item for the given mode and source.
+    Return the next available item for the given mode/strategy and source.
 
-    Inserts a soft-lock claim before returning.  The current user is used as
-    reviewer_id for dual-reviewer isolation.
+    strategy=mixed overrides mode to 'mixed' regardless of the mode param.
+    Inserts a soft-lock claim before returning.
     """
     await _require_project(project_id, current_user, db)
 
-    if mode not in ("screen", "fulltext", "extract"):
-        raise HTTPException(status_code=422, detail="mode must be screen, fulltext, or extract")
+    # strategy=mixed always uses mixed CTE regardless of mode param
+    effective_mode = "mixed" if strategy == "mixed" else mode
 
-    result = await get_next_item(
-        db,
-        project_id=project_id,
-        source_id=source_id or "all",
-        mode=mode,
-        reviewer_id=current_user.id,
+    if effective_mode not in ("screen", "fulltext", "extract", "mixed"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_MODE",
+                    "message": "mode must be screen, fulltext, extract, or mixed"},
+        )
+
+    # Validate source_id if provided and not "all"
+    effective_source: Optional[str] = source_id
+    if source_id and source_id not in ("all",):
+        await _validate_source(source_id, project_id, db)
+        effective_source = source_id
+
+    logger.info(
+        "/next project=%s source=%s mode=%s strategy=%s effective_mode=%s user=%s",
+        project_id, source_id, mode, strategy, effective_mode, current_user.id,
     )
-    await db.commit()
-    return result
+
+    try:
+        result = await get_next_item(
+            db,
+            project_id=project_id,
+            source_id=effective_source or "all",
+            mode=effective_mode,
+            reviewer_id=current_user.id,
+        )
+        await db.commit()
+        logger.info(
+            "/next done=%s remaining=%s",
+            result.get("done"), result.get("remaining"),
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("/next unhandled error project=%s source=%s mode=%s",
+                         project_id, source_id, effective_mode)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": "Failed to retrieve next item"},
+        )
 
 
 @router.post("/decisions", status_code=201)
@@ -150,6 +212,7 @@ async def create_decision(
         reason_code=body.reason_code,
         notes=body.notes,
         reviewer_id=current_user.id,
+        auto_ta_include=(body.strategy == "mixed"),
     )
     await db.commit()
     return result
