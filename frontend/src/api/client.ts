@@ -183,17 +183,8 @@ export interface OverlapSourceItem {
   unique_count: number;
 }
 
-export interface OverlapPair {
-  source_a_id: string;
-  source_a_name: string;
-  source_b_id: string;
-  source_b_name: string;
-  shared_records: number;
-}
-
 export interface OverlapSummary {
   sources: OverlapSourceItem[];
-  pairs: OverlapPair[];
   strategy_name: string | null;
 }
 
@@ -303,7 +294,17 @@ export interface OverlapResolutionSummary {
   within_source: OverlapWithinSource;
   cross_source: OverlapCrossSource;
   sources: OverlapSourceItem[];
-  pairs: OverlapPair[];
+}
+
+export interface OverlapIntersectionItem {
+  source_ids: string[];
+  source_names: string[];
+  count: number;
+}
+
+export interface OverlapIntersectionsData {
+  sources: { id: string; name: string }[];
+  intersections: OverlapIntersectionItem[];
 }
 
 // ── Overlap cluster detail types ──────────────────────────────────────────────
@@ -382,6 +383,11 @@ export const overlapsApi = {
   /** Get NxN visual overlap matrix for a project. */
   getVisualSummary: (projectId: string) =>
     api.get<OverlapVisualSummary>(`/projects/${projectId}/overlaps/visual-summary`),
+  /** Get multi-source intersection counts (source-combination groups). */
+  getIntersections: (projectId: string, topN = 20, minSize = 2) =>
+    api.get<OverlapIntersectionsData>(`/projects/${projectId}/overlaps/intersections`, {
+      params: { top_n: topN, min_size: minSize },
+    }),
   /** Manually link a set of records into a cross-source overlap cluster. */
   manualLink: (projectId: string, body: ManualLinkRequest) =>
     api.post<OverlapClusterDetail>(`/projects/${projectId}/overlaps/manual-link`, body),

@@ -39,6 +39,7 @@ from app.repositories.strategy_repo import StrategyRepo
 from app.services.overlap_service import (
     build_overlap_preview,
     build_visual_summary,
+    compute_top_intersections,
     lock_cluster,
     manual_link_records,
     remove_cluster_member,
@@ -248,44 +249,6 @@ async def get_overlap_summary(
     # Per-source totals with overlap counts
     source_rows = await OverlapRepo.source_totals_with_overlap(db, project_id)
 
-    # Pairwise overlap (canonical record_id self-join)
-    rs_a = RecordSource.__table__.alias("rs_a")
-    rs_b = RecordSource.__table__.alias("rs_b")
-    s_a = Source.__table__.alias("s_a")
-    s_b = Source.__table__.alias("s_b")
-
-    pair_rows = (
-        await db.execute(
-            select(
-                rs_a.c.source_id.label("source_a_id"),
-                s_a.c.name.label("source_a_name"),
-                rs_b.c.source_id.label("source_b_id"),
-                s_b.c.name.label("source_b_name"),
-                func.count().label("shared_records"),
-            )
-            .select_from(rs_a)
-            .join(
-                rs_b,
-                (rs_b.c.record_id == rs_a.c.record_id)
-                & (rs_b.c.source_id > rs_a.c.source_id),
-            )
-            .join(s_a, s_a.c.id == rs_a.c.source_id)
-            .join(s_b, s_b.c.id == rs_b.c.source_id)
-            .join(
-                Record,
-                (Record.id == rs_a.c.record_id)
-                & (Record.project_id == project_id),
-            )
-            .group_by(
-                rs_a.c.source_id,
-                s_a.c.name,
-                rs_b.c.source_id,
-                s_b.c.name,
-            )
-            .order_by(func.count().desc())
-        )
-    ).all()
-
     return {
         "strategy_name": strategy_name,
         "within_source": {
@@ -305,16 +268,6 @@ async def get_overlap_summary(
                 "unique_count": max(0, r.total - r.internal_overlaps),
             }
             for r in source_rows
-        ],
-        "pairs": [
-            {
-                "source_a_id": str(r.source_a_id),
-                "source_a_name": r.source_a_name,
-                "source_b_id": str(r.source_b_id),
-                "source_b_name": r.source_b_name,
-                "shared_records": r.shared_records,
-            }
-            for r in pair_rows
         ],
     }
 
@@ -490,6 +443,37 @@ async def get_visual_summary(
     """
     await _require_project_access(project_id, current_user, db)
     return await build_visual_summary(db, project_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /overlaps/intersections — multi-source source-combination counts
+# ---------------------------------------------------------------------------
+
+@router.get("/intersections")
+async def get_intersections(
+    project_id: uuid.UUID,
+    top_n: int = Query(20, ge=1, le=100),
+    min_size: int = Query(2, ge=2, le=20, description="Minimum number of sources in a combination"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the top source-combination groups sorted by overlap cluster count.
+
+    Each entry represents a distinct combination of sources (e.g. PubMed + Scopus + Embase)
+    and the number of cross-source clusters that involve all sources in that combination.
+
+    Use min_size=3 to restrict to three-way (or higher) intersections only.
+    """
+    await _require_project_access(project_id, current_user, db)
+    source_rows = await OverlapRepo.source_totals_with_overlap(db, project_id)
+    source_id_to_name = {r.id: r.name for r in source_rows}
+    sources = [{"id": str(r.id), "name": r.name} for r in source_rows]
+    cluster_source_sets = await OverlapRepo.cross_source_cluster_source_sets(db, project_id)
+    intersections = compute_top_intersections(
+        source_id_to_name, cluster_source_sets, top_n=top_n, min_size=min_size
+    )
+    return {"sources": sources, "intersections": intersections}
 
 
 # ---------------------------------------------------------------------------

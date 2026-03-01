@@ -788,19 +788,20 @@ def compute_top_intersections(
     source_id_to_name: dict,
     cluster_source_sets: list,
     top_n: int = 10,
+    min_size: int = 2,
 ) -> list:
     """
     Return up to top_n source-combination groups sorted by descending cluster count.
 
     Each entry: {"source_ids": [str, ...], "source_names": [str, ...], "count": int}
-    Only includes groups with ≥2 distinct sources.
+    Only includes groups with at least min_size distinct sources (default 2).
     """
     from collections import Counter
 
     counts: Counter = Counter()
     for source_ids in cluster_source_sets:
         key = frozenset(source_ids)
-        if len(key) >= 2:
+        if len(key) >= min_size:
             counts[key] += 1
 
     result = []

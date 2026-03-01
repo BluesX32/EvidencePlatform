@@ -135,3 +135,46 @@ class TestIntersectionEdgeCases:
         sa = uuid.uuid4()
         result = compute_top_intersections({sa: "A"}, [[sa], [sa], [sa]])
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# compute_top_intersections — min_size parameter tests
+# ---------------------------------------------------------------------------
+
+class TestMinSizeFilter:
+    def test_min_size_2_includes_pairs(self):
+        """Default min_size=2 includes two-source combinations."""
+        sa, sb = uuid.uuid4(), uuid.uuid4()
+        result = compute_top_intersections({sa: "A", sb: "B"}, [[sa, sb]], min_size=2)
+        assert len(result) == 1
+
+    def test_min_size_3_excludes_pairs(self):
+        """min_size=3 excludes two-source combinations."""
+        sa, sb = uuid.uuid4(), uuid.uuid4()
+        result = compute_top_intersections({sa: "A", sb: "B"}, [[sa, sb]], min_size=3)
+        assert result == []
+
+    def test_min_size_3_includes_triple(self):
+        """min_size=3 includes three-source combinations."""
+        sa, sb, sc = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        names = {sa: "A", sb: "B", sc: "C"}
+        result = compute_top_intersections(names, [[sa, sb, sc]], min_size=3)
+        assert len(result) == 1
+        assert result[0]["count"] == 1
+
+    def test_min_size_3_mixed_includes_only_large_groups(self):
+        """With mixed clusters, min_size=3 returns only clusters with 3+ sources."""
+        sa, sb, sc = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        names = {sa: "A", sb: "B", sc: "C"}
+        # Two pair clusters + one triple cluster
+        sets = [[sa, sb], [sa, sb], [sa, sb, sc]]
+        result = compute_top_intersections(names, sets, min_size=3)
+        assert len(result) == 1
+        assert result[0]["count"] == 1
+
+    def test_min_size_4_no_result_for_triple(self):
+        """min_size=4 excludes three-source combinations."""
+        sa, sb, sc = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        names = {sa: "A", sb: "B", sc: "C"}
+        result = compute_top_intersections(names, [[sa, sb, sc]], min_size=4)
+        assert result == []
