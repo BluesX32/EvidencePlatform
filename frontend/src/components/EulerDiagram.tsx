@@ -7,8 +7,11 @@
  *
  * Layout is computed by iterative spring-relaxation in eulerLayout.ts.
  *
+ * Labels are placed outside the circles with thin leader lines to keep the
+ * diagram readable regardless of circle sizes or overlap density.
+ *
  * Interaction:
- *   - Hover a circle → show per-source stats in the info bar below
+ *   - Hover a circle → info bar below shows per-source stats
  *   - Click a circle → call onSourceClick(id) to filter the cluster list
  *   - Click again   → onSourceClick(null) to clear filter
  */
@@ -29,10 +32,35 @@ export const SOURCE_COLORS = [
   "#8d6e63", // brown
 ];
 
-// ── Layout constants ──────────────────────────────────────────────────────────
-const R_MAX = 85;       // max circle radius in layout space
+// ── Layout / rendering constants ──────────────────────────────────────────────
+const R_MAX     = 85;   // max circle radius in layout space
 const ITERATIONS = 350; // relaxation steps
-const PAD = 22;         // viewBox padding around bounding box
+const PAD       = 28;   // viewBox padding around circle bounding box
+const LABEL_W   = 148;  // extra SVG units reserved on each side for labels
+const LABEL_GAP = 14;   // horizontal gap from diagram edge to leader endpoint
+const MIN_VGAP  = 22;   // minimum vertical spacing between labels (SVG units)
+const LABEL_FS  = 10.5; // label font size
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Stack label y-positions with a minimum vertical gap.
+ * Forward pass pushes crowded labels downward; backward pass then pulls them
+ * up if there is room, keeping them centred around their ideal positions.
+ */
+function stackLabelYs(desired: number[]): number[] {
+  if (desired.length === 0) return [];
+  const ys = [...desired];
+  // Push down
+  for (let i = 1; i < ys.length; i++) {
+    if (ys[i] < ys[i - 1] + MIN_VGAP) ys[i] = ys[i - 1] + MIN_VGAP;
+  }
+  // Pull up
+  for (let i = ys.length - 2; i >= 0; i--) {
+    if (ys[i + 1] < ys[i] + MIN_VGAP) ys[i] = ys[i + 1] - MIN_VGAP;
+  }
+  return ys;
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -73,13 +101,14 @@ export default function EulerDiagram({
 
   if (n === 0 || circles.length === 0) return null;
 
-  // Compute viewBox from bounding box of all circles
-  const minX = Math.min(...circles.map((c) => c.x - c.r)) - PAD;
-  const minY = Math.min(...circles.map((c) => c.y - c.r)) - PAD;
-  const maxX = Math.max(...circles.map((c) => c.x + c.r)) + PAD;
-  const maxY = Math.max(...circles.map((c) => c.y + c.r)) + PAD;
-  const vbW = maxX - minX;
-  const vbH = maxY - minY;
+  // Precompute cross-source cluster connection count per source (matrix row sum)
+  const crossCountMap: Record<string, number> = {};
+  for (let i = 0; i < n; i++) {
+    crossCountMap[sources[i].id] = matrix[i].reduce(
+      (s, v, j) => (j !== i ? s + v : s),
+      0
+    );
+  }
 
   // Attach colour and name to each layout circle
   const enriched = circles.map((c, i) => ({
@@ -88,53 +117,101 @@ export default function EulerDiagram({
     name: sources.find((s) => s.id === c.id)?.name ?? c.id,
   }));
 
-  // Cross-source cluster connection count for the hovered source
-  const hoveredIdx = hoveredId
-    ? sources.findIndex((s) => s.id === hoveredId)
-    : -1;
-  const crossCount =
-    hoveredIdx >= 0
-      ? matrix[hoveredIdx].reduce((s, v, j) => (j !== hoveredIdx ? s + v : s), 0)
-      : 0;
+  // ── Diagram bounding box (circles only) ──────────────────────────────────
+  const dMinX = Math.min(...circles.map((c) => c.x - c.r)) - PAD;
+  const dMinY = Math.min(...circles.map((c) => c.y - c.r)) - PAD;
+  const dMaxX = Math.max(...circles.map((c) => c.x + c.r)) + PAD;
+  const dMaxY = Math.max(...circles.map((c) => c.y + c.r)) + PAD;
 
-  const hoveredTotals = hoveredId ? totalsMap[hoveredId] : null;
-  const maxLabelLen = n <= 4 ? 13 : n <= 6 ? 11 : 9;
-  const fontSize = n <= 3 ? 13 : n <= 5 ? 12 : 11;
+  // Horizontal anchor x for leader line endpoints
+  const leftAnchorX  = dMinX - LABEL_GAP;
+  const rightAnchorX = dMaxX + LABEL_GAP;
 
-  // Render order: dimmed circles first, selected/hovered on top
+  // ── Assign circles to left / right label columns ──────────────────────────
+  // Circles left of the centroid get left-side labels; others go right.
+  const centX = enriched.reduce((s, c) => s + c.x, 0) / n;
+
+  const leftGroup  = enriched.filter((c) => c.x < centX - 1).sort((a, b) => a.y - b.y);
+  const rightGroup = enriched.filter((c) => c.x >= centX - 1).sort((a, b) => a.y - b.y);
+
+  const leftYs  = stackLabelYs(leftGroup.map((c) => c.y));
+  const rightYs = stackLabelYs(rightGroup.map((c) => c.y));
+
+  type LabelEntry = { lx: number; ly: number; side: "left" | "right" };
+  const labelMap = new Map<string, LabelEntry>();
+  leftGroup.forEach((c, i) =>
+    labelMap.set(c.id, { lx: leftAnchorX,  ly: leftYs[i],  side: "left"  })
+  );
+  rightGroup.forEach((c, i) =>
+    labelMap.set(c.id, { lx: rightAnchorX, ly: rightYs[i], side: "right" })
+  );
+
+  // ── Full viewBox: include label columns + vertical extent of all labels ───
+  const allLabelYs = [...labelMap.values()].map((l) => l.ly);
+  const vbX = dMinX - LABEL_W;
+  const vbY = Math.min(dMinY, ...allLabelYs) - 8;
+  const vbW = dMaxX + LABEL_W - vbX;
+  const vbH = Math.max(dMaxY, ...allLabelYs) - vbY + 8;
+
+  // ── Render order: hovered / selected circles drawn on top ────────────────
   const renderOrder = [...enriched].sort((a, b) => {
     const aFront = a.id === selectedSourceId || a.id === hoveredId ? 1 : 0;
     const bFront = b.id === selectedSourceId || b.id === hoveredId ? 1 : 0;
     return aFront - bFront;
   });
 
+  const hoveredTotals = hoveredId ? totalsMap[hoveredId] : null;
+  const hoveredName   = hoveredId ? sources.find((s) => s.id === hoveredId)?.name : null;
+
   return (
     <div>
+      {/* ── Clear selection ─────────────────────────────────────────────── */}
+      {selectedSourceId && (
+        <div style={{ marginBottom: "0.3rem", fontSize: "0.82rem", color: "#3c4043" }}>
+          Filtering by{" "}
+          <strong>{sources.find((s) => s.id === selectedSourceId)?.name}</strong>.{" "}
+          <button
+            onClick={() => onSourceClick(null)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "#1a73e8",
+              fontSize: "0.82rem",
+              padding: 0,
+            }}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <svg
-        viewBox={`${minX} ${minY} ${vbW} ${vbH}`}
-        style={{ width: "100%", maxWidth: 580, display: "block" }}
+        viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+        style={{ width: "100%", maxWidth: 780, display: "block" }}
         aria-label="Source overlap map"
       >
+        {/* ── Circles ────────────────────────────────────────────────────── */}
         {renderOrder.map((pos) => {
           const isSelected = selectedSourceId === pos.id;
           const isHovered  = hoveredId === pos.id;
           const isDimmed   = selectedSourceId !== null && !isSelected;
+          const totals     = totalsMap[pos.id];
 
-          const fillOp   = isDimmed ? 0.07 : isSelected ? 0.32 : isHovered ? 0.28 : 0.20;
-          const strokeOp = isDimmed ? 0.18 : 0.72;
-          const sw       = isSelected || isHovered ? 2.5 : 1.5;
-          const textColor = isDimmed ? "#c5c5c5" : "#3c4043";
-          const subColor  = isDimmed ? "#d5d5d5" : "#80868b";
+          const fillOp   = isDimmed ? 0.06 : isSelected ? 0.28 : isHovered ? 0.22 : 0.13;
+          const strokeOp = isDimmed ? 0.20 : isSelected || isHovered ? 0.90 : 0.50;
+          const sw       = isSelected || isHovered ? 2.4 : 1.2;
 
-          const label =
-            pos.name.length > maxLabelLen
-              ? pos.name.slice(0, maxLabelLen) + "…"
-              : pos.name;
-
-          const totalRec = totalsMap[pos.id]?.total;
-          // Centre labels relative to circle centre; offset based on radius
-          const labelY    = totalRec !== undefined ? pos.y - pos.r * 0.12 : pos.y;
-          const subLabelY = pos.y + pos.r * 0.18;
+          // Native browser tooltip (shows on extended hover)
+          const uniqueRec   = totals?.unique_count ?? totals?.total ?? 0;
+          const internalDup = totals?.internal_overlaps ?? 0;
+          const crossCt     = crossCountMap[pos.id] ?? 0;
+          const tooltipText =
+            `${pos.name}\n` +
+            `Total: ${(totals?.total ?? 0).toLocaleString()} records\n` +
+            `Unique: ${uniqueRec.toLocaleString()} records\n` +
+            `Within-source duplicates: ${internalDup}\n` +
+            `Cross-source cluster connections: ${crossCt}`;
 
           return (
             <g
@@ -144,6 +221,7 @@ export default function EulerDiagram({
               onMouseEnter={() => setHoveredId(pos.id)}
               onMouseLeave={() => setHoveredId(null)}
             >
+              <title>{tooltipText}</title>
               <circle
                 cx={pos.x}
                 cy={pos.y}
@@ -154,33 +232,66 @@ export default function EulerDiagram({
                 strokeWidth={sw}
                 strokeOpacity={strokeOp}
               />
-              {/* Source name */}
+            </g>
+          );
+        })}
+
+        {/* ── External labels + leader lines ──────────────────────────────── */}
+        {enriched.map((pos) => {
+          const label      = labelMap.get(pos.id);
+          if (!label) return null;
+
+          const totals     = totalsMap[pos.id];
+          const isSelected = selectedSourceId === pos.id;
+          const isHovered  = hoveredId === pos.id;
+          const isDimmed   = selectedSourceId !== null && !isSelected;
+
+          // Point on the circle boundary in the direction of the label anchor
+          const ddx  = label.lx - pos.x;
+          const ddy  = label.ly - pos.y;
+          const dlen = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+          const bx   = pos.x + (ddx / dlen) * (pos.r + 3);
+          const by   = pos.y + (ddy / dlen) * (pos.r + 3);
+
+          const lineOp  = isDimmed ? 0.16 : isSelected || isHovered ? 0.65 : 0.36;
+          const textOp  = isDimmed ? 0.28 : 1.0;
+          const fw      = isSelected || isHovered ? 700 : 500;
+          // Text offset: small gap after leader endpoint
+          const textX   = label.lx + (label.side === "left" ? -4 : 4);
+          const labelStr = totals
+            ? `${pos.name} — ${totals.total.toLocaleString()} records`
+            : pos.name;
+
+          return (
+            <g key={`lbl-${pos.id}`} style={{ pointerEvents: "none" }}>
+              {/* Leader line */}
+              <line
+                x1={bx} y1={by}
+                x2={label.lx} y2={label.ly}
+                stroke={pos.color}
+                strokeWidth={0.9}
+                strokeOpacity={lineOp}
+              />
+              {/* Dot at the circle boundary */}
+              <circle
+                cx={bx} cy={by} r={1.8}
+                fill={pos.color}
+                fillOpacity={lineOp}
+              />
+              {/* Label text */}
               <text
-                x={pos.x}
-                y={labelY}
-                textAnchor="middle"
+                x={textX}
+                y={label.ly}
+                textAnchor={label.side === "left" ? "end" : "start"}
                 dominantBaseline="middle"
-                fontSize={fontSize}
-                fontWeight={700}
-                fill={textColor}
-                style={{ pointerEvents: "none", userSelect: "none" }}
+                fontSize={LABEL_FS}
+                fontWeight={fw}
+                fill={pos.color}
+                fillOpacity={textOp}
+                style={{ userSelect: "none" }}
               >
-                {label}
+                {labelStr}
               </text>
-              {/* Record count sub-label */}
-              {totalRec !== undefined && (
-                <text
-                  x={pos.x}
-                  y={subLabelY}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontSize={fontSize - 1}
-                  fill={subColor}
-                  style={{ pointerEvents: "none", userSelect: "none" }}
-                >
-                  {totalRec.toLocaleString()} records
-                </text>
-              )}
             </g>
           );
         })}
@@ -191,7 +302,7 @@ export default function EulerDiagram({
         style={{
           minHeight: 26,
           borderTop: "1px solid #f1f3f4",
-          marginTop: "0.15rem",
+          marginTop: "0.1rem",
           padding: "0.25rem 0.5rem",
           fontSize: "0.82rem",
           color: "#3c4043",
@@ -199,32 +310,18 @@ export default function EulerDiagram({
       >
         {hoveredTotals ? (
           <>
-            <strong>{sources.find((s) => s.id === hoveredId)?.name}</strong>
+            <strong>{hoveredName}</strong>
             {" — "}
             {hoveredTotals.total.toLocaleString()} total &middot;{" "}
             {(hoveredTotals.unique_count ?? hoveredTotals.total).toLocaleString()} unique &middot;{" "}
             {hoveredTotals.internal_overlaps ?? 0} within-source duplicates
-            {crossCount > 0 && (
-              <> &middot; {crossCount} cross-source cluster connection{crossCount !== 1 ? "s" : ""}</>
+            {(crossCountMap[hoveredId!] ?? 0) > 0 && (
+              <>
+                {" "}&middot;{" "}
+                {crossCountMap[hoveredId!]} cross-source cluster connection
+                {crossCountMap[hoveredId!] !== 1 ? "s" : ""}
+              </>
             )}
-          </>
-        ) : selectedSourceId ? (
-          <>
-            Filtering by{" "}
-            <strong>{sources.find((s) => s.id === selectedSourceId)?.name}</strong>.{" "}
-            <button
-              onClick={() => onSourceClick(null)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "#1a73e8",
-                fontSize: "0.82rem",
-                padding: 0,
-              }}
-            >
-              Clear
-            </button>
           </>
         ) : (
           <span style={{ color: "#80868b" }}>
@@ -233,7 +330,7 @@ export default function EulerDiagram({
         )}
       </div>
 
-      {/* ── Caption ────────────────────────────────────────────────────── */}
+      {/* ── Caption ─────────────────────────────────────────────────────── */}
       <p style={{ fontSize: "0.76rem", color: "#80868b", margin: "0.2rem 0.5rem 0" }}>
         Circle size proportional to total records. Overlaps approximate pairwise
         shared paper-group counts under the active strategy.

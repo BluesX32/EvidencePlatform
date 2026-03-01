@@ -124,7 +124,10 @@ export interface CircleLayout {
  *  1. Radius ∝ sqrt(total)
  *  2. For each pair, compute target distance from matrix overlap count
  *     (if count=0 → separation = r_i + r_j + padding)
- *  3. Iterative spring-relaxation to minimise stress
+ *  3. Minimum-distance constraint: d_target >= |r_i - r_j| + paddingMin
+ *     to prevent full containment collapse
+ *  4. Iterative spring-relaxation to minimise stress, with a small centroid
+ *     spreading force after each step to prevent total collapse
  *
  * The result is deterministic for the same input.
  *
@@ -133,13 +136,15 @@ export interface CircleLayout {
  * @param rMax       Maximum circle radius in layout coordinates (default 80)
  * @param iterations Spring-relaxation steps (default 300)
  * @param padding    Extra separation added when count=0 (default 12)
+ * @param paddingMin Minimum d beyond |r_i - r_j| for any pair (default 8)
  */
 export function layoutEuler(
   sources: SourceInput[],
   matrix: number[][],
   rMax = 80,
   iterations = 300,
-  padding = 12
+  padding = 12,
+  paddingMin = 8
 ): CircleLayout[] {
   const n = sources.length;
   if (n === 0) return [];
@@ -172,6 +177,9 @@ export function layoutEuler(
         const targetArea = fraction * minArea;
         td = targetDistanceForArea(radii[i], radii[j], targetArea);
       }
+      // Enforce minimum separation: circles must be at least paddingMin
+      // beyond the containment threshold |r_i - r_j| to stay readable.
+      td = Math.max(td, Math.abs(radii[i] - radii[j]) + paddingMin);
       targetDist[i][j] = td;
       targetDist[j][i] = td;
     }
@@ -211,6 +219,19 @@ export function layoutEuler(
     for (let k = 0; k < n; k++) {
       pos[k].x += moves[k].dx;
       pos[k].y += moves[k].dy;
+    }
+
+    // Centroid spreading: tiny outward force from the geometric centre to
+    // prevent total collapse when all target distances are very small.
+    const SPREAD = 0.18;
+    const centX = pos.reduce((s, p) => s + p.x, 0) / n;
+    const centY = pos.reduce((s, p) => s + p.y, 0) / n;
+    for (let k = 0; k < n; k++) {
+      const dx = pos[k].x - centX;
+      const dy = pos[k].y - centY;
+      const dc = Math.sqrt(dx * dx + dy * dy) || 1;
+      pos[k].x += (dx / dc) * SPREAD;
+      pos[k].y += (dy / dc) * SPREAD;
     }
   }
 
