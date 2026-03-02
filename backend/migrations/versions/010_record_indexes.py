@@ -12,6 +12,11 @@ upgrade:
 
 downgrade:
   DROP all three indexes.
+
+Note: uses op.execute() with raw DDL because Alembic's create_index()
+postgresql_ops parameter is for operator class names (e.g. text_pattern_ops),
+not for column sort directions (DESC NULLS LAST). Raw DDL is the correct
+approach for sort-order index specifications.
 """
 from typing import Sequence, Union
 
@@ -24,27 +29,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_index(
-        "ix_records_project_year",
-        "records",
-        ["project_id", "year"],
-        postgresql_ops={"year": "DESC NULLS LAST"},
+    op.execute(
+        "CREATE INDEX ix_records_project_year "
+        "ON records (project_id, year DESC NULLS LAST)"
     )
-    op.create_index(
-        "ix_records_project_created",
-        "records",
-        ["project_id", "created_at"],
-        postgresql_ops={"created_at": "DESC"},
+    op.execute(
+        "CREATE INDEX ix_records_project_created "
+        "ON records (project_id, created_at DESC)"
     )
-    op.create_index(
-        "ix_sd_project_stage_decision",
-        "screening_decisions",
-        ["project_id", "stage", "decision"],
-        postgresql_where="record_id IS NOT NULL",
+    op.execute(
+        "CREATE INDEX ix_sd_project_stage_decision "
+        "ON screening_decisions (project_id, stage, decision) "
+        "WHERE record_id IS NOT NULL"
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_sd_project_stage_decision", table_name="screening_decisions")
-    op.drop_index("ix_records_project_created", table_name="records")
-    op.drop_index("ix_records_project_year", table_name="records")
+    op.execute("DROP INDEX IF EXISTS ix_sd_project_stage_decision")
+    op.execute("DROP INDEX IF EXISTS ix_records_project_created")
+    op.execute("DROP INDEX IF EXISTS ix_records_project_year")

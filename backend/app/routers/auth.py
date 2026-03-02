@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +10,7 @@ from app.database import get_db
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 class RegisterRequest(BaseModel):
@@ -51,7 +54,16 @@ async def register(body: RegisterRequest, db: Annotated[AsyncSession, Depends(ge
     try:
         user = await AuthService.register(db, email=body.email, password=body.password, name=body.name)
     except IntegrityError:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
+    except Exception:
+        logger.exception("Unexpected error during registration for email=%s", body.email)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed unexpectedly — please try again",
+        )
     token = AuthService.create_access_token(str(user.id))
     return RegisterResponse(user_id=str(user.id), access_token=token)
 

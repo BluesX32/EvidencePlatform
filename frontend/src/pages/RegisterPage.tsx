@@ -24,7 +24,15 @@ export default function RegisterPage() {
       navigate("/projects");
     } catch (err: any) {
       const detail = err.response?.data?.detail;
-      setError(typeof detail === "string" ? detail : "Registration failed");
+      // detail is a string for HTTPException errors;
+      // detail is an array of objects for Pydantic validation errors.
+      if (typeof detail === "string") {
+        setError(detail);
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        setError(detail[0].msg ?? "Validation error");
+      } else {
+        setError("Registration failed — please check your connection and try again");
+      }
     } finally {
       setLoading(false);
     }
