@@ -73,12 +73,16 @@ function SortHeader({ label, asc, desc, current, onChange }: {
 // Optional columns that can be toggled
 export interface ColumnVisibility {
   abstract: boolean;
+  volume: boolean;
+  pages: boolean;
   issn: boolean;
   keywords: boolean;
 }
 
 export const DEFAULT_COLUMNS: ColumnVisibility = {
   abstract: false,
+  volume: false,
+  pages: false,
   issn: false,
   keywords: false,
 };
@@ -179,7 +183,11 @@ export default function RecordsTable({
 
   // +2 for the expand toggle column (none visible) and Dedup column
   const optionalColCount =
-    (columns.abstract ? 1 : 0) + (columns.issn ? 1 : 0) + (columns.keywords ? 1 : 0);
+    (columns.abstract ? 1 : 0) +
+    (columns.volume ? 1 : 0) +
+    (columns.pages ? 1 : 0) +
+    (columns.issn ? 1 : 0) +
+    (columns.keywords ? 1 : 0);
   const totalCols = 7 + optionalColCount;
 
   function toggleExpand(id: string) {
@@ -212,7 +220,7 @@ export default function RecordsTable({
                 fontSize: "0.85rem",
               }}
             >
-              {(["abstract", "issn", "keywords"] as const).map((col) => (
+              {(["abstract", "volume", "pages", "issn", "keywords"] as const).map((col) => (
                 <label key={col} style={{ cursor: "pointer", userSelect: "none" }}>
                   <input
                     type="checkbox"
@@ -238,6 +246,8 @@ export default function RecordsTable({
             <th>Authors</th>
             <SortHeader label="Year" asc="year_asc" desc="year_desc" current={sort} onChange={onSortChange} />
             <th>Journal</th>
+            {columns.volume && <th>Vol.</th>}
+            {columns.pages && <th>Pages</th>}
             <th>DOI</th>
             {columns.abstract && <th>Abstract</th>}
             {columns.issn && <th>ISSN</th>}
@@ -263,6 +273,8 @@ export default function RecordsTable({
                   <td>{formatAuthors(r.authors)}</td>
                   <td>{r.year ?? "—"}</td>
                   <td>{truncate(r.journal, 40)}</td>
+                  {columns.volume && <td>{r.volume ?? "—"}</td>}
+                  {columns.pages && <td>{r.pages ?? "—"}</td>}
                   <td onClick={(e) => e.stopPropagation()}>
                     {r.doi ? (
                       <a href={`https://doi.org/${r.doi}`} target="_blank" rel="noreferrer">

@@ -146,13 +146,30 @@ export interface PaginatedRecords {
   page: number;
   per_page: number;
   total_pages: number;
+  year_range: { min: number | null; max: number | null };
 }
 
 export const recordsApi = {
   list: (
     projectId: string,
-    params: { page?: number; per_page?: number; q?: string; sort?: string; source_id?: string }
-  ) => api.get<PaginatedRecords>(`/projects/${projectId}/records`, { params }),
+    params: {
+      page?: number;
+      per_page?: number;
+      q?: string;
+      sort?: string;
+      source_id?: string;
+      source_ids?: string[];
+      year_min?: number;
+      year_max?: number;
+      ta_status?: string;
+      ft_status?: string;
+      has_extraction?: boolean;
+    }
+  ) => api.get<PaginatedRecords>(`/projects/${projectId}/records`, {
+    params,
+    // axios serialises arrays as repeated params: source_ids=a&source_ids=b
+    paramsSerializer: { indexes: null },
+  }),
   overlap: (projectId: string) =>
     api.get<OverlapSummary>(`/projects/${projectId}/overlap`),
 };

@@ -14,7 +14,15 @@ from app.repositories.record_repo import RecordRepo
 
 router = APIRouter(prefix="/projects", tags=["records"])
 
-_VALID_SORTS = {"title_asc", "title_desc", "year_asc", "year_desc"}
+_VALID_SORTS = {
+    "title_asc", "title_desc",
+    "year_asc", "year_desc",
+    "author_asc", "author_desc",
+    "journal_asc", "journal_desc",
+    "created_asc", "created_desc",
+}
+
+_VALID_STATUSES = {"unscreened", "included", "excluded"}
 
 
 class RecordItem(BaseModel):
@@ -55,12 +63,18 @@ class RecordItem(BaseModel):
         )
 
 
+class YearRange(BaseModel):
+    min: Optional[int]
+    max: Optional[int]
+
+
 class PaginatedRecords(BaseModel):
     records: List[RecordItem]
     total: int
     page: int
     per_page: int
     total_pages: int
+    year_range: YearRange
 
 
 class OverlapSourceItem(BaseModel):
@@ -103,13 +117,37 @@ async def list_records(
     q: Optional[str] = Query(None),
     sort: str = Query("year_desc"),
     source_id: Optional[uuid.UUID] = Query(None),
+    source_ids: List[uuid.UUID] = Query(default=[]),
+    year_min: Optional[int] = Query(None),
+    year_max: Optional[int] = Query(None),
+    ta_status: Optional[str] = Query(None),
+    ft_status: Optional[str] = Query(None),
+    has_extraction: Optional[bool] = Query(None),
 ):
     await _require_project_access(project_id, current_user, db)
 
     if sort not in _VALID_SORTS:
         sort = "year_desc"
 
-    rows, total = await RecordRepo.list_paginated(db, project_id, page, per_page, q, sort, source_id)
+    # Silently ignore invalid status values
+    effective_ta = ta_status if ta_status in _VALID_STATUSES else None
+    effective_ft = ft_status if ft_status in _VALID_STATUSES else None
+
+    rows, total, year_range = await RecordRepo.list_paginated(
+        db,
+        project_id,
+        page,
+        per_page,
+        q=q,
+        sort=sort,
+        source_id=source_id,
+        source_ids=source_ids or None,
+        year_min=year_min,
+        year_max=year_max,
+        ta_status=effective_ta,
+        ft_status=effective_ft,
+        has_extraction=has_extraction,
+    )
     total_pages = max(1, (total + per_page - 1) // per_page)
 
     return PaginatedRecords(
@@ -118,6 +156,7 @@ async def list_records(
         page=page,
         per_page=per_page,
         total_pages=total_pages,
+        year_range=YearRange(min=year_range["min"], max=year_range["max"]),
     )
 
 

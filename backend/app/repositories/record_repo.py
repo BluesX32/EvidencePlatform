@@ -6,14 +6,16 @@ Two responsibilities:
   2. Paginated listing for the API (query records, aggregate source names).
 """
 import uuid
-from typing import Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.extraction_record import ExtractionRecord
 from app.models.record import Record
 from app.models.record_source import RecordSource
+from app.models.screening_decision import ScreeningDecision
 from app.models.source import Source
 from app.utils.match_keys import compute_match_key, normalize_title, normalize_first_author
 
@@ -181,16 +183,42 @@ class RecordRepo:
         project_id: uuid.UUID,
         page: int,
         per_page: int,
-        q: Optional[str],
-        sort: str,
+        q: Optional[str] = None,
+        sort: str = "year_desc",
         source_id: Optional[uuid.UUID] = None,
-    ) -> tuple[list, int]:
+        source_ids: Optional[List[uuid.UUID]] = None,
+        year_min: Optional[int] = None,
+        year_max: Optional[int] = None,
+        ta_status: Optional[str] = None,
+        ft_status: Optional[str] = None,
+        has_extraction: Optional[bool] = None,
+    ) -> tuple[list, int, Dict]:
         """
-        Returns (rows, total) where each row has Record columns + aggregated `sources`.
+        Returns (rows, total, year_range) where:
+          - each row has Record columns + aggregated `sources`
+          - year_range is {"min": int|None, "max": int|None} for the whole project
 
         One row per canonical record — no duplicates regardless of how many sources
         have claimed it.  `sources` is a list of source names (may be empty).
+
+        Filter params:
+          source_id    — single-source legacy filter (kept for backward compat)
+          source_ids   — multi-source filter; record must belong to ANY of these sources
+          year_min/max — inclusive year range
+          ta_status    — "unscreened" | "included" | "excluded" (standalone records only)
+          ft_status    — same as ta_status, for FT stage
+          has_extraction — True/False filter on extraction records (standalone records only)
         """
+        # Fetch project-level year range before applying per-call filters
+        yr_row = (
+            await db.execute(
+                select(func.min(Record.year), func.max(Record.year)).where(
+                    Record.project_id == project_id
+                )
+            )
+        ).one()
+        year_range: Dict = {"min": yr_row[0], "max": yr_row[1]}
+
         base = (
             select(
                 Record.id,
@@ -223,6 +251,7 @@ class RecordRepo:
             )
         )
 
+        # ── Text search ──────────────────────────────────────────────────────
         if q:
             pattern = f"%{q}%"
             base = base.where(
@@ -232,18 +261,105 @@ class RecordRepo:
                 )
             )
 
+        # ── Source filters ───────────────────────────────────────────────────
         if source_id:
             base = base.where(
                 Record.id.in_(
                     select(RecordSource.record_id).where(RecordSource.source_id == source_id)
                 )
             )
+        if source_ids:
+            base = base.where(
+                Record.id.in_(
+                    select(RecordSource.record_id).where(
+                        RecordSource.source_id.in_(source_ids)
+                    )
+                )
+            )
 
+        # ── Year range ───────────────────────────────────────────────────────
+        if year_min is not None:
+            base = base.where(Record.year >= year_min)
+        if year_max is not None:
+            base = base.where(Record.year <= year_max)
+
+        # ── TA status ────────────────────────────────────────────────────────
+        _ta_decisions = (
+            select(ScreeningDecision.record_id)
+            .where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.stage == "TA",
+                ScreeningDecision.record_id.isnot(None),
+            )
+        )
+        if ta_status == "unscreened":
+            base = base.where(
+                Record.id.not_in(_ta_decisions)
+            )
+        elif ta_status == "included":
+            base = base.where(
+                Record.id.in_(
+                    _ta_decisions.where(ScreeningDecision.decision == "include")
+                )
+            )
+        elif ta_status == "excluded":
+            base = base.where(
+                Record.id.in_(
+                    _ta_decisions.where(ScreeningDecision.decision == "exclude")
+                )
+            )
+
+        # ── FT status ────────────────────────────────────────────────────────
+        _ft_decisions = (
+            select(ScreeningDecision.record_id)
+            .where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.stage == "FT",
+                ScreeningDecision.record_id.isnot(None),
+            )
+        )
+        if ft_status == "unscreened":
+            base = base.where(
+                Record.id.not_in(_ft_decisions)
+            )
+        elif ft_status == "included":
+            base = base.where(
+                Record.id.in_(
+                    _ft_decisions.where(ScreeningDecision.decision == "include")
+                )
+            )
+        elif ft_status == "excluded":
+            base = base.where(
+                Record.id.in_(
+                    _ft_decisions.where(ScreeningDecision.decision == "exclude")
+                )
+            )
+
+        # ── Extraction status ────────────────────────────────────────────────
+        _extracted_ids = (
+            select(ExtractionRecord.record_id)
+            .where(
+                ExtractionRecord.project_id == project_id,
+                ExtractionRecord.record_id.isnot(None),
+            )
+        )
+        if has_extraction is True:
+            base = base.where(Record.id.in_(_extracted_ids))
+        elif has_extraction is False:
+            base = base.where(Record.id.not_in(_extracted_ids))
+
+        # ── Sort ─────────────────────────────────────────────────────────────
         sort_map = {
-            "title_asc": Record.title.asc(),
-            "title_desc": Record.title.desc(),
-            "year_asc": Record.year.asc(),
-            "year_desc": Record.year.desc(),
+            "title_asc":    Record.title.asc(),
+            "title_desc":   Record.title.desc(),
+            "year_asc":     Record.year.asc(),
+            "year_desc":    Record.year.desc(),
+            "author_asc":   func.array_to_string(Record.authors, " ").asc(),
+            "author_desc":  func.array_to_string(Record.authors, " ").desc(),
+            "journal_asc":  Record.journal.asc(),
+            "journal_desc": Record.journal.desc(),
+            "created_asc":  Record.created_at.asc(),
+            "created_desc": Record.created_at.desc(),
         }
         order = sort_map.get(sort, Record.year.desc())
 
@@ -253,4 +369,4 @@ class RecordRepo:
         rows_q = base.order_by(order).offset((page - 1) * per_page).limit(per_page)
         rows = list((await db.execute(rows_q)).all())
 
-        return rows, total
+        return rows, total, year_range

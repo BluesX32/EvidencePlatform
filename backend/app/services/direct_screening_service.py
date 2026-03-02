@@ -538,18 +538,19 @@ async def get_next_item(
 
     reviewer_uuid_str = str(reviewer_id) if reviewer_id else None
 
-    params: Dict[str, Any] = {
+    # base_params excludes "mode" because _NEXT_ITEM_SQL_MIXED has no :mode bind param.
+    # Sequential SQL gets "mode" added only when it is actually needed.
+    base_params: Dict[str, Any] = {
         "project_id": project_id,
         "source_id": source_uuid,
-        "mode": mode,
         "reviewer_id": reviewer_uuid_str,
     }
 
     try:
         if mode == "mixed":
-            result = await db.execute(_NEXT_ITEM_SQL_MIXED, params)
+            result = await db.execute(_NEXT_ITEM_SQL_MIXED, base_params)
         else:
-            result = await db.execute(_NEXT_ITEM_SQL, params)
+            result = await db.execute(_NEXT_ITEM_SQL, {**base_params, "mode": mode})
 
         row = result.one_or_none()
 
@@ -596,21 +597,21 @@ async def get_next_item(
         else:
             meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
 
-        # Compute remaining count (approximate — items available for this reviewer+mode)
+        # Compute remaining count by replacing the final LIMIT-1 SELECT with an inline COUNT.
+        # This keeps the WITH clause at the top level (valid SQL), avoiding the fragile
+        # "SELECT COUNT(*) FROM (WITH … SELECT …) sub" pattern.
         if mode == "mixed":
-            count_sql = (
-                "SELECT COUNT(*) FROM ("
-                + _NEXT_ITEM_SQL_MIXED.text.replace("ORDER BY priority, created_at\nLIMIT 1", "")
-                + ") _avail"
+            count_sql = _NEXT_ITEM_SQL_MIXED.text.replace(
+                "SELECT cluster_id, record_id\nFROM available\nORDER BY priority, created_at\nLIMIT 1",
+                "SELECT COUNT(*) FROM available",
             )
+            remaining_result = await db.execute(text(count_sql), base_params)
         else:
-            count_sql = (
-                "SELECT COUNT(*) FROM ("
-                + _NEXT_ITEM_SQL.text.replace("ORDER BY created_at\nLIMIT 1", "")
-                + ") _avail"
+            count_sql = _NEXT_ITEM_SQL.text.replace(
+                "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
+                "SELECT COUNT(*) FROM available",
             )
-
-        remaining_result = await db.execute(text(count_sql), params)
+            remaining_result = await db.execute(text(count_sql), {**base_params, "mode": mode})
         remaining = remaining_result.scalar() or 0
 
         # Fetch current reviewer's TA/FT decisions for this item
