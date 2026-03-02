@@ -36,3 +36,17 @@ class ProjectRepo:
             select(func.count()).where(Record.project_id == project_id)
         )
         return result.scalar_one()
+
+    @staticmethod
+    async def update_criteria(
+        db: AsyncSession,
+        project_id: uuid.UUID,
+        criteria: dict,
+    ) -> Optional[Project]:
+        project = await ProjectRepo.get_by_id(db, project_id)
+        if project is None:
+            return None
+        project.criteria = criteria
+        await db.flush()
+        await db.refresh(project)
+        return project

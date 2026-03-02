@@ -4,38 +4,51 @@ import { useNavigate } from "react-router-dom";
 import { screeningApi } from "../api/client";
 import type { ScreeningSource } from "../api/client";
 
-type ScreeningMode = "screen" | "fulltext" | "extract";
 type Strategy = "sequential" | "mixed";
 
-interface ModeCardDef {
-  mode: ScreeningMode;
+interface BucketCardDef {
+  bucket: string;
   title: string;
   description: string;
-  countLabel: (s: ScreeningSource) => string;
   remaining: (s: ScreeningSource) => number;
 }
 
-const MODE_CARDS: ModeCardDef[] = [
+const BUCKET_CARDS: BucketCardDef[] = [
   {
-    mode: "screen",
+    bucket: "ta_unscreened",
     title: "Screen (Title / Abstract)",
     description: "First-pass screening — include or exclude based on title and abstract.",
-    countLabel: (s) => `${s.record_count} total · ${s.record_count - s.ta_screened} unscreened`,
     remaining: (s) => s.record_count - s.ta_screened,
   },
   {
-    mode: "fulltext",
+    bucket: "ta_included",
+    title: "TA Included (browse)",
+    description: "Browse all title/abstract-included papers.",
+    remaining: (s) => s.ta_included,
+  },
+  {
+    bucket: "ft_pending",
     title: "Full-text Review",
-    description: "Review full texts of title/abstract-included papers.",
-    countLabel: (s) => `${s.ta_included} eligible · ${s.ta_included - s.ft_screened} pending`,
+    description: "TA included, full-text not yet decided.",
     remaining: (s) => s.ta_included - s.ft_screened,
   },
   {
-    mode: "extract",
+    bucket: "ft_included",
+    title: "FT Included (browse)",
+    description: "Browse all full-text-included papers.",
+    remaining: (s) => s.ft_included,
+  },
+  {
+    bucket: "extract_pending",
     title: "Extract Data",
-    description: "Conceptual extraction from full-text-included papers.",
-    countLabel: (s) => `${s.ft_included} eligible · ${s.ft_included - s.extracted_count} pending`,
+    description: "FT included, extraction not yet done.",
     remaining: (s) => s.ft_included - s.extracted_count,
+  },
+  {
+    bucket: "extract_done",
+    title: "Extracted (browse)",
+    description: "Browse completed extractions.",
+    remaining: (s) => s.extracted_count,
   },
 ];
 
@@ -47,7 +60,7 @@ interface Props {
 // Shared card button style
 const cardBtn = (selected: boolean): React.CSSProperties => ({
   textAlign: "left",
-  padding: "1rem 1.25rem",
+  padding: "0.85rem 1.1rem",
   border: `1.5px solid ${selected ? "#1a73e8" : "#dadce0"}`,
   borderRadius: "0.5rem",
   background: selected ? "#f0f4ff" : "#fff",
@@ -59,7 +72,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
   const navigate = useNavigate();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
-  const [selectedMode, setSelectedMode] = useState<ScreeningMode | null>(null);
+  const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string>("all");
 
   const { data: sources, isLoading } = useQuery({
@@ -83,12 +96,12 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
   function handleStart() {
     if (selectedStrategy === "mixed") {
       navigate(
-        `/projects/${projectId}/screen?strategy=mixed&mode=mixed&source=${selectedSource}`
+        `/projects/${projectId}/screen?strategy=mixed&source=${selectedSource}`
       );
     } else {
-      if (!selectedMode) return;
+      if (!selectedBucket) return;
       navigate(
-        `/projects/${projectId}/screen?strategy=sequential&mode=${selectedMode}&source=${selectedSource}`
+        `/projects/${projectId}/screen?strategy=sequential&bucket=${selectedBucket}&source=${selectedSource}`
       );
     }
     onClose();
@@ -112,7 +125,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
           background: "#fff",
           borderRadius: "0.75rem",
           padding: "2rem",
-          width: "min(90vw, 580px)",
+          width: "min(90vw, 600px)",
           boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
           position: "relative",
           maxHeight: "90vh",
@@ -155,7 +168,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                 </div>
                 <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
                   Classic gating: Title/Abstract first, then Full-text, then Extraction.
-                  Each stage unlocks after the previous.
+                  Jump to any stage or browse completed items.
                 </div>
               </button>
               <button
@@ -281,7 +294,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
           </>
         )}
 
-        {/* ── Step 3: Mode selection (Sequential only) ───────────────── */}
+        {/* ── Step 3: Bucket selection (Sequential only) ──────────────── */}
         {step === 3 && selectedStrategy === "sequential" && (
           <>
             <button
@@ -299,7 +312,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
               ← Back
             </button>
             <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>Choose Task</h2>
-            <p style={{ margin: "0 0 1.5rem", color: "#5f6368", fontSize: "0.9rem" }}>
+            <p style={{ margin: "0 0 1.25rem", color: "#5f6368", fontSize: "0.9rem" }}>
               What would you like to do in this session?
             </p>
 
@@ -320,22 +333,16 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
               </div>
             )}
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              {MODE_CARDS.map((card) => {
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              {BUCKET_CARDS.map((card) => {
                 const src = sortedSources.find((s) => s.id === selectedSource);
                 const rem = src ? card.remaining(src) : 0;
-                const isDisabled = rem <= 0;
-                const isSelected = selectedMode === card.mode;
+                const isSelected = selectedBucket === card.bucket;
                 return (
                   <button
-                    key={card.mode}
-                    onClick={() => !isDisabled && setSelectedMode(card.mode)}
-                    disabled={isDisabled}
-                    style={{
-                      ...cardBtn(isSelected),
-                      opacity: isDisabled ? 0.5 : 1,
-                      cursor: isDisabled ? "not-allowed" : "pointer",
-                    }}
+                    key={card.bucket}
+                    onClick={() => setSelectedBucket(card.bucket)}
+                    style={{ ...cardBtn(isSelected) }}
                   >
                     <div
                       style={{
@@ -345,10 +352,10 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                       }}
                     >
                       <div>
-                        <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                        <div style={{ fontWeight: 600, marginBottom: "0.2rem", fontSize: "0.9rem" }}>
                           {card.title}
                         </div>
-                        <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
+                        <div style={{ fontSize: "0.82rem", color: "#5f6368" }}>
                           {card.description}
                         </div>
                       </div>
@@ -362,7 +369,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                             fontWeight: rem > 0 ? 600 : 400,
                           }}
                         >
-                          {rem > 0 ? `${rem} pending` : "Done"}
+                          {rem}
                         </span>
                       )}
                     </div>
@@ -375,7 +382,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
               <button
                 className="btn-primary"
                 onClick={handleStart}
-                disabled={!selectedMode}
+                disabled={!selectedBucket}
               >
                 Start →
               </button>

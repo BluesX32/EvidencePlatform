@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import auth, dedup_jobs, imports, overlaps, projects, records, sources, strategies
+from app.routers import annotations, auth, dedup_jobs, extractions, imports, overlaps, projects, records, sources, strategies
 from app.routers import screening
 
 app = FastAPI(title="EvidencePlatform API", version="0.1.0")
@@ -24,6 +24,8 @@ app.include_router(strategies.router)
 app.include_router(dedup_jobs.router)
 app.include_router(overlaps.router)
 app.include_router(screening.router)
+app.include_router(extractions.router)
+app.include_router(annotations.router)
 
 
 @app.get("/health")

@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -45,6 +45,17 @@ class ProjectListItem(BaseModel):
     record_count: int
 
 
+class CriterionItem(BaseModel):
+    id: str
+    text: str
+
+
+class ProjectCriteria(BaseModel):
+    inclusion: List[CriterionItem] = []
+    exclusion: List[CriterionItem] = []
+    levels: List[str] = []     # editable levels vocabulary (Sprint 14)
+
+
 class ProjectDetail(BaseModel):
     id: str
     name: str
@@ -54,6 +65,13 @@ class ProjectDetail(BaseModel):
     record_count: int        # canonical records (unique after dedup)
     import_count: int        # completed import jobs
     failed_import_count: int
+    criteria: ProjectCriteria
+
+
+class UpdateCriteriaRequest(BaseModel):
+    inclusion: List[CriterionItem] = []
+    exclusion: List[CriterionItem] = []
+    levels: List[str] = []     # editable levels vocabulary (Sprint 14)
 
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
@@ -104,6 +122,8 @@ async def get_project(
     jobs = await ImportRepo.list_by_project(db, project.id)
     failed_count = sum(1 for j in jobs if j.status == "failed")
 
+    raw = project.criteria or {"inclusion": [], "exclusion": [], "levels": []}
+    raw.setdefault("levels", [])
     return ProjectDetail(
         id=str(project.id),
         name=project.name,
@@ -113,4 +133,46 @@ async def get_project(
         record_count=record_count,
         import_count=import_count,
         failed_import_count=failed_count,
+        criteria=ProjectCriteria(**raw),
+    )
+
+
+@router.patch("/{project_id}/criteria", response_model=ProjectDetail)
+async def update_criteria(
+    project_id: uuid.UUID,
+    body: UpdateCriteriaRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    project = await ProjectRepo.get_by_id(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if project.created_by != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    criteria_dict = {
+        "inclusion": [c.model_dump() for c in body.inclusion],
+        "exclusion": [c.model_dump() for c in body.exclusion],
+        "levels": body.levels,
+    }
+    project = await ProjectRepo.update_criteria(db, project_id, criteria_dict)
+    await db.commit()
+
+    record_count = await ProjectRepo.count_records(db, project_id)
+    import_count = await ImportRepo.count_completed(db, project_id)
+    jobs = await ImportRepo.list_by_project(db, project_id)
+    failed_count = sum(1 for j in jobs if j.status == "failed")
+
+    raw = project.criteria or {"inclusion": [], "exclusion": [], "levels": []}
+    raw.setdefault("levels", [])
+    return ProjectDetail(
+        id=str(project.id),
+        name=project.name,
+        description=project.description,
+        created_by=str(project.created_by),
+        created_at=project.created_at.isoformat(),
+        record_count=record_count,
+        import_count=import_count,
+        failed_import_count=failed_count,
+        criteria=ProjectCriteria(**raw),
     )

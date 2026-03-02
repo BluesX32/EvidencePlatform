@@ -63,10 +63,22 @@ export interface ProjectListItem extends Project {
   record_count: number;
 }
 
+export interface CriterionItem {
+  id: string;
+  text: string;
+}
+
+export interface ProjectCriteria {
+  inclusion: CriterionItem[];
+  exclusion: CriterionItem[];
+  levels?: string[];     // editable levels vocabulary (Sprint 14)
+}
+
 export interface ProjectDetail extends Project {
   record_count: number;        // canonical records (unique after dedup)
   import_count: number;        // completed import jobs
   failed_import_count: number;
+  criteria: ProjectCriteria;
 }
 
 export const projectsApi = {
@@ -74,6 +86,8 @@ export const projectsApi = {
   get: (id: string) => api.get<ProjectDetail>(`/projects/${id}`),
   create: (name: string, description?: string) =>
     api.post<Project>("/projects", { name, description }),
+  updateCriteria: (id: string, body: ProjectCriteria) =>
+    api.patch<ProjectDetail>(`/projects/${id}/criteria`, body),
 };
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -515,12 +529,41 @@ export interface ScreeningNextItem {
   authors?: string[] | null;
   doi?: string | null;
   source_names?: string[];
-  remaining?: number;
+  remaining?: number | null;
   /** Current reviewer's TA decision for this item, if any ("include" | "exclude" | null) */
   ta_decision?: string | null;
   /** Current reviewer's FT decision for this item, if any */
   ft_decision?: string | null;
+  pmid?: string | null;
+  pmcid?: string | null;
 }
+
+export interface Annotation {
+  id: string;
+  project_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  selected_text: string;
+  comment: string;
+  reviewer_id: string | null;
+  created_at: string;
+}
+
+export const annotationsApi = {
+  list: (projectId: string, params: { record_id?: string; cluster_id?: string }) =>
+    api.get<Annotation[]>(`/projects/${projectId}/annotations`, { params }),
+  create: (
+    projectId: string,
+    body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      selected_text: string;
+      comment: string;
+    }
+  ) => api.post<Annotation>(`/projects/${projectId}/annotations`, body),
+  delete: (projectId: string, annId: string) =>
+    api.delete(`/projects/${projectId}/annotations/${annId}`),
+};
 
 export interface ScreeningDecision {
   id: string;
@@ -566,15 +609,36 @@ export interface ExtractionRecord {
   created_at: string;
 }
 
+export interface ExtractionLibraryItem extends ExtractionRecord {
+  title: string | null;
+  authors: string[];
+  year: number | null;
+  doi: string | null;
+  source_names: string[];
+}
+
+export const extractionLibraryApi = {
+  list: (projectId: string) =>
+    api.get<ExtractionLibraryItem[]>(`/projects/${projectId}/extractions`),
+  get: (projectId: string, extractionId: string) =>
+    api.get<ExtractionLibraryItem>(`/projects/${projectId}/extractions/${extractionId}`),
+};
+
 export const screeningApi = {
   getSources: (projectId: string) =>
     api.get<ScreeningSource[]>(`/projects/${projectId}/screening/sources`),
 
   nextItem: (
     projectId: string,
-    params: { source_id: string; mode: string; strategy?: string }
+    params: { source_id: string; mode: string; strategy?: string; bucket?: string }
   ) =>
     api.get<ScreeningNextItem>(`/projects/${projectId}/screening/next`, { params }),
+
+  getItem: (
+    projectId: string,
+    params: { record_id?: string; cluster_id?: string }
+  ) =>
+    api.get<ScreeningNextItem>(`/projects/${projectId}/screening/item`, { params }),
 
   submitDecision: (
     projectId: string,

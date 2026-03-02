@@ -5,7 +5,8 @@ All SQL filtering via CTEs.  No Python-side list manipulation for availability l
 
 Public API:
   get_project_sources_with_stats(db, project_id) → List[Dict]
-  get_next_item(db, project_id, source_id, mode, reviewer_id) → Dict
+  get_next_item(db, project_id, source_id, mode, reviewer_id, bucket) → Dict
+  get_item_by_key(db, project_id, record_id, cluster_id, reviewer_id) → Dict
   submit_decision(db, project_id, record_id, cluster_id, stage, decision,
                   reason_code, notes, reviewer_id, auto_ta_include) → Dict
   submit_extraction(db, project_id, record_id, cluster_id, extracted_json,
@@ -21,7 +22,8 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import bindparam, delete, func, select, text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extraction_record import ExtractionRecord
@@ -505,6 +507,260 @@ LIMIT 1
 
 
 # ---------------------------------------------------------------------------
+# Browse bucket SQL variants
+#
+# These 3 SQLs browse *already-decided* items (ta_included, ft_included,
+# extract_done).  They share the same scope / claims CTEs as the main
+# sequential SQL but apply inverted filters.  The :mode bind param is NOT
+# used; instead, the WHERE clause is hard-coded per bucket.
+# ---------------------------------------------------------------------------
+
+_BROWSE_BASE = """
+WITH
+  records_in_scope AS (
+    SELECT DISTINCT r.id AS record_id, r.created_at
+    FROM records r
+    JOIN record_sources rs ON rs.record_id = r.id
+    WHERE r.project_id = :project_id
+      AND (:source_id IS NULL OR rs.source_id = :source_id)
+  ),
+  clustered_records AS (
+    SELECT DISTINCT rs.record_id
+    FROM record_sources rs
+    JOIN overlap_cluster_members ocm ON ocm.record_source_id = rs.id
+    JOIN overlap_clusters oc ON oc.id = ocm.cluster_id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+  ),
+  standalone_in_scope AS (
+    SELECT ris.record_id, ris.created_at
+    FROM records_in_scope ris
+    WHERE ris.record_id NOT IN (SELECT record_id FROM clustered_records)
+  ),
+  clusters_in_scope AS (
+    SELECT DISTINCT oc.id AS cluster_id, MIN(r.created_at) AS created_at
+    FROM overlap_clusters oc
+    JOIN overlap_cluster_members ocm ON ocm.cluster_id = oc.id
+    JOIN record_sources rs ON rs.id = ocm.record_source_id
+    JOIN records r ON r.id = rs.record_id
+    JOIN records_in_scope ris ON ris.record_id = r.id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+    GROUP BY oc.id
+  ),
+"""
+
+_TA_INCLUDED_SQL = text(_BROWSE_BASE + """
+  available_standalone AS (
+    SELECT NULL::uuid AS cluster_id, s.record_id, s.created_at
+    FROM standalone_in_scope s
+    WHERE EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.project_id = :project_id
+        AND sd.record_id = s.record_id
+        AND sd.stage = 'TA'
+        AND sd.decision = 'include'
+        AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+    )
+  ),
+  available_clusters AS (
+    SELECT c.cluster_id, NULL::uuid AS record_id, c.created_at
+    FROM clusters_in_scope c
+    WHERE EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.project_id = :project_id
+        AND sd.cluster_id = c.cluster_id
+        AND sd.stage = 'TA'
+        AND sd.decision = 'include'
+        AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+    )
+  ),
+  available AS (
+    SELECT cluster_id, record_id, created_at FROM available_clusters
+    UNION ALL
+    SELECT cluster_id, record_id, created_at FROM available_standalone
+  )
+SELECT cluster_id, record_id
+FROM available
+ORDER BY created_at
+LIMIT 1
+""")
+
+_FT_INCLUDED_SQL = text(_BROWSE_BASE + """
+  available_standalone AS (
+    SELECT NULL::uuid AS cluster_id, s.record_id, s.created_at
+    FROM standalone_in_scope s
+    WHERE EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.project_id = :project_id
+        AND sd.record_id = s.record_id
+        AND sd.stage = 'FT'
+        AND sd.decision = 'include'
+        AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+    )
+  ),
+  available_clusters AS (
+    SELECT c.cluster_id, NULL::uuid AS record_id, c.created_at
+    FROM clusters_in_scope c
+    WHERE EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.project_id = :project_id
+        AND sd.cluster_id = c.cluster_id
+        AND sd.stage = 'FT'
+        AND sd.decision = 'include'
+        AND (:reviewer_id IS NULL OR sd.reviewer_id = :reviewer_id)
+    )
+  ),
+  available AS (
+    SELECT cluster_id, record_id, created_at FROM available_clusters
+    UNION ALL
+    SELECT cluster_id, record_id, created_at FROM available_standalone
+  )
+SELECT cluster_id, record_id
+FROM available
+ORDER BY created_at
+LIMIT 1
+""")
+
+_EXTRACT_DONE_SQL = text(_BROWSE_BASE + """
+  available_standalone AS (
+    SELECT NULL::uuid AS cluster_id, s.record_id, s.created_at
+    FROM standalone_in_scope s
+    WHERE EXISTS (
+      SELECT 1 FROM extraction_records er
+      WHERE er.project_id = :project_id
+        AND er.record_id = s.record_id
+    )
+  ),
+  available_clusters AS (
+    SELECT c.cluster_id, NULL::uuid AS record_id, c.created_at
+    FROM clusters_in_scope c
+    WHERE EXISTS (
+      SELECT 1 FROM extraction_records er
+      WHERE er.project_id = :project_id
+        AND er.cluster_id = c.cluster_id
+    )
+  ),
+  available AS (
+    SELECT cluster_id, record_id, created_at FROM available_clusters
+    UNION ALL
+    SELECT cluster_id, record_id, created_at FROM available_standalone
+  )
+SELECT cluster_id, record_id
+FROM available
+ORDER BY created_at
+LIMIT 1
+""")
+
+# Map bucket name → (SQL statement, mode string for sequential SQL)
+# browse buckets use their own statements; sequential buckets map to mode
+_BUCKET_TO_MODE: Dict[str, str] = {
+    "ta_unscreened": "screen",
+    "ft_pending": "fulltext",
+    "extract_pending": "extract",
+}
+
+
+# ---------------------------------------------------------------------------
+# Typed SQL statements
+#
+# asyncpg infers each bind-parameter's PostgreSQL OID from the Python value.
+# When the value is None (→ SQL NULL), asyncpg sends OID 0 (unspecified).
+# PostgreSQL then cannot determine the type for "IS NULL / IS NOT NULL" checks
+# during query PREPARATION and raises "could not determine data type of
+# parameter $N" (sqlalche.me/e/20/f405).
+#
+# Fix: attach explicit UUID type annotations via bindparam(..., type_=PGUUID).
+# SQLAlchemy then sends the parameter with OID 2950 (uuid) even for None.
+# ---------------------------------------------------------------------------
+
+_UUID_TYPE = PGUUID(as_uuid=True)
+
+# Typed browse statements (reviewer_id may be NULL → need explicit UUID type)
+_TA_INCLUDED_STMT = _TA_INCLUDED_SQL.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_FT_INCLUDED_STMT = _FT_INCLUDED_SQL.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_EXTRACT_DONE_STMT = _EXTRACT_DONE_SQL.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    # reviewer_id is intentionally absent — extract_done SQL does not filter by reviewer
+)
+
+# Count SQL (string replacement done once at module load — avoids repeating
+# the replacement on every /next call)
+_COUNT_SQL_SEQ = text(
+    _NEXT_ITEM_SQL.text.replace(
+        "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
+        "SELECT COUNT(*) FROM available",
+    )
+)
+_COUNT_SQL_MIXED = text(
+    _NEXT_ITEM_SQL_MIXED.text.replace(
+        "SELECT cluster_id, record_id\nFROM available\nORDER BY priority, created_at\nLIMIT 1",
+        "SELECT COUNT(*) FROM available",
+    )
+)
+
+_SEQ_STMT = _NEXT_ITEM_SQL.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_MIXED_STMT = _NEXT_ITEM_SQL_MIXED.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_COUNT_SEQ_STMT = _COUNT_SQL_SEQ.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_COUNT_MIXED_STMT = _COUNT_SQL_MIXED.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+
+_TA_DEC_SQL = text("""
+    SELECT decision FROM screening_decisions
+    WHERE project_id = :project_id AND stage = 'TA'
+      AND reviewer_id = :reviewer_id
+      AND (
+        (:record_id IS NOT NULL AND record_id = :record_id)
+        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
+      )
+    LIMIT 1
+""").bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("record_id",   type_=_UUID_TYPE),
+    bindparam("cluster_id",  type_=_UUID_TYPE),
+)
+
+_FT_DEC_SQL = text("""
+    SELECT decision FROM screening_decisions
+    WHERE project_id = :project_id AND stage = 'FT'
+      AND reviewer_id = :reviewer_id
+      AND (
+        (:record_id IS NOT NULL AND record_id = :record_id)
+        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
+      )
+    LIMIT 1
+""").bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("record_id",   type_=_UUID_TYPE),
+    bindparam("cluster_id",  type_=_UUID_TYPE),
+)
+
+
+# ---------------------------------------------------------------------------
 # get_next_item
 # ---------------------------------------------------------------------------
 
@@ -514,18 +770,24 @@ async def get_next_item(
     source_id: Optional[str],
     mode: str,
     reviewer_id: Optional[uuid.UUID],
+    bucket: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Return the next available item for screening/review/extraction.
 
     mode: "screen" | "fulltext" | "extract" | "mixed"
+    bucket: optional override — one of the 6 bucket names:
+      ta_unscreened | ta_included | ft_pending | ft_included |
+      extract_pending | extract_done
 
     Inserts a screening_claim row (soft lock) before returning metadata.
+    Browse buckets (ta_included, ft_included, extract_done) still insert a
+    claim so the frontend can hold a soft lock while reviewing.
     Returns {"done": True} when no items are available.
     """
     logger.info(
-        "get_next_item project=%s source=%s mode=%s reviewer=%s",
-        project_id, source_id, mode, reviewer_id,
+        "get_next_item project=%s source=%s mode=%s bucket=%s reviewer=%s",
+        project_id, source_id, mode, bucket, reviewer_id,
     )
 
     source_uuid: Optional[uuid.UUID] = None
@@ -536,21 +798,32 @@ async def get_next_item(
             logger.warning("get_next_item invalid source_id=%s", source_id)
             return {"done": True}
 
-    reviewer_uuid_str = str(reviewer_id) if reviewer_id else None
-
+    # Pass reviewer_id as uuid.UUID (not str) so asyncpg types it as uuid, matching
+    # the reviewer_id column type. Passing a Python str causes asyncpg to type the
+    # bind param as text, which conflicts with the UUID column in prepared statements.
     # base_params excludes "mode" because _NEXT_ITEM_SQL_MIXED has no :mode bind param.
-    # Sequential SQL gets "mode" added only when it is actually needed.
     base_params: Dict[str, Any] = {
         "project_id": project_id,
         "source_id": source_uuid,
-        "reviewer_id": reviewer_uuid_str,
+        "reviewer_id": reviewer_id,  # uuid.UUID | None
     }
 
     try:
-        if mode == "mixed":
-            result = await db.execute(_NEXT_ITEM_SQL_MIXED, base_params)
+        # Resolve effective SQL based on bucket (overrides mode) or mode
+        if bucket == "ta_included":
+            result = await db.execute(_TA_INCLUDED_STMT, base_params)
+        elif bucket == "ft_included":
+            result = await db.execute(_FT_INCLUDED_STMT, base_params)
+        elif bucket == "extract_done":
+            result = await db.execute(_EXTRACT_DONE_STMT, base_params)
+        elif bucket in _BUCKET_TO_MODE:
+            # ta_unscreened → screen, ft_pending → fulltext, extract_pending → extract
+            effective_mode = _BUCKET_TO_MODE[bucket]
+            result = await db.execute(_SEQ_STMT, {**base_params, "mode": effective_mode})
+        elif mode == "mixed":
+            result = await db.execute(_MIXED_STMT, base_params)
         else:
-            result = await db.execute(_NEXT_ITEM_SQL, {**base_params, "mode": mode})
+            result = await db.execute(_SEQ_STMT, {**base_params, "mode": mode})
 
         row = result.one_or_none()
 
@@ -597,21 +870,50 @@ async def get_next_item(
         else:
             meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
 
-        # Compute remaining count by replacing the final LIMIT-1 SELECT with an inline COUNT.
-        # This keeps the WITH clause at the top level (valid SQL), avoiding the fragile
-        # "SELECT COUNT(*) FROM (WITH … SELECT …) sub" pattern.
-        if mode == "mixed":
-            count_sql = _NEXT_ITEM_SQL_MIXED.text.replace(
-                "SELECT cluster_id, record_id\nFROM available\nORDER BY priority, created_at\nLIMIT 1",
-                "SELECT COUNT(*) FROM available",
+        # Compute remaining count using pre-built typed count statements.
+        if bucket == "ta_included":
+            _count_ta_inc = text(
+                _TA_INCLUDED_SQL.text.replace(
+                    "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
+                    "SELECT COUNT(*) FROM available",
+                )
+            ).bindparams(
+                bindparam("project_id",  type_=_UUID_TYPE),
+                bindparam("source_id",   type_=_UUID_TYPE),
+                bindparam("reviewer_id", type_=_UUID_TYPE),
             )
-            remaining_result = await db.execute(text(count_sql), base_params)
+            remaining_result = await db.execute(_count_ta_inc, base_params)
+        elif bucket == "ft_included":
+            _count_ft_inc = text(
+                _FT_INCLUDED_SQL.text.replace(
+                    "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
+                    "SELECT COUNT(*) FROM available",
+                )
+            ).bindparams(
+                bindparam("project_id",  type_=_UUID_TYPE),
+                bindparam("source_id",   type_=_UUID_TYPE),
+                bindparam("reviewer_id", type_=_UUID_TYPE),
+            )
+            remaining_result = await db.execute(_count_ft_inc, base_params)
+        elif bucket == "extract_done":
+            _count_ext_done = text(
+                _EXTRACT_DONE_SQL.text.replace(
+                    "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
+                    "SELECT COUNT(*) FROM available",
+                )
+            ).bindparams(
+                bindparam("project_id",  type_=_UUID_TYPE),
+                bindparam("source_id",   type_=_UUID_TYPE),
+                # reviewer_id absent — extract_done SQL does not filter by reviewer
+            )
+            remaining_result = await db.execute(_count_ext_done, base_params)
+        elif bucket in _BUCKET_TO_MODE:
+            effective_mode = _BUCKET_TO_MODE[bucket]
+            remaining_result = await db.execute(_COUNT_SEQ_STMT, {**base_params, "mode": effective_mode})
+        elif mode == "mixed":
+            remaining_result = await db.execute(_COUNT_MIXED_STMT, base_params)
         else:
-            count_sql = _NEXT_ITEM_SQL.text.replace(
-                "SELECT cluster_id, record_id\nFROM available\nORDER BY created_at\nLIMIT 1",
-                "SELECT COUNT(*) FROM available",
-            )
-            remaining_result = await db.execute(text(count_sql), {**base_params, "mode": mode})
+            remaining_result = await db.execute(_COUNT_SEQ_STMT, {**base_params, "mode": mode})
         remaining = remaining_result.scalar() or 0
 
         # Fetch current reviewer's TA/FT decisions for this item
@@ -620,41 +922,18 @@ async def get_next_item(
         if reviewer_id is not None:
             dec_params = {
                 "project_id": project_id,
-                "reviewer_id": reviewer_uuid_str,
+                "reviewer_id": reviewer_id,  # uuid.UUID — matches UUID column type
                 "record_id": found_record_id,
                 "cluster_id": found_cluster_id,
             }
-            ta_row = await db.execute(
-                text("""
-                    SELECT decision FROM screening_decisions
-                    WHERE project_id = :project_id AND stage = 'TA'
-                      AND reviewer_id = :reviewer_id
-                      AND (
-                        (:record_id IS NOT NULL AND record_id = :record_id)
-                        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
-                      )
-                    LIMIT 1
-                """),
-                dec_params,
-            )
+            ta_row = await db.execute(_TA_DEC_SQL, dec_params)
             ta_decision = ta_row.scalar_one_or_none()
 
-            ft_row = await db.execute(
-                text("""
-                    SELECT decision FROM screening_decisions
-                    WHERE project_id = :project_id AND stage = 'FT'
-                      AND reviewer_id = :reviewer_id
-                      AND (
-                        (:record_id IS NOT NULL AND record_id = :record_id)
-                        OR (:cluster_id IS NOT NULL AND cluster_id = :cluster_id)
-                      )
-                    LIMIT 1
-                """),
-                dec_params,
-            )
+            ft_row = await db.execute(_FT_DEC_SQL, dec_params)
             ft_decision = ft_row.scalar_one_or_none()
 
-        found_key = f"cluster:{found_cluster_id}" if found_cluster_id else f"record:{found_record_id}"
+        found_key = (f"cluster:{found_cluster_id}" if found_cluster_id
+                     else f"record:{found_record_id}")
         logger.info("get_next_item found=%s remaining=%d", found_key, remaining)
 
         return {
@@ -679,6 +958,27 @@ async def get_next_item(
 # Record metadata fetch helpers
 # ---------------------------------------------------------------------------
 
+def _extract_pmid_pmcid(raw_data: Optional[dict]) -> tuple:
+    """Extract pmid and pmcid from raw_data dict (varies by parser format)."""
+    if not raw_data:
+        return None, None
+    # MEDLINE parser stores raw_data["pmid"]; RIS stores accession_number/pubmed_id
+    pmid = (
+        raw_data.get("pmid")
+        or raw_data.get("accession_number")
+        or raw_data.get("pubmed_id")
+    )
+    # PMCID: MEDLINE LID list may contain "PMC1234567 [pmc]"
+    pmcid = None
+    lid_list = raw_data.get("LID") or []
+    if isinstance(lid_list, list):
+        for lid in lid_list:
+            if isinstance(lid, str) and "[pmc]" in lid.lower():
+                pmcid = lid.split("[")[0].strip()
+                break
+    return pmid or None, pmcid or None
+
+
 async def _fetch_standalone_record(
     db: AsyncSession,
     record_id: uuid.UUID,
@@ -692,6 +992,7 @@ async def _fetch_standalone_record(
             Record.authors,
             Record.normalized_doi,
             func.array_agg(Source.name.distinct()).label("source_names"),
+            func.min(RecordSource.raw_data).label("raw_data"),
         )
         .join(RecordSource, RecordSource.record_id == Record.id)
         .join(Source, Source.id == RecordSource.source_id)
@@ -701,7 +1002,8 @@ async def _fetch_standalone_record(
     row = result.one_or_none()
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None,
-                "doi": None, "source_names": []}
+                "doi": None, "source_names": [], "pmid": None, "pmcid": None}
+    pmid, pmcid = _extract_pmid_pmcid(row.raw_data)
     return {
         "title": row.title,
         "abstract": row.abstract,
@@ -709,6 +1011,8 @@ async def _fetch_standalone_record(
         "authors": row.authors,
         "doi": row.normalized_doi,
         "source_names": list(row.source_names or []),
+        "pmid": pmid,
+        "pmcid": pmcid,
     }
 
 
@@ -722,6 +1026,7 @@ async def _fetch_cluster_record(
         select(
             Record.title, Record.abstract, Record.year,
             Record.authors, Record.normalized_doi,
+            RecordSource.raw_data,
         )
         .join(RecordSource, RecordSource.record_id == Record.id)
         .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
@@ -738,6 +1043,7 @@ async def _fetch_cluster_record(
             select(
                 Record.title, Record.abstract, Record.year,
                 Record.authors, Record.normalized_doi,
+                RecordSource.raw_data,
             )
             .join(RecordSource, RecordSource.record_id == Record.id)
             .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
@@ -747,7 +1053,7 @@ async def _fetch_cluster_record(
         row = result.one_or_none()
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None,
-                "doi": None, "source_names": []}
+                "doi": None, "source_names": [], "pmid": None, "pmcid": None}
 
     src_result = await db.execute(
         select(Source.name)
@@ -756,6 +1062,7 @@ async def _fetch_cluster_record(
         .where(OverlapClusterMember.cluster_id == cluster_id)
         .distinct()
     )
+    pmid, pmcid = _extract_pmid_pmcid(row.raw_data)
     return {
         "title": row.title,
         "abstract": row.abstract,
@@ -763,6 +1070,60 @@ async def _fetch_cluster_record(
         "authors": row.authors,
         "doi": row.normalized_doi,
         "source_names": list(src_result.scalars().all()),
+        "pmid": pmid,
+        "pmcid": pmcid,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fetch item by key (no lock — used for back/forward navigation)
+# ---------------------------------------------------------------------------
+
+
+async def get_item_by_key(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    record_id: Optional[uuid.UUID],
+    cluster_id: Optional[uuid.UUID],
+    reviewer_id: Optional[uuid.UUID],
+) -> Dict[str, Any]:
+    """
+    Return full item payload for a specific record or cluster WITHOUT creating a claim.
+
+    Used by the back/forward navigation to re-fetch a historical item with the
+    latest decisions. Returns the same dict shape as get_next_item (minus "remaining").
+    """
+    if record_id is not None:
+        meta = await _fetch_standalone_record(db, record_id, project_id)
+    elif cluster_id is not None:
+        meta = await _fetch_cluster_record(db, cluster_id, project_id)
+    else:
+        raise ValueError("Exactly one of record_id or cluster_id must be provided")
+
+    # Fetch TA/FT decisions for this reviewer
+    ta_decision: Optional[str] = None
+    ft_decision: Optional[str] = None
+    if reviewer_id is not None:
+        dec_params = {
+            "project_id": project_id,
+            "reviewer_id": reviewer_id,
+            "record_id": record_id,
+            "cluster_id": cluster_id,
+        }
+        ta_row = await db.execute(_TA_DEC_SQL, dec_params)
+        ta_decision = ta_row.scalar_one_or_none()
+
+        ft_row = await db.execute(_FT_DEC_SQL, dec_params)
+        ft_decision = ft_row.scalar_one_or_none()
+
+    return {
+        "done": False,
+        "record_id": str(record_id) if record_id else None,
+        "cluster_id": str(cluster_id) if cluster_id else None,
+        "remaining": None,
+        "ta_decision": ta_decision,
+        "ft_decision": ft_decision,
+        **meta,
     }
 
 

@@ -10,7 +10,7 @@ import {
   overlapsApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, OverlapConfig } from "../api/client";
+import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 
 // ---------------------------------------------------------------------------
@@ -215,6 +215,9 @@ export default function ProjectPage() {
   // Screening modal
   const [showScreeningModal, setShowScreeningModal] = useState(false);
 
+  // Criteria state
+  const [localCriteria, setLocalCriteria] = useState<ProjectCriteria>({ inclusion: [], exclusion: [] });
+
   // ── Data queries ──────────────────────────────────────────────────────────
 
   const { data: project, isLoading: loadingProject } = useQuery({
@@ -260,6 +263,11 @@ export default function ProjectPage() {
         : false;
     },
   });
+
+  // Sync local criteria from server data
+  useEffect(() => {
+    if (project?.criteria) setLocalCriteria(project.criteria);
+  }, [project?.criteria]);
 
   const activeStrategy = strategies?.find((s) => s.is_active);
   const lastDedupJob = dedupJobs?.[0];
@@ -318,6 +326,17 @@ export default function ProjectPage() {
     },
   });
 
+  const criteriaMutation = useMutation({
+    mutationFn: (c: ProjectCriteria) => projectsApi.updateCriteria(id!, c),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      setToast({ message: "Criteria saved.", type: "success" });
+    },
+    onError: () => {
+      setToast({ message: "Failed to save criteria.", type: "error" });
+    },
+  });
+
   const addSource = useMutation({
     mutationFn: (name: string) => sourcesApi.create(id!, name),
     onSuccess: () => {
@@ -332,6 +351,32 @@ export default function ProjectPage() {
   });
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+
+  function addCriterion(type: "inclusion" | "exclusion") {
+    setLocalCriteria((prev) => ({
+      ...prev,
+      [type]: [...prev[type], { id: crypto.randomUUID(), text: "" }],
+    }));
+  }
+
+  function updateCriterion(type: "inclusion" | "exclusion", itemId: string, text: string) {
+    setLocalCriteria((prev) => ({
+      ...prev,
+      [type]: prev[type].map((c) => (c.id === itemId ? { ...c, text } : c)),
+    }));
+  }
+
+  function removeCriterion(type: "inclusion" | "exclusion", itemId: string) {
+    setLocalCriteria((prev) => ({
+      ...prev,
+      [type]: prev[type].filter((c) => c.id !== itemId),
+    }));
+  }
+
+  function criteriaChanged(): boolean {
+    const server = project?.criteria ?? { inclusion: [], exclusion: [] };
+    return JSON.stringify(localCriteria) !== JSON.stringify(server);
+  }
 
   function handleAddSource(e: React.FormEvent) {
     e.preventDefault();
@@ -472,7 +517,160 @@ export default function ProjectPage() {
               Start Screening
             </button>
           )}
+          {(project?.record_count ?? 0) > 0 && (
+            <Link to={`/projects/${id}/extractions`} className="btn-secondary">
+              Extraction Library
+            </Link>
+          )}
         </div>
+
+        {/* ── Screening Criteria ───────────────────────────────────────────── */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Screening Criteria</h3>
+          <p className="muted" style={{ marginBottom: "1rem" }}>
+            Define inclusion and exclusion criteria for this systematic review. These will
+            be visible as a reference panel during screening.
+          </p>
+          <div
+            style={{
+              border: "1px solid #dadce0",
+              borderRadius: "0.5rem",
+              padding: "1.25rem",
+              background: "#fafafa",
+            }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
+              {/* Inclusion column */}
+              <div>
+                <div
+                  style={{
+                    color: "#188038",
+                    fontWeight: 600,
+                    marginBottom: "0.75rem",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  ✓ Include if
+                </div>
+                {localCriteria.inclusion.map((c: CriterionItem) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      display: "flex",
+                      gap: "0.4rem",
+                      alignItems: "center",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    <input
+                      type="text"
+                      className="input"
+                      value={c.text}
+                      placeholder="Criterion…"
+                      onChange={(e) => updateCriterion("inclusion", c.id, e.target.value)}
+                      style={{ flex: 1, fontSize: "0.85rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCriterion("inclusion", c.id)}
+                      title="Remove"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "#c5221f",
+                        fontSize: "1rem",
+                        lineHeight: 1,
+                        padding: "0.2rem",
+                        flexShrink: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => addCriterion("inclusion")}
+                  style={{ marginTop: "0.25rem", fontSize: "0.82rem" }}
+                >
+                  + Add inclusion
+                </button>
+              </div>
+
+              {/* Exclusion column */}
+              <div>
+                <div
+                  style={{
+                    color: "#c5221f",
+                    fontWeight: 600,
+                    marginBottom: "0.75rem",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  ✕ Exclude if
+                </div>
+                {localCriteria.exclusion.map((c: CriterionItem) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      display: "flex",
+                      gap: "0.4rem",
+                      alignItems: "center",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    <input
+                      type="text"
+                      className="input"
+                      value={c.text}
+                      placeholder="Criterion…"
+                      onChange={(e) => updateCriterion("exclusion", c.id, e.target.value)}
+                      style={{ flex: 1, fontSize: "0.85rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCriterion("exclusion", c.id)}
+                      title="Remove"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "#c5221f",
+                        fontSize: "1rem",
+                        lineHeight: 1,
+                        padding: "0.2rem",
+                        flexShrink: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => addCriterion("exclusion")}
+                  style={{ marginTop: "0.25rem", fontSize: "0.82rem" }}
+                >
+                  + Add exclusion
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: "1.25rem", display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!criteriaChanged() || criteriaMutation.isPending}
+                onClick={() => criteriaMutation.mutate(localCriteria)}
+              >
+                {criteriaMutation.isPending ? "Saving…" : "Save criteria"}
+              </button>
+            </div>
+          </div>
+        </section>
 
         {/* ── Sources ──────────────────────────────────────────────────────── */}
         <section style={{ marginTop: "2rem" }}>

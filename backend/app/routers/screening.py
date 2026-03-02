@@ -17,6 +17,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from app.models.source import Source
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 from app.services.direct_screening_service import (
+    get_item_by_key,
     get_next_item,
     get_project_sources_with_stats,
     submit_decision,
@@ -116,27 +118,45 @@ async def list_sources_with_stats(
     return await get_project_sources_with_stats(db, project_id)
 
 
+_VALID_BUCKETS = frozenset({
+    "ta_unscreened", "ta_included",
+    "ft_pending", "ft_included",
+    "extract_pending", "extract_done",
+})
+
+
 @router.get("/next")
 async def next_item(
     project_id: uuid.UUID,
     source_id: Optional[str] = Query(None, description="UUID or 'all'"),
     mode: str = Query("screen", description="screen | fulltext | extract | mixed"),
     strategy: str = Query("sequential", description="sequential | mixed"),
+    bucket: Optional[str] = Query(
+        None,
+        description="ta_unscreened|ta_included|ft_pending|ft_included|extract_pending|extract_done",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return the next available item for the given mode/strategy and source.
+    Return the next available item for the given mode/strategy/bucket and source.
 
+    bucket overrides mode when provided.
     strategy=mixed overrides mode to 'mixed' regardless of the mode param.
     Inserts a soft-lock claim before returning.
     """
     await _require_project(project_id, current_user, db)
 
-    # strategy=mixed always uses mixed CTE regardless of mode param
-    effective_mode = "mixed" if strategy == "mixed" else mode
+    if bucket is not None and bucket not in _VALID_BUCKETS:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_BUCKET", "message": f"Unknown bucket: {bucket!r}"},
+        )
 
-    if effective_mode not in ("screen", "fulltext", "extract", "mixed"):
+    # strategy=mixed always uses mixed CTE regardless of mode param (unless bucket set)
+    effective_mode = "mixed" if (strategy == "mixed" and bucket is None) else mode
+
+    if bucket is None and effective_mode not in ("screen", "fulltext", "extract", "mixed"):
         raise HTTPException(
             status_code=422,
             detail={"code": "INVALID_MODE",
@@ -150,8 +170,8 @@ async def next_item(
         effective_source = source_id
 
     logger.info(
-        "/next project=%s source=%s mode=%s strategy=%s effective_mode=%s user=%s",
-        project_id, source_id, mode, strategy, effective_mode, current_user.id,
+        "/next project=%s source=%s mode=%s strategy=%s bucket=%s user=%s",
+        project_id, source_id, mode, strategy, bucket, current_user.id,
     )
 
     try:
@@ -161,6 +181,7 @@ async def next_item(
             source_id=effective_source or "all",
             mode=effective_mode,
             reviewer_id=current_user.id,
+            bucket=bucket,
         )
         await db.commit()
         logger.info(
@@ -171,12 +192,53 @@ async def next_item(
     except HTTPException:
         raise
     except Exception:
-        logger.exception("/next unhandled error project=%s source=%s mode=%s",
-                         project_id, source_id, effective_mode)
-        raise HTTPException(
+        logger.exception("/next unhandled error project=%s source=%s mode=%s bucket=%s",
+                         project_id, source_id, effective_mode, bucket)
+        return JSONResponse(
             status_code=500,
-            detail={"code": "INTERNAL_ERROR", "message": "Failed to retrieve next item"},
+            content={"error": {"code": "SERVER_ERROR", "message": "Failed to fetch next item"}},
         )
+
+
+@router.get("/item")
+async def get_item(
+    project_id: uuid.UUID,
+    record_id: Optional[str] = Query(None),
+    cluster_id: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch a specific item by record_id or cluster_id without creating a lock.
+
+    Used by the back/forward navigation to re-fetch historical items with
+    the latest decisions.
+    """
+    await _require_project(project_id, current_user, db)
+
+    if record_id is None and cluster_id is None:
+        raise HTTPException(
+            status_code=422, detail="Provide record_id or cluster_id"
+        )
+    if record_id is not None and cluster_id is not None:
+        raise HTTPException(
+            status_code=422, detail="Provide record_id OR cluster_id, not both"
+        )
+
+    try:
+        rec_uuid = uuid.UUID(record_id) if record_id else None
+        clu_uuid = uuid.UUID(cluster_id) if cluster_id else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid UUID")
+
+    result = await get_item_by_key(
+        db,
+        project_id=project_id,
+        record_id=rec_uuid,
+        cluster_id=clu_uuid,
+        reviewer_id=current_user.id,
+    )
+    return result
 
 
 @router.post("/decisions", status_code=201)

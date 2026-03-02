@@ -11,6 +11,7 @@ import ImportPage from "./pages/ImportPage";
 import RecordsPage from "./pages/RecordsPage";
 import OverlapPage from "./pages/OverlapPage";
 import ScreeningWorkspace from "./pages/ScreeningWorkspace";
+import ExtractionLibrary from "./pages/ExtractionLibrary";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/projects/:id/records" element={<RequireAuth><RecordsPage /></RequireAuth>} />
           <Route path="/projects/:id/overlap" element={<RequireAuth><OverlapPage /></RequireAuth>} />
           <Route path="/projects/:id/screen" element={<RequireAuth><ScreeningWorkspace /></RequireAuth>} />
+          <Route path="/projects/:id/extractions" element={<RequireAuth><ExtractionLibrary /></RequireAuth>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

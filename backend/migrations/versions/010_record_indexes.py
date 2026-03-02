@@ -30,15 +30,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.execute(
-        "CREATE INDEX ix_records_project_year "
+        "CREATE INDEX IF NOT EXISTS ix_records_project_year "
         "ON records (project_id, year DESC NULLS LAST)"
     )
     op.execute(
-        "CREATE INDEX ix_records_project_created "
+        "CREATE INDEX IF NOT EXISTS ix_records_project_created "
         "ON records (project_id, created_at DESC)"
     )
     op.execute(
-        "CREATE INDEX ix_sd_project_stage_decision "
+        "CREATE INDEX IF NOT EXISTS ix_sd_project_stage_decision "
         "ON screening_decisions (project_id, stage, decision) "
         "WHERE record_id IS NOT NULL"
     )
