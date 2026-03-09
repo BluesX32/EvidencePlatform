@@ -14,6 +14,7 @@ import ScreeningWorkspace from "./pages/ScreeningWorkspace";
 import ExtractionLibrary from "./pages/ExtractionLibrary";
 import LabelsPage from "./pages/LabelsPage";
 import OntologyPage from "./pages/OntologyPage";
+import ThematicAnalysis from "./pages/ThematicAnalysis";
 import AppShell from "./components/AppShell";
 import OnboardingTour from "./components/OnboardingTour";
 
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
           <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
           <Route path="/projects/:id/ontology"     element={<WithShell><OntologyPage /></WithShell>} />
+          <Route path="/projects/:id/thematic"    element={<WithShell><ThematicAnalysis /></WithShell>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

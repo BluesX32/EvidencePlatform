@@ -8,7 +8,7 @@ import { useParams, useLocation, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
-  FlaskConical, Tag, Network, LogOut, FolderOpen, ChevronLeft,
+  FlaskConical, Tag, Network, Layers, LogOut, FolderOpen, ChevronLeft,
 } from "lucide-react";
 import { projectsApi, clearToken } from "../api/client";
 
@@ -23,6 +23,7 @@ const PROJECT_NAV = [
   { path: "/extractions",icon: FlaskConical,     label: "Extractions" },
   { path: "/labels",     icon: Tag,              label: "Labels"      },
   { path: "/ontology",   icon: Network,          label: "Taxonomy"    },
+  { path: "/thematic",   icon: Layers,           label: "Thematic"    },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────

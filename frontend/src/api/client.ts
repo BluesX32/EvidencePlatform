@@ -862,3 +862,103 @@ export const ontologyApi = {
       body
     ),
 };
+
+// ── Thematic Analysis ─────────────────────────────────────────────────────────
+
+export interface ThemeCode {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  evidence_count: number;
+}
+
+export interface ThemeItem {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  codes: ThemeCode[];
+}
+
+export interface ThematicMap {
+  themes: ThemeItem[];
+  ungrouped_codes: ThemeCode[];
+}
+
+export interface CodeEvidence {
+  assignment_id: string;
+  extraction_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string | null;
+  year: number | null;
+  authors: string[] | null;
+  snippet_text: string | null;
+  note: string | null;
+  assigned_at: string;
+}
+
+export interface ThematicHistoryEntry {
+  id: string;
+  code_id: string | null;
+  code_name: string;
+  action: string;
+  old_theme_name: string | null;
+  new_theme_name: string | null;
+  note: string | null;
+  changed_at: string;
+}
+
+export const thematicApi = {
+  getMap: (projectId: string) =>
+    api.get<ThematicMap>(`/projects/${projectId}/thematic`),
+
+  createTheme: (
+    projectId: string,
+    body: { name: string; description?: string; color?: string }
+  ) => api.post<{ id: string; name: string; color: string | null }>(`/projects/${projectId}/thematic/themes`, body),
+
+  updateTheme: (
+    projectId: string,
+    themeId: string,
+    body: { name?: string; description?: string; color?: string }
+  ) => api.patch<{ id: string; name: string; color: string | null }>(`/projects/${projectId}/thematic/themes/${themeId}`, body),
+
+  deleteTheme: (projectId: string, themeId: string) =>
+    api.delete(`/projects/${projectId}/thematic/themes/${themeId}`),
+
+  createCode: (
+    projectId: string,
+    body: { name: string; theme_id?: string | null; description?: string; color?: string }
+  ) => api.post<{ id: string; name: string; theme_id: string | null }>(`/projects/${projectId}/thematic/codes`, body),
+
+  updateCode: (
+    projectId: string,
+    codeId: string,
+    body: {
+      name?: string;
+      description?: string;
+      color?: string;
+      theme_id?: string | null;
+      clear_theme?: boolean;
+    }
+  ) => api.patch<{ id: string; name: string; theme_id: string | null }>(`/projects/${projectId}/thematic/codes/${codeId}`, body),
+
+  deleteCode: (projectId: string, codeId: string) =>
+    api.delete(`/projects/${projectId}/thematic/codes/${codeId}`),
+
+  getCodeEvidence: (projectId: string, codeId: string) =>
+    api.get<CodeEvidence[]>(`/projects/${projectId}/thematic/codes/${codeId}/evidence`),
+
+  assignCode: (
+    projectId: string,
+    body: { code_id: string; extraction_id: string; snippet_text?: string; note?: string }
+  ) => api.post<{ id: string }>(`/projects/${projectId}/thematic/assignments`, body),
+
+  removeAssignment: (projectId: string, assignmentId: string) =>
+    api.delete(`/projects/${projectId}/thematic/assignments/${assignmentId}`),
+
+  getHistory: (projectId: string) =>
+    api.get<ThematicHistoryEntry[]>(`/projects/${projectId}/thematic/history`),
+};

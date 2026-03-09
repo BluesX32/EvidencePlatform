@@ -17,6 +17,8 @@ from app.models.screening_claim import ScreeningClaim
 from app.models.project_label import ProjectLabel
 from app.models.record_label import RecordLabel
 from app.models.ontology_node import OntologyNode
+from app.models.code_extraction import CodeExtraction
+from app.models.thematic_history import ThematicHistory
 
 __all__ = [
     "User",
@@ -40,4 +42,6 @@ __all__ = [
     "ProjectLabel",
     "RecordLabel",
     "OntologyNode",
+    "CodeExtraction",
+    "ThematicHistory",
 ]
