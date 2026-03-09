@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
+import LabelManager from "../components/LabelManager";
 
 // ---------------------------------------------------------------------------
 // Field chip definitions for the overlap strategy builder (9 fields)
@@ -522,7 +523,24 @@ export default function ProjectPage() {
               Extraction Library
             </Link>
           )}
+          <Link to={`/projects/${id}/labels`} className="btn-secondary">
+            🏷️ Labels
+          </Link>
+          <Link to={`/projects/${id}/ontology`} className="btn-secondary">
+            🌳 Taxonomy
+          </Link>
         </div>
+
+        {/* ── Labels ───────────────────────────────────────────────────────── */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Labels</h3>
+          <p className="muted" style={{ marginBottom: "0.75rem" }}>
+            Create labels to categorize articles during screening. Apply them from the
+            Screening Workspace and explore them on the{" "}
+            <Link to={`/projects/${id}/labels`} style={{ color: "#6366f1" }}>Labels page</Link>.
+          </p>
+          {id && <LabelManager projectId={id} />}
+        </section>
 
         {/* ── Screening Criteria ───────────────────────────────────────────── */}
         <section style={{ marginTop: "2rem" }}>

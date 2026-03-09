@@ -34,7 +34,7 @@ export const SOURCE_COLORS = [
 
 // ── Layout / rendering constants ──────────────────────────────────────────────
 const R_MAX     = 85;   // max circle radius in layout space
-const ITERATIONS = 350; // relaxation steps
+const ITERATIONS = 400; // relaxation steps
 const PAD       = 28;   // viewBox padding around circle bounding box
 const LABEL_W   = 148;  // extra SVG units reserved on each side for labels
 const LABEL_GAP = 14;   // horizontal gap from diagram edge to leader endpoint

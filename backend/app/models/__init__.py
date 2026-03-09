@@ -14,6 +14,9 @@ from app.models.future import ProjectMember, Protocol, DedupPair
 from app.models.screening_decision import ScreeningDecision
 from app.models.extraction_record import ExtractionRecord
 from app.models.screening_claim import ScreeningClaim
+from app.models.project_label import ProjectLabel
+from app.models.record_label import RecordLabel
+from app.models.ontology_node import OntologyNode
 
 __all__ = [
     "User",
@@ -34,4 +37,7 @@ __all__ = [
     "ScreeningDecision",
     "ExtractionRecord",
     "ScreeningClaim",
+    "ProjectLabel",
+    "RecordLabel",
+    "OntologyNode",
 ]

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { screeningApi, projectsApi, annotationsApi } from "../api/client";
-import type { ExtractionJson, Snippet, ScreeningNextItem } from "../api/client";
+import { screeningApi, projectsApi, annotationsApi, ontologyApi } from "../api/client";
+import type { ExtractionJson, Snippet, ScreeningNextItem, SaturationStatus } from "../api/client";
+import LabelPicker from "../components/LabelPicker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -405,6 +406,15 @@ function PaperCard({
         </p>
       )}
       {showAnnotations && <AnnotationsPanel projectId={projectId} item={item} />}
+      {showAnnotations && (
+        <div style={{ marginTop: 12 }}>
+          <LabelPicker
+            projectId={projectId}
+            recordId={item.record_id}
+            clusterId={item.cluster_id}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -641,6 +651,83 @@ function ScreeningPanel({
 }
 
 // ---------------------------------------------------------------------------
+// SaturationBadge — consecutive-no-novelty counter
+// ---------------------------------------------------------------------------
+
+const SATURATION_THRESHOLD = 5;
+
+function SaturationBadge({ projectId }: { projectId: string }) {
+  const { data } = useQuery<SaturationStatus>({
+    queryKey: ["saturation", projectId],
+    queryFn: () =>
+      screeningApi.getSaturation(projectId, SATURATION_THRESHOLD).then((r) => r.data),
+    // Refresh every 30 s in case another window submitted an extraction
+    staleTime: 30_000,
+  });
+
+  if (!data) return null;
+
+  const { consecutive_no_novelty: count, saturated, threshold } = data;
+
+  // Color ramp: gray → yellow → orange → red
+  const pct = count / threshold;
+  const bg =
+    saturated
+      ? "#fee2e2"
+      : pct >= 0.6
+      ? "#fff7ed"
+      : "#f9fafb";
+  const borderColor =
+    saturated ? "#fca5a5" : pct >= 0.6 ? "#fdba74" : "#e5e7eb";
+  const textColor =
+    saturated ? "#b91c1c" : pct >= 0.6 ? "#c2410c" : "#6b7280";
+  const barColor =
+    saturated ? "#ef4444" : pct >= 0.6 ? "#f97316" : "#6b7280";
+
+  return (
+    <div
+      style={{
+        marginBottom: "1rem",
+        padding: "10px 14px",
+        borderRadius: 8,
+        border: `1px solid ${borderColor}`,
+        background: bg,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: textColor, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          Saturation
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: textColor }}>
+          {count} / {threshold}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${Math.min(100, (count / threshold) * 100)}%`,
+            background: barColor,
+            borderRadius: 999,
+            transition: "width 0.4s ease",
+          }}
+        />
+      </div>
+
+      <div style={{ marginTop: 5, fontSize: 11, color: textColor }}>
+        {saturated
+          ? `⚠️ ${threshold} consecutive papers added nothing new — consider stopping this source.`
+          : count === 0
+          ? "Counter resets when a paper adds new concepts."
+          : `${count} consecutive paper${count > 1 ? "s" : ""} without new concepts.`}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Shared ExtractionForm component
 // ---------------------------------------------------------------------------
 
@@ -704,6 +791,8 @@ function ExtractionForm({
       .then(() => {
         queryClient.invalidateQueries({ queryKey: ["project", projectId] });
       });
+    // Sync new level into ontology (ignore 409 if it already exists)
+    ontologyApi.create(projectId, { name: newLevel, namespace: "level" }).catch(() => {});
   }
 
   return (
@@ -871,6 +960,9 @@ function ExtractionForm({
         />
       </div>
 
+      {/* Saturation counter */}
+      <SaturationBadge projectId={projectId} />
+
       {/* Framework updated */}
       <div style={{ marginBottom: "1.25rem" }}>
         <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>
@@ -1020,7 +1112,10 @@ function MixedPanel({
       cluster_id?: string | null;
       extracted_json: ExtractionJson;
     }) => screeningApi.submitExtraction(projectId, payload),
-    onSuccess: () => fetchNext(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["saturation", projectId] });
+      fetchNext();
+    },
   });
 
   if (loading) return <p style={{ color: "#888" }}>Loading…</p>;
@@ -1274,13 +1369,18 @@ function ExtractionPanel({
     fetchNext();
   }, [fetchNext]);
 
+  const extractionQc = useQueryClient();
+
   const saveMutation = useMutation({
     mutationFn: (payload: {
       record_id?: string | null;
       cluster_id?: string | null;
       extracted_json: ExtractionJson;
     }) => screeningApi.submitExtraction(projectId, payload),
-    onSuccess: () => fetchNext(),
+    onSuccess: () => {
+      extractionQc.invalidateQueries({ queryKey: ["saturation", projectId] });
+      fetchNext();
+    },
   });
 
   if (loading) return <p style={{ color: "#888" }}>Loading…</p>;
@@ -1342,6 +1442,13 @@ function ExtractionPanel({
           ))}
         </div>
         <AnnotationsPanel projectId={projectId} item={item} />
+        <div style={{ marginTop: 12 }}>
+          <LabelPicker
+            projectId={projectId}
+            recordId={item.record_id}
+            clusterId={item.cluster_id}
+          />
+        </div>
       </div>
 
       <ExtractionForm

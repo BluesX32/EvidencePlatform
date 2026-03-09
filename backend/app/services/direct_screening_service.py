@@ -1275,3 +1275,44 @@ async def submit_extraction(
         "reviewer_id": str(er.reviewer_id) if er.reviewer_id else None,
         "created_at": er.created_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Saturation detection
+# ---------------------------------------------------------------------------
+
+
+async def get_saturation(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: Optional[uuid.UUID],
+    threshold: int = 5,
+) -> Dict[str, Any]:
+    """Count consecutive most-recent extractions where framework_updated is false.
+
+    Walk extraction_records ordered by created_at DESC (most recent first).
+    Stop counting as soon as a record with framework_updated=true is encountered.
+    Returns the count, whether it has reached the threshold, and the threshold itself.
+    """
+    q = (
+        select(ExtractionRecord.extracted_json)
+        .where(ExtractionRecord.project_id == project_id)
+        .order_by(ExtractionRecord.created_at.desc())
+    )
+    if reviewer_id is not None:
+        q = q.where(ExtractionRecord.reviewer_id == reviewer_id)
+
+    rows = (await db.execute(q)).scalars().all()
+
+    consecutive = 0
+    for extracted_json in rows:
+        # framework_updated defaults to True if missing (treats old records as "added something")
+        if extracted_json.get("framework_updated", True):
+            break
+        consecutive += 1
+
+    return {
+        "consecutive_no_novelty": consecutive,
+        "saturated": consecutive >= threshold,
+        "threshold": threshold,
+    }

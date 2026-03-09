@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getToken } from "./api/client";
@@ -12,6 +12,10 @@ import RecordsPage from "./pages/RecordsPage";
 import OverlapPage from "./pages/OverlapPage";
 import ScreeningWorkspace from "./pages/ScreeningWorkspace";
 import ExtractionLibrary from "./pages/ExtractionLibrary";
+import LabelsPage from "./pages/LabelsPage";
+import OntologyPage from "./pages/OntologyPage";
+import AppShell from "./components/AppShell";
+import OnboardingTour from "./components/OnboardingTour";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -21,22 +25,51 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return getToken() ? children : <Navigate to="/login" replace />;
 }
 
+/** Wraps a page in AppShell (sidebar layout). */
+function WithShell({ children }: { children: ReactNode }) {
+  return (
+    <RequireAuth>
+      <AppShell>{children}</AppShell>
+    </RequireAuth>
+  );
+}
+
+/** Projects page includes the onboarding tour on first visit. */
+function ProjectsWithTour() {
+  const [showTour, setShowTour] = useState(
+    () => !localStorage.getItem("ep_tour_done")
+  );
+  return (
+    <>
+      <ProjectsPage />
+      {showTour && <OnboardingTour onDone={() => setShowTour(false)} />}
+    </>
+  );
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<LoginPage />} />
+          {/* Public */}
+          <Route path="/login"    element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
-          <Route path="/" element={<Navigate to="/projects" replace />} />
-          <Route path="/projects" element={<RequireAuth><ProjectsPage /></RequireAuth>} />
-          <Route path="/projects/new" element={<RequireAuth><NewProjectPage /></RequireAuth>} />
-          <Route path="/projects/:id" element={<RequireAuth><ProjectPage /></RequireAuth>} />
-          <Route path="/projects/:id/import" element={<RequireAuth><ImportPage /></RequireAuth>} />
-          <Route path="/projects/:id/records" element={<RequireAuth><RecordsPage /></RequireAuth>} />
-          <Route path="/projects/:id/overlap" element={<RequireAuth><OverlapPage /></RequireAuth>} />
-          <Route path="/projects/:id/screen" element={<RequireAuth><ScreeningWorkspace /></RequireAuth>} />
-          <Route path="/projects/:id/extractions" element={<RequireAuth><ExtractionLibrary /></RequireAuth>} />
+          <Route path="/"         element={<Navigate to="/projects" replace />} />
+
+          {/* Authenticated — all wrapped in AppShell */}
+          <Route path="/projects"     element={<WithShell><ProjectsWithTour /></WithShell>} />
+          <Route path="/projects/new" element={<WithShell><NewProjectPage /></WithShell>} />
+
+          {/* Project-scoped routes */}
+          <Route path="/projects/:id"              element={<WithShell><ProjectPage /></WithShell>} />
+          <Route path="/projects/:id/import"       element={<WithShell><ImportPage /></WithShell>} />
+          <Route path="/projects/:id/records"      element={<WithShell><RecordsPage /></WithShell>} />
+          <Route path="/projects/:id/overlap"      element={<WithShell><OverlapPage /></WithShell>} />
+          <Route path="/projects/:id/screen"       element={<WithShell><ScreeningWorkspace /></WithShell>} />
+          <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
+          <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
+          <Route path="/projects/:id/ontology"     element={<WithShell><OntologyPage /></WithShell>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

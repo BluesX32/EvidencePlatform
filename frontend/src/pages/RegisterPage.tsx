@@ -41,8 +41,11 @@ export default function RegisterPage() {
   return (
     <div className="auth-container">
       <div className="auth-card">
-        <h1>EvidencePlatform</h1>
-        <h2>Create account</h2>
+        <h1>
+          <span style={{ width:28,height:28,borderRadius:7,background:"var(--brand)",display:"inline-flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14 }}>E</span>
+          EvidencePlatform
+        </h1>
+        <h2>Create your account</h2>
         <form onSubmit={handleSubmit}>
           <div className="field">
             <label htmlFor="name">Full name</label>

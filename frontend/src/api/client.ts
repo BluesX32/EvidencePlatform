@@ -624,6 +624,100 @@ export const extractionLibraryApi = {
     api.get<ExtractionLibraryItem>(`/projects/${projectId}/extractions/${extractionId}`),
 };
 
+// ── Labels ────────────────────────────────────────────────────────────────────
+
+export interface ProjectLabel {
+  id: string;
+  project_id: string;
+  name: string;
+  /** Hex color, e.g. "#6366f1" */
+  color: string;
+  created_at: string;
+}
+
+export interface LabeledArticle {
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string | null;
+  year: number | null;
+  doi: string | null;
+  authors: string[];
+  source_names: string[];
+  labels: Pick<ProjectLabel, "id" | "name" | "color">[];
+}
+
+export interface LabeledArticlesResponse {
+  articles: LabeledArticle[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export const labelsApi = {
+  list: (projectId: string) =>
+    api.get<ProjectLabel[]>(`/projects/${projectId}/labels`),
+
+  create: (projectId: string, body: { name: string; color: string }) =>
+    api.post<ProjectLabel>(`/projects/${projectId}/labels`, body),
+
+  update: (
+    projectId: string,
+    labelId: string,
+    body: { name?: string; color?: string }
+  ) => api.patch<ProjectLabel>(`/projects/${projectId}/labels/${labelId}`, body),
+
+  delete: (projectId: string, labelId: string) =>
+    api.delete(`/projects/${projectId}/labels/${labelId}`),
+
+  assign: (
+    projectId: string,
+    body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      label_id: string;
+    }
+  ) => api.post(`/projects/${projectId}/labels/assign`, body),
+
+  unassign: (
+    projectId: string,
+    body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      label_id: string;
+    }
+  ) => api.delete(`/projects/${projectId}/labels/assign`, { data: body }),
+
+  getItemLabels: (
+    projectId: string,
+    params: { record_id?: string; cluster_id?: string }
+  ) =>
+    api.get<ProjectLabel[]>(`/projects/${projectId}/labels/item`, { params }),
+
+  listArticles: (
+    projectId: string,
+    params?: {
+      label_id?: string;
+      record_id?: string;
+      cluster_id?: string;
+      page?: number;
+      page_size?: number;
+    }
+  ) =>
+    api.get<LabeledArticlesResponse>(`/projects/${projectId}/labels/articles`, {
+      params,
+    }),
+};
+
+export interface SaturationStatus {
+  /** Number of consecutive most-recent extractions where framework_updated=false. */
+  consecutive_no_novelty: number;
+  /** True when consecutive_no_novelty >= threshold. */
+  saturated: boolean;
+  /** Stopping threshold (default 5). */
+  threshold: number;
+}
+
 export const screeningApi = {
   getSources: (projectId: string) =>
     api.get<ScreeningSource[]>(`/projects/${projectId}/screening/sources`),
@@ -667,4 +761,104 @@ export const screeningApi = {
 
   listExtractions: (projectId: string) =>
     api.get<ExtractionRecord[]>(`/projects/${projectId}/screening/extractions`),
+
+  getSaturation: (projectId: string, threshold?: number) =>
+    api.get<SaturationStatus>(`/projects/${projectId}/screening/saturation`, {
+      params: threshold !== undefined ? { threshold } : undefined,
+    }),
+};
+
+// ── Ontology / Taxonomy ───────────────────────────────────────────────────────
+
+export const ONTOLOGY_NAMESPACES = [
+  "level",
+  "dimension",
+  "concept",
+  "population",
+  "intervention",
+  "outcome",
+  "other",
+] as const;
+
+export type OntologyNamespace = (typeof ONTOLOGY_NAMESPACES)[number];
+
+/** A flat node as returned by GET /ontology (includes depth for rendering). */
+export interface OntologyNode {
+  id: string;
+  project_id: string;
+  parent_id: string | null;
+  name: string;
+  description: string | null;
+  namespace: OntologyNamespace;
+  color: string | null;
+  position: number;
+  depth: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Nested tree node (used for export format and client-side tree building). */
+export interface OntologyTreeNode extends Omit<OntologyNode, "depth"> {
+  children: OntologyTreeNode[];
+}
+
+export interface OntologyExport {
+  project_id: string;
+  format: string;
+  nodes: OntologyTreeNode[];
+}
+
+export const ontologyApi = {
+  list: (projectId: string) =>
+    api.get<OntologyNode[]>(`/projects/${projectId}/ontology`),
+
+  create: (
+    projectId: string,
+    body: {
+      name: string;
+      parent_id?: string | null;
+      namespace?: OntologyNamespace;
+      description?: string | null;
+      color?: string | null;
+    }
+  ) => api.post<OntologyNode>(`/projects/${projectId}/ontology`, body),
+
+  update: (
+    projectId: string,
+    nodeId: string,
+    body: {
+      name?: string;
+      parent_id?: string | null;
+      clear_parent?: boolean;
+      namespace?: OntologyNamespace;
+      description?: string | null;
+      color?: string | null;
+      clear_color?: boolean;
+      position?: number;
+    }
+  ) => api.patch<OntologyNode>(`/projects/${projectId}/ontology/${nodeId}`, body),
+
+  delete: (projectId: string, nodeId: string) =>
+    api.delete(`/projects/${projectId}/ontology/${nodeId}`),
+
+  syncLevels: (
+    projectId: string,
+    body: { namespace?: OntologyNamespace; under_node_id?: string | null }
+  ) =>
+    api.post<{ created: number; skipped: number }>(
+      `/projects/${projectId}/ontology/sync-levels`,
+      body
+    ),
+
+  export: (projectId: string) =>
+    api.get<OntologyExport>(`/projects/${projectId}/ontology/export`),
+
+  importTree: (
+    projectId: string,
+    body: { nodes: OntologyTreeNode[]; merge?: boolean }
+  ) =>
+    api.post<{ created: number; skipped: number }>(
+      `/projects/${projectId}/ontology/import`,
+      body
+    ),
 };

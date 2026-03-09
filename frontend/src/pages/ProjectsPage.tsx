@@ -1,53 +1,70 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
-import { projectsApi, clearToken } from "../api/client";
+import { Link } from "react-router-dom";
+import { Plus, BookOpen, Calendar } from "lucide-react";
+import { projectsApi } from "../api/client";
 
 export default function ProjectsPage() {
-  const navigate = useNavigate();
-
   const { data: projects, isLoading, error } = useQuery({
     queryKey: ["projects"],
     queryFn: () => projectsApi.list().then((r) => r.data),
   });
 
-  function logout() {
-    clearToken();
-    navigate("/login");
-  }
-
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>EvidencePlatform</h1>
-        <div className="header-actions">
-          <Link to="/projects/new" className="btn-primary">New project</Link>
-          <button onClick={logout} className="btn-ghost">Sign out</button>
+      {/* Header */}
+      <div className="projects-header">
+        <div>
+          <h1 style={{ marginBottom: ".2rem" }}>Projects</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            Manage your systematic review projects
+          </p>
         </div>
-      </header>
+        <Link to="/projects/new" className="btn-primary">
+          <Plus size={16} /> New project
+        </Link>
+      </div>
 
-      <main>
-        <h2>Your projects</h2>
-        {isLoading && <p>Loading…</p>}
-        {error && <p className="error">Failed to load projects</p>}
-        {projects?.length === 0 && (
-          <div className="empty-state">
-            <p>No projects yet.</p>
-            <Link to="/projects/new" className="btn-primary">Create your first project</Link>
-          </div>
-        )}
-        <div className="project-grid">
-          {projects?.map((p) => (
-            <Link key={p.id} to={`/projects/${p.id}`} className="project-card">
-              <h3>{p.name}</h3>
-              {p.description && <p className="description">{p.description}</p>}
-              <div className="project-meta">
-                <span>{p.record_count} records</span>
-                <span>{new Date(p.created_at).toLocaleDateString()}</span>
-              </div>
-            </Link>
-          ))}
+      {/* States */}
+      {isLoading && (
+        <div style={{ display: "flex", gap: ".75rem", alignItems: "center", color: "var(--text-muted)", fontSize: ".9rem" }}>
+          <span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} />
+          Loading projects…
         </div>
-      </main>
+      )}
+      {error && <p className="error">Failed to load projects. Please refresh.</p>}
+
+      {projects?.length === 0 && (
+        <div className="empty-state" style={{ padding: "5rem 1rem" }}>
+          <div className="empty-state-icon">📋</div>
+          <h3>No projects yet</h3>
+          <p>Create your first systematic review project to get started.</p>
+          <Link to="/projects/new" className="btn-primary">
+            <Plus size={15} /> Create first project
+          </Link>
+        </div>
+      )}
+
+      {/* Project grid */}
+      <div className="project-grid">
+        {projects?.map((p) => (
+          <Link key={p.id} to={`/projects/${p.id}`} className="project-card">
+            <h3>{p.name}</h3>
+            {p.description && (
+              <p className="project-card-desc">{p.description}</p>
+            )}
+            <div className="project-card-meta">
+              <span style={{ display: "flex", alignItems: "center", gap: ".3rem" }}>
+                <BookOpen size={12} />
+                {p.record_count ?? 0} records
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: ".3rem" }}>
+                <Calendar size={12} />
+                {new Date(p.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+              </span>
+            </div>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }

@@ -33,6 +33,7 @@ from app.services.direct_screening_service import (
     get_item_by_key,
     get_next_item,
     get_project_sources_with_stats,
+    get_saturation,
     submit_decision,
     submit_extraction,
 )
@@ -345,6 +346,33 @@ async def list_extractions(
     )
     extractions = rows.scalars().all()
     return [_extraction_out(e) for e in extractions]
+
+
+# ---------------------------------------------------------------------------
+# Saturation status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/saturation")
+async def get_saturation_status(
+    project_id: uuid.UUID,
+    threshold: int = Query(5, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return consecutive_no_novelty count for the current reviewer.
+
+    consecutive_no_novelty — number of most-recent extractions in a row where
+    framework_updated=false.  Resets to 0 whenever framework_updated=true.
+    saturated=true when count >= threshold (default 5).
+    """
+    await _require_project(project_id, current_user, db)
+    return await get_saturation(
+        db,
+        project_id=project_id,
+        reviewer_id=current_user.id,
+        threshold=threshold,
+    )
 
 
 # ---------------------------------------------------------------------------

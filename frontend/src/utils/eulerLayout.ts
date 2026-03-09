@@ -118,33 +118,38 @@ export interface CircleLayout {
 }
 
 /**
- * Compute positions + radii for an area-proportional Euler diagram.
+ * Compute positions + radii for an area-proportional Euler/Venn diagram.
  *
  * Algorithm:
- *  1. Radius ∝ sqrt(total)
- *  2. For each pair, compute target distance from matrix overlap count
- *     (if count=0 → separation = r_i + r_j + padding)
- *  3. Minimum-distance constraint: d_target >= |r_i - r_j| + paddingMin
- *     to prevent full containment collapse
- *  4. Iterative spring-relaxation to minimise stress, with a small centroid
- *     spreading force after each step to prevent total collapse
+ *  1. Radius ∝ sqrt(total) so area ∝ total records.
+ *  2. For each pair, determine the target centre-to-centre distance:
+ *       count = 0  →  circles clearly separated: d = r_i + r_j + separationGap
+ *       count > 0  →  circles visually overlap: d = targetDistanceForArea(...)
+ *                     Overlap fraction = clamp(count / minTotal, 0.12, 0.90)
+ *                     so even tiny overlaps produce a visible lens region.
+ *  3. Containment guard (overlapping pairs only): d >= |r_i - r_j| + containmentPad
+ *     so neither circle is completely hidden inside the other.
+ *  4. Spring-relaxation with a linear cooling schedule drives centres toward
+ *     their target distances.  After each step the layout is re-centred on the
+ *     origin (no spreading force — spreading was the primary cause of incorrect
+ *     separation for overlapping pairs).
  *
  * The result is deterministic for the same input.
  *
- * @param sources    Array of {id, total} — order determines initial placement
- * @param matrix     NxN symmetric matrix of pairwise overlap counts
- * @param rMax       Maximum circle radius in layout coordinates (default 80)
- * @param iterations Spring-relaxation steps (default 300)
- * @param padding    Extra separation added when count=0 (default 12)
- * @param paddingMin Minimum d beyond |r_i - r_j| for any pair (default 8)
+ * @param sources        Array of {id, total} — order determines initial placement
+ * @param matrix         NxN symmetric matrix of pairwise overlap counts
+ * @param rMax           Maximum circle radius in layout coordinates (default 80)
+ * @param iterations     Spring-relaxation steps (default 400)
+ * @param separationGap  Extra gap added when count=0 so circles don't touch (default 20)
+ * @param containmentPad Min gap beyond |r_i - r_j| for overlapping pairs (default 4)
  */
 export function layoutEuler(
   sources: SourceInput[],
   matrix: number[][],
   rMax = 80,
-  iterations = 300,
-  padding = 12,
-  paddingMin = 8
+  iterations = 400,
+  separationGap = 20,
+  containmentPad = 4
 ): CircleLayout[] {
   const n = sources.length;
   if (n === 0) return [];
@@ -156,7 +161,7 @@ export function layoutEuler(
   const radii = sources.map((s) => circleRadius(s.total, maxTotal, rMax));
   const areas = radii.map((r) => Math.PI * r * r);
 
-  // Compute target distances
+  // Compute target centre-to-centre distances for every pair.
   const targetDist: number[][] = Array.from({ length: n }, () =>
     new Array(n).fill(0)
   );
@@ -165,73 +170,68 @@ export function layoutEuler(
       const count = matrix[i]?.[j] ?? 0;
       let td: number;
       if (count === 0) {
-        td = radii[i] + radii[j] + padding;
+        // No shared papers → circles must be clearly separated (no visual touch).
+        td = radii[i] + radii[j] + separationGap;
       } else {
-        const minTotal = Math.max(
-          Math.min(sources[i].total, sources[j].total),
-          1
-        );
-        const minArea = Math.min(areas[i], areas[j]);
-        // Fraction of the smaller circle that overlaps; cap at 85%
-        const fraction = Math.min(count / minTotal, 0.85);
+        // Shared papers → circles should visually overlap.
+        // fraction: what share of the smaller circle area should be in the lens.
+        // Floor at 0.12 so any non-zero overlap is clearly visible.
+        const minTotal = Math.max(Math.min(sources[i].total, sources[j].total), 1);
+        const minArea  = Math.min(areas[i], areas[j]);
+        const fraction = Math.min(Math.max(count / minTotal, 0.12), 0.90);
         const targetArea = fraction * minArea;
         td = targetDistanceForArea(radii[i], radii[j], targetArea);
+        // Prevent full containment (which is invisible): keep a small gap above
+        // the containment threshold |r_i - r_j|.
+        td = Math.max(td, Math.abs(radii[i] - radii[j]) + containmentPad);
       }
-      // Enforce minimum separation: circles must be at least paddingMin
-      // beyond the containment threshold |r_i - r_j| to stay readable.
-      td = Math.max(td, Math.abs(radii[i] - radii[j]) + paddingMin);
       targetDist[i][j] = td;
       targetDist[j][i] = td;
     }
   }
 
-  // Initialise on a circle
+  // Initialise centres on a circle of radius 1.5 × rMax.
   const initR = rMax * 1.5;
   const pos = sources.map((_, i) => ({
     x: initR * Math.cos((2 * Math.PI * i) / n - Math.PI / 2),
     y: initR * Math.sin((2 * Math.PI * i) / n - Math.PI / 2),
   }));
 
-  // Spring relaxation (stress minimisation)
-  const STEP = 0.45;
+  // Spring-relaxation with linear cooling (step 0.55 → 0.05).
+  // Each iteration moves every centre toward its target distance from every
+  // other centre, then re-centres the whole layout on the origin.
+  // No outward spreading force — that was the root cause of incorrect overlap.
   const moves = Array.from({ length: n }, () => ({ dx: 0, dy: 0 }));
 
   for (let iter = 0; iter < iterations; iter++) {
-    for (let k = 0; k < n; k++) {
-      moves[k].dx = 0;
-      moves[k].dy = 0;
-    }
+    const step = 0.55 - 0.50 * (iter / (iterations - 1)); // 0.55 → 0.05
+
+    for (let k = 0; k < n; k++) { moves[k].dx = 0; moves[k].dy = 0; }
+
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const dx = pos[j].x - pos[i].x;
-        const dy = pos[j].y - pos[i].y;
+        const dx   = pos[j].x - pos[i].x;
+        const dy   = pos[j].y - pos[i].y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1e-6;
-        const target = targetDist[i][j];
-        const error = (dist - target) / dist; // +ve → too far, -ve → too close
-        const mx = error * dx * STEP;
-        const my = error * dy * STEP;
-        moves[i].dx += mx;
-        moves[i].dy += my;
-        moves[j].dx -= mx;
-        moves[j].dy -= my;
+        const err  = (dist - targetDist[i][j]) / dist; // +ve=too far, −ve=too close
+        const mx   = err * dx * step;
+        const my   = err * dy * step;
+        moves[i].dx += mx;  moves[i].dy += my;
+        moves[j].dx -= mx;  moves[j].dy -= my;
       }
     }
+
     for (let k = 0; k < n; k++) {
       pos[k].x += moves[k].dx;
       pos[k].y += moves[k].dy;
     }
 
-    // Centroid spreading: tiny outward force from the geometric centre to
-    // prevent total collapse when all target distances are very small.
-    const SPREAD = 0.18;
+    // Re-centre on origin each step (prevents drift; does not distort distances).
     const centX = pos.reduce((s, p) => s + p.x, 0) / n;
     const centY = pos.reduce((s, p) => s + p.y, 0) / n;
     for (let k = 0; k < n; k++) {
-      const dx = pos[k].x - centX;
-      const dy = pos[k].y - centY;
-      const dc = Math.sqrt(dx * dx + dy * dy) || 1;
-      pos[k].x += (dx / dc) * SPREAD;
-      pos[k].y += (dy / dc) * SPREAD;
+      pos[k].x -= centX;
+      pos[k].y -= centY;
     }
   }
 
