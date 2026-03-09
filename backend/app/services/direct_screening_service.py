@@ -984,6 +984,9 @@ async def _fetch_standalone_record(
     record_id: uuid.UUID,
     project_id: uuid.UUID,
 ) -> Dict[str, Any]:
+    # Fetch record fields + aggregated source names.
+    # raw_data is JSONB — PostgreSQL has no min(jsonb) aggregate, so we fetch
+    # it in a separate query to avoid a "function min(jsonb) does not exist" error.
     result = await db.execute(
         select(
             Record.title,
@@ -992,7 +995,6 @@ async def _fetch_standalone_record(
             Record.authors,
             Record.normalized_doi,
             func.array_agg(Source.name.distinct()).label("source_names"),
-            func.min(RecordSource.raw_data).label("raw_data"),
         )
         .join(RecordSource, RecordSource.record_id == Record.id)
         .join(Source, Source.id == RecordSource.source_id)
@@ -1003,7 +1005,14 @@ async def _fetch_standalone_record(
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None,
                 "doi": None, "source_names": [], "pmid": None, "pmcid": None}
-    pmid, pmcid = _extract_pmid_pmcid(row.raw_data)
+    # Fetch one raw_data for pmid/pmcid extraction (any record_source is fine).
+    raw_result = await db.execute(
+        select(RecordSource.raw_data)
+        .where(RecordSource.record_id == record_id)
+        .limit(1)
+    )
+    raw_data = raw_result.scalar_one_or_none()
+    pmid, pmcid = _extract_pmid_pmcid(raw_data)
     return {
         "title": row.title,
         "abstract": row.abstract,
