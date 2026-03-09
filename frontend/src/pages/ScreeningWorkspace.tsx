@@ -1066,16 +1066,19 @@ function ScreeningPanel({
   const [extractPhase, setExtractPhase] = useState(false);
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
 
-  // History: all items seen in this panel session
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  // History stored in a ref so fetchNext never sees a stale closure.
+  // historyIdx and historyLen are plain state so changes trigger re-renders.
+  const historyRef = useRef<HistoryEntry[]>([]);
+  const [historyLen, setHistoryLen] = useState(0);
   const [historyIdx, setHistoryIdx] = useState(0);
-  const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null); // null = showing current item
+
+  // When browsing history this holds the fetched article; null = showing live item.
+  const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
 
-  // Per-item timing
   const itemStartedAt = useRef<number>(Date.now());
 
-  // Map bucket → mode for the API
   const bucketToMode: Record<string, string> = {
     ta_unscreened: "screen",
     ta_included: "screen",
@@ -1099,18 +1102,14 @@ function ScreeningPanel({
       } else {
         setItem(res.data);
         itemStartedAt.current = Date.now();
-        // Push to session history
         if (!res.data.done && (res.data.record_id || res.data.cluster_id)) {
-          setHistory((prev) => {
-            const entry: HistoryEntry = {
-              record_id: res.data.record_id,
-              cluster_id: res.data.cluster_id,
-              title: res.data.title,
-            };
-            const next = [...prev, entry];
-            setHistoryIdx(next.length - 1);
-            return next;
-          });
+          // Append to ref first so index is always consistent
+          historyRef.current = [
+            ...historyRef.current,
+            { record_id: res.data.record_id, cluster_id: res.data.cluster_id, title: res.data.title },
+          ];
+          setHistoryLen(historyRef.current.length);
+          setHistoryIdx(historyRef.current.length - 1);
         }
       }
     } catch (err: unknown) {
@@ -1125,11 +1124,21 @@ function ScreeningPanel({
     fetchNext();
   }, [fetchNext]);
 
-  // Navigate to a historical item by index (read-only view)
+  // Navigate to a historical item by index — does NOT set global loading,
+  // so the nav bar stays visible while the item is being fetched.
   async function navigateToHistoryIdx(idx: number) {
-    const entry = history[idx];
+    const entry = historyRef.current[idx];
     if (!entry) return;
-    setLoading(true);
+
+    if (idx === historyRef.current.length - 1) {
+      // Back to the live item — no API call needed
+      setBrowseItem(null);
+      setHistoryIdx(idx);
+      itemStartedAt.current = Date.now();
+      return;
+    }
+
+    setBrowseLoading(true);
     try {
       const res = await screeningApi.getItem(projectId, {
         record_id: entry.record_id ?? undefined,
@@ -1137,15 +1146,10 @@ function ScreeningPanel({
       });
       setBrowseItem(res.data);
       setHistoryIdx(idx);
-      // If navigating back to "current" item
-      if (idx === history.length - 1) {
-        setBrowseItem(null);
-        itemStartedAt.current = Date.now();
-      }
     } catch {
-      // Silently ignore — stay on current item
+      // Silently ignore — stay on current position
     } finally {
-      setLoading(false);
+      setBrowseLoading(false);
     }
   }
 
@@ -1154,10 +1158,9 @@ function ScreeningPanel({
   }
 
   async function goToNext() {
-    if (historyIdx < history.length - 1) {
+    if (historyIdx < historyRef.current.length - 1) {
       await navigateToHistoryIdx(historyIdx + 1);
     } else {
-      // At the end of history — fetch a brand new item
       await fetchNext();
     }
   }
@@ -1185,37 +1188,19 @@ function ScreeningPanel({
     },
   });
 
+  const stage = bucket === "ta_unscreened" || bucket === "ta_included" ? "TA" : "FT";
+  const isBrowseBucket = ["ta_included", "ft_included", "extract_done"].includes(bucket);
+  const displayItem = browseItem ?? item;
   const bucketLabel = BUCKET_LABELS[bucket] ?? bucket;
 
-  if (loading) return <p style={{ color: "#888" }}>Loading…</p>;
-  if (fetchError) return <ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} />;
-  if (!item || item.done) return <DoneCard bucketLabel={bucketLabel} projectId={projectId} />;
-
-  const stage = bucket === "ta_unscreened" || bucket === "ta_included" ? "TA" : "FT";
-
   function decide(decision: "include" | "exclude", reason_code?: string) {
+    if (!item) return;
     const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
     decideMutation.mutate(
-      {
-        record_id: item!.record_id ?? null,
-        cluster_id: item!.cluster_id ?? null,
-        stage: stage as "TA" | "FT",
-        decision,
-        reason_code,
-        strategy,
-      },
+      { record_id: item.record_id ?? null, cluster_id: item.cluster_id ?? null, stage: stage as "TA" | "FT", decision, reason_code, strategy },
       {
         onSuccess: () => {
-          onDecision?.({
-            record_id: item!.record_id,
-            cluster_id: item!.cluster_id,
-            title: item!.title ?? "(unknown)",
-            stage: stage as "TA" | "FT",
-            decision,
-            reason_code,
-            decided_at: new Date().toISOString(),
-            time_spent_seconds: timeSpent,
-          });
+          onDecision?.({ record_id: item.record_id, cluster_id: item.cluster_id, title: item.title ?? "(unknown)", stage: stage as "TA" | "FT", decision, reason_code, decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
           if (decision === "include" && stage === "FT" && autoAdvanceExtract) {
             setExtractPhase(true);
           } else {
@@ -1227,47 +1212,49 @@ function ScreeningPanel({
   }
 
   function toggleChip(field: "levels" | "dimensions", value: string) {
-    setForm((f) => {
-      const arr = f[field];
-      return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] };
-    });
+    setForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
   }
 
-  const isBrowse = ["ta_included", "ft_included", "extract_done"].includes(bucket);
+  // The nav bar is always rendered once history has entries — never hidden by loading.
+  const nav = historyLen > 0 ? (
+    <HistoryNav
+      historyIdx={historyIdx}
+      historyTotal={historyLen}
+      onPrev={goToPrev}
+      onNext={goToNext}
+      isFetching={loading || browseLoading}
+    />
+  ) : null;
 
-  // The item currently displayed (historical or current)
-  const displayItem = browseItem ?? item;
+  // ── Initial load (no history yet) ──
+  if (loading && historyLen === 0) {
+    return <p style={{ color: "#888" }}>Loading…</p>;
+  }
 
-  // Inline extraction after FT include
-  if (extractPhase && !isBrowsingHistory) {
+  // ── Fetch error (and not currently browsing history) ──
+  if (fetchError && !isBrowsingHistory) {
+    return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
+  }
+
+  // ── Queue exhausted ──
+  if (!isBrowsingHistory && (!item || item.done)) {
+    return <>{nav}<DoneCard bucketLabel={bucketLabel} projectId={projectId} /></>;
+  }
+
+  if (!displayItem) return nav;
+
+  // ── Inline extraction after FT include ──
+  if (extractPhase && !isBrowsingHistory && item) {
     return (
       <div>
-        <HistoryNav
-          historyIdx={historyIdx}
-          historyTotal={history.length}
-          onPrev={goToPrev}
-          onNext={goToNext}
-          isFetching={loading}
-        />
+        {nav}
         <ProgressBar remaining={item.remaining} />
-        <div
-          style={{
-            border: "1px solid #dadce0",
-            borderRadius: "0.5rem",
-            padding: "0.85rem 1.1rem",
-            marginBottom: "1rem",
-            background: "#fff",
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>
-            {item.title ?? <em style={{ color: "#888" }}>No title</em>}
-          </div>
+        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
+          <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
           <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
             {item.year && <span>{item.year}</span>}
             {(item.source_names ?? []).map((s) => (
-              <span key={s} style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "1rem", padding: "0 0.45rem", fontSize: "0.75rem" }}>
-                {s}
-              </span>
+              <span key={s} style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "1rem", padding: "0 0.45rem", fontSize: "0.75rem" }}>{s}</span>
             ))}
           </div>
         </div>
@@ -1275,72 +1262,35 @@ function ScreeningPanel({
           ✓ FT Included — Extract Data
         </div>
         <ExtractionForm
-          projectId={projectId}
-          form={form}
-          setForm={setForm}
-          levels={levels}
+          projectId={projectId} form={form} setForm={setForm} levels={levels}
           onSave={() => {
             const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
-            onDecision?.({
-              record_id: item!.record_id,
-              cluster_id: item!.cluster_id,
-              title: item!.title ?? "(unknown)",
-              stage: "extract",
-              decision: "save",
-              decided_at: new Date().toISOString(),
-              time_spent_seconds: timeSpent,
-            });
-            saveMutation.mutate({
-              record_id: item!.record_id ?? null,
-              cluster_id: item!.cluster_id ?? null,
-              extracted_json: form,
-            });
+            onDecision?.({ record_id: item.record_id, cluster_id: item.cluster_id, title: item.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
+            saveMutation.mutate({ record_id: item.record_id ?? null, cluster_id: item.cluster_id ?? null, extracted_json: form });
           }}
-          onSkip={fetchNext}
-          isPending={saveMutation.isPending}
-          isError={saveMutation.isError}
-          toggleChip={toggleChip}
+          onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
         />
       </div>
     );
   }
 
+  // ── Main view ──
   return (
     <div>
-      {/* History navigation bar */}
-      {history.length > 0 && (
-        <HistoryNav
-          historyIdx={historyIdx}
-          historyTotal={history.length}
-          onPrev={goToPrev}
-          onNext={goToNext}
-          isFetching={loading}
-        />
+      {nav}
+
+      {/* Subtle spinner during history navigation — nav bar stays visible */}
+      {browseLoading && (
+        <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>
       )}
 
-      <ProgressBar remaining={isBrowsingHistory ? undefined : item.remaining} />
+      <ProgressBar remaining={isBrowsingHistory ? undefined : item?.remaining} />
 
       {/* History mode banner */}
       {isBrowsingHistory && (
-        <div
-          style={{
-            background: "#fefce8",
-            border: "1px solid #fde68a",
-            borderRadius: "0.375rem",
-            padding: "0.4rem 0.85rem",
-            marginBottom: "0.5rem",
-            fontSize: "0.78rem",
-            color: "#92400e",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <span>Viewing session history — decisions already recorded.</span>
-          <button
-            onClick={goToNext}
-            style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}
-          >
+        <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Viewing session history</span>
+          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
@@ -1348,11 +1298,9 @@ function ScreeningPanel({
 
       <PaperCard item={displayItem} projectId={projectId} showAnnotations />
 
-      {/* Full-text access links for FT stage */}
-      {!isBrowse && stage === "FT" && !isBrowsingHistory && <FTAccessLinks item={displayItem} />}
+      {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <FTAccessLinks item={displayItem} />}
 
-      {/* Decision bar — only for active (non-history, non-browse) items */}
-      {!isBrowse && !isBrowsingHistory && (
+      {!isBrowseBucket && !isBrowsingHistory && (
         <DecisionBar
           stage={stage as "TA" | "FT"}
           includeLabel={stage === "FT" && autoAdvanceExtract ? "✓ Include — extract data" : undefined}
@@ -1365,16 +1313,8 @@ function ScreeningPanel({
         />
       )}
 
-      {/* Browse mode: show existing decisions */}
-      {(isBrowse || isBrowsingHistory) && (
-        <div
-          style={{
-            background: "#f8f9fa",
-            border: "1px solid #e0e0e0",
-            borderRadius: "0 0 0.5rem 0.5rem",
-            padding: "0.75rem 1.25rem",
-          }}
-        >
+      {(isBrowseBucket || isBrowsingHistory) && (
+        <div style={{ background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0 0 0.5rem 0.5rem", padding: "0.75rem 1.25rem" }}>
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
             {displayItem.ta_decision && (
               <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
@@ -1387,9 +1327,7 @@ function ScreeningPanel({
               </span>
             )}
             {!isBrowsingHistory && (
-              <button className="btn-secondary" onClick={fetchNext} disabled={loading} style={{ marginLeft: "auto" }}>
-                Next →
-              </button>
+              <button className="btn-secondary" onClick={fetchNext} disabled={loading} style={{ marginLeft: "auto" }}>Next →</button>
             )}
           </div>
         </div>
@@ -1598,6 +1536,15 @@ function MixedPanel({
   const [taSubmitted, setTaSubmitted] = useState(false);
   const [phase, setPhase] = useState<"ta" | "ft" | "extraction">("ta");
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
+
+  // History — same ref-based pattern as ScreeningPanel
+  const historyRef = useRef<HistoryEntry[]>([]);
+  const [historyLen, setHistoryLen] = useState(0);
+  const [historyIdx, setHistoryIdx] = useState(0);
+  const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const isBrowsingHistory = browseItem !== null;
+
   const itemStartedAt = useRef<number>(Date.now());
 
   const fetchNext = useCallback(async () => {
@@ -1606,6 +1553,7 @@ function MixedPanel({
     setTaSubmitted(false);
     setPhase("ta");
     setForm(EMPTY_EXTRACTION);
+    setBrowseItem(null);
     try {
       const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed" });
       if ((res.data as any).error) {
@@ -1620,6 +1568,14 @@ function MixedPanel({
           setPhase("ft");
           setTaSubmitted(true);
         }
+        if (!d.done && (d.record_id || d.cluster_id)) {
+          historyRef.current = [
+            ...historyRef.current,
+            { record_id: d.record_id, cluster_id: d.cluster_id, title: d.title },
+          ];
+          setHistoryLen(historyRef.current.length);
+          setHistoryIdx(historyRef.current.length - 1);
+        }
       }
     } catch (err: unknown) {
       const msg = (err as any)?.response?.data?.error?.message ?? "Check your connection and try again.";
@@ -1630,6 +1586,36 @@ function MixedPanel({
   }, [projectId, source]);
 
   useEffect(() => { fetchNext(); }, [fetchNext]);
+
+  async function navigateToHistoryIdx(idx: number) {
+    const entry = historyRef.current[idx];
+    if (!entry) return;
+    if (idx === historyRef.current.length - 1) {
+      setBrowseItem(null);
+      setHistoryIdx(idx);
+      itemStartedAt.current = Date.now();
+      return;
+    }
+    setBrowseLoading(true);
+    try {
+      const res = await screeningApi.getItem(projectId, {
+        record_id: entry.record_id ?? undefined,
+        cluster_id: entry.cluster_id ?? undefined,
+      });
+      setBrowseItem(res.data);
+      setHistoryIdx(idx);
+    } catch { /* stay on current */ } finally {
+      setBrowseLoading(false);
+    }
+  }
+
+  async function goToPrev() {
+    if (historyIdx > 0) await navigateToHistoryIdx(historyIdx - 1);
+  }
+  async function goToNext() {
+    if (historyIdx < historyRef.current.length - 1) await navigateToHistoryIdx(historyIdx + 1);
+    else await fetchNext();
+  }
 
   const decideMutation = useMutation({
     mutationFn: (body: {
@@ -1651,9 +1637,46 @@ function MixedPanel({
     },
   });
 
-  if (loading) return <p style={{ color: "#888" }}>Loading…</p>;
-  if (fetchError) return <ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} />;
-  if (!item || item.done) return <DoneCard bucketLabel="Mixed Screening" projectId={projectId} />;
+  const nav = historyLen > 0 ? (
+    <HistoryNav historyIdx={historyIdx} historyTotal={historyLen} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+  ) : null;
+
+  if (loading && historyLen === 0) return <p style={{ color: "#888" }}>Loading…</p>;
+  if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
+  if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
+
+  // ── History browse view (read-only) ──
+  if (isBrowsingHistory && browseItem) {
+    return (
+      <div>
+        {nav}
+        {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
+        <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Viewing session history</span>
+          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
+            Return to current →
+          </button>
+        </div>
+        <PaperCard item={browseItem} projectId={projectId} showAnnotations />
+        <div style={{ background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0 0 0.5rem 0.5rem", padding: "0.75rem 1.25rem" }}>
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+            {browseItem.ta_decision && (
+              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
+                TA: <strong style={{ color: browseItem.ta_decision === "include" ? "#188038" : "#c5221f" }}>{browseItem.ta_decision}</strong>
+              </span>
+            )}
+            {browseItem.ft_decision && (
+              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
+                FT: <strong style={{ color: browseItem.ft_decision === "include" ? "#188038" : "#c5221f" }}>{browseItem.ft_decision}</strong>
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!item) return nav;
 
   const showFT = phase === "ft" || phase === "extraction" || taSubmitted || item.ta_decision === "include";
 
@@ -1706,6 +1729,7 @@ function MixedPanel({
 
   return (
     <div>
+      {nav}
       <ProgressBar remaining={item.remaining} />
       <PaperCard item={item} projectId={projectId} showAnnotations />
 
@@ -1765,11 +1789,21 @@ function ExtractionPanel({
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // History — same pattern as ScreeningPanel and MixedPanel
+  const historyRef = useRef<HistoryEntry[]>([]);
+  const [historyLen, setHistoryLen] = useState(0);
+  const [historyIdx, setHistoryIdx] = useState(0);
+  const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const isBrowsingHistory = browseItem !== null;
+
   const itemStartedAt = useRef<number>(Date.now());
 
   const fetchNext = useCallback(async () => {
     setLoading(true);
     setFetchError(null);
+    setBrowseItem(null);
     try {
       const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending" });
       if ((res.data as any).error) {
@@ -1778,6 +1812,15 @@ function ExtractionPanel({
         setItem(res.data);
         setForm(EMPTY_EXTRACTION);
         itemStartedAt.current = Date.now();
+        const d = res.data;
+        if (!d.done && (d.record_id || d.cluster_id)) {
+          historyRef.current = [
+            ...historyRef.current,
+            { record_id: d.record_id, cluster_id: d.cluster_id, title: d.title },
+          ];
+          setHistoryLen(historyRef.current.length);
+          setHistoryIdx(historyRef.current.length - 1);
+        }
       }
     } catch (err: unknown) {
       const msg = (err as any)?.response?.data?.error?.message ?? "Check your connection and try again.";
@@ -1789,6 +1832,36 @@ function ExtractionPanel({
 
   useEffect(() => { fetchNext(); }, [fetchNext]);
 
+  async function navigateToHistoryIdx(idx: number) {
+    const entry = historyRef.current[idx];
+    if (!entry) return;
+    if (idx === historyRef.current.length - 1) {
+      setBrowseItem(null);
+      setHistoryIdx(idx);
+      itemStartedAt.current = Date.now();
+      return;
+    }
+    setBrowseLoading(true);
+    try {
+      const res = await screeningApi.getItem(projectId, {
+        record_id: entry.record_id ?? undefined,
+        cluster_id: entry.cluster_id ?? undefined,
+      });
+      setBrowseItem(res.data);
+      setHistoryIdx(idx);
+    } catch { /* stay on current */ } finally {
+      setBrowseLoading(false);
+    }
+  }
+
+  async function goToPrev() {
+    if (historyIdx > 0) await navigateToHistoryIdx(historyIdx - 1);
+  }
+  async function goToNext() {
+    if (historyIdx < historyRef.current.length - 1) await navigateToHistoryIdx(historyIdx + 1);
+    else await fetchNext();
+  }
+
   const extractionQc = useQueryClient();
   const saveMutation = useMutation({
     mutationFn: (payload: { record_id?: string | null; cluster_id?: string | null; extracted_json: ExtractionJson }) =>
@@ -1799,9 +1872,43 @@ function ExtractionPanel({
     },
   });
 
-  if (loading) return <p style={{ color: "#888" }}>Loading…</p>;
-  if (fetchError) return <ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} />;
-  if (!item || item.done) return <DoneCard bucketLabel="Extract Data" projectId={projectId} />;
+  const nav = historyLen > 0 ? (
+    <HistoryNav historyIdx={historyIdx} historyTotal={historyLen} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+  ) : null;
+
+  if (loading && historyLen === 0) return <p style={{ color: "#888" }}>Loading…</p>;
+  if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
+  if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Extract Data" projectId={projectId} /></>;
+
+  // ── History browse view — show paper info, no extraction form ──
+  if (isBrowsingHistory && browseItem) {
+    return (
+      <div>
+        {nav}
+        {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
+        <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Viewing session history</span>
+          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
+            Return to current →
+          </button>
+        </div>
+        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", background: "#fff" }}>
+          <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{browseItem.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
+          <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+            {browseItem.year && <span>{browseItem.year}</span>}
+            {(browseItem.source_names ?? []).map((s) => (
+              <span key={s} style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "1rem", padding: "0 0.45rem", fontSize: "0.75rem" }}>{s}</span>
+            ))}
+          </div>
+          {browseItem.abstract && (
+            <p style={{ marginTop: "0.6rem", fontSize: "0.85rem", lineHeight: 1.6, color: "#3c4043" }}>{browseItem.abstract}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!item) return nav;
 
   function toggleChip(field: "levels" | "dimensions", value: string) {
     setForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
@@ -1809,6 +1916,7 @@ function ExtractionPanel({
 
   return (
     <div>
+      {nav}
       <ProgressBar remaining={item.remaining} />
       <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
         <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
