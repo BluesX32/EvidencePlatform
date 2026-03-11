@@ -27,31 +27,40 @@ from app.dependencies import get_current_user
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
 from app.models.project import Project
 from app.models.user import User
+from app.repositories.project_repo import ProjectRepo
+from app.repositories.team_repo import TeamRepo
 from app.services import llm_screening_service as svc
 
 router = APIRouter(tags=["llm_screening"])
 
 
 # ---------------------------------------------------------------------------
-# Auth helper
+# Auth helpers
 # ---------------------------------------------------------------------------
+
+# Roles allowed to VIEW LLM results (any team member)
+_VIEW_ROLES = frozenset({"owner", "admin", "reviewer", "observer"})
+# Roles allowed to TRIGGER a run (costs money — owner/admin only)
+_RUN_ROLES = frozenset({"owner", "admin"})
 
 
 async def _require_project(
     project_id: str,
     db: AsyncSession,
     user: User,
+    min_roles: frozenset = _VIEW_ROLES,
 ) -> Project:
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(400, "Invalid project_id")
-    row: Optional[Project] = await db.get(Project, pid)
-    if row is None:
+    role = await ProjectRepo.user_role(db, pid, user.id)
+    if role is None:
         raise HTTPException(404, "Project not found")
-    if str(row.created_by) != str(user.id):
+    if role not in min_roles:
         raise HTTPException(403, "Forbidden")
-    return row
+    row: Optional[Project] = await db.get(Project, pid)
+    return row  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +233,8 @@ async def create_run(
     x_anthropic_api_key: Optional[str] = Header(default=None, alias="X-Anthropic-Api-Key"),
     x_openrouter_api_key: Optional[str] = Header(default=None, alias="X-Openrouter-Api-Key"),
 ) -> LlmRunResponse:
-    """Create and launch an LLM screening run."""
+    """Create and launch an LLM screening run (admin/owner only — incurs API cost)."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
     # Require at least one LLM provider key (header key OR env var).
     effective_anthropic = x_anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
     effective_openrouter = x_openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
@@ -242,8 +252,6 @@ async def create_run(
             "OPENROUTER_API_KEY is required for non-Claude models. "
             "Get a key at https://openrouter.ai/keys",
         )
-
-    project = await _require_project(project_id, db, user)
 
     run = await svc.create_and_launch_run(
         db=db,

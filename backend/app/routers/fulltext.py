@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
 from app.models.fulltext_pdf import FulltextPdf
 from app.models.project import Project
 from app.models.user import User
@@ -37,11 +37,9 @@ UPLOADS_ROOT = Path("uploads")
 
 
 async def _require_project(project_id: str, db: AsyncSession, user: User) -> Project:
-    row = await db.get(Project, uuid.UUID(project_id))
-    if row is None:
-        raise HTTPException(404, "Project not found")
-    if str(row.created_by) != str(user.id):
-        raise HTTPException(403, "Forbidden")
+    pid = uuid.UUID(project_id)
+    await require_project_role(db, pid, user.id, allowed=REVIEWER_ROLE)
+    row = await db.get(Project, pid)
     return row
 
 

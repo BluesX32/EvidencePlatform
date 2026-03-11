@@ -33,7 +33,7 @@ from app.models.extraction_record import ExtractionRecord
 from app.models.project import Project
 from app.models.thematic_history import ThematicHistory
 from app.models.user import User
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
 
 router = APIRouter(tags=["thematic"])
 
@@ -46,11 +46,9 @@ async def _require_project(
     db: AsyncSession,
     user: User,
 ) -> Project:
-    row = await db.get(Project, uuid.UUID(project_id))
-    if row is None:
-        raise HTTPException(404, "Project not found")
-    if str(row.created_by) != str(user.id):
-        raise HTTPException(403, "Forbidden")
+    pid = uuid.UUID(project_id)
+    await require_project_role(db, pid, user.id, allowed=REVIEWER_ROLE)
+    row = await db.get(Project, pid)
     return row
 
 

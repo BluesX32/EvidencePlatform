@@ -68,23 +68,29 @@ def upgrade() -> None:
             name="ck_consensus_exactly_one",
         ),
     )
-    # One consensus per (project, record|cluster, stage)
-    op.create_unique_constraint(
+    # Partial unique indexes: one consensus decision per (project, item, stage)
+    op.create_index(
         "uq_consensus_record_stage",
         "consensus_decisions",
         ["project_id", "record_id", "stage"],
+        unique=True,
         postgresql_where=sa.text("record_id IS NOT NULL"),
     )
-    op.create_unique_constraint(
+    op.create_index(
         "uq_consensus_cluster_stage",
         "consensus_decisions",
         ["project_id", "cluster_id", "stage"],
+        unique=True,
         postgresql_where=sa.text("cluster_id IS NOT NULL"),
     )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_consensus_cluster_stage", table_name="consensus_decisions")
+    op.drop_index("uq_consensus_record_stage", table_name="consensus_decisions")
     op.drop_table("consensus_decisions")
+    op.drop_index("ix_project_invitations_project_id", table_name="project_invitations")
+    op.drop_index("ix_project_invitations_token", table_name="project_invitations")
     op.drop_table("project_invitations")
     op.drop_index("ix_project_members_user_id", table_name="project_members")
     op.drop_index("ix_project_members_project_id", table_name="project_members")

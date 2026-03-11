@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_project_role, ADMIN_ROLE
 from app.models.user import User
 from app.repositories.import_repo import ImportRepo
 from app.repositories.project_repo import ProjectRepo
@@ -49,11 +49,8 @@ class StartImportResponse(BaseModel):
 
 
 async def _get_owned_project(project_id: uuid.UUID, user: User, db: AsyncSession):
+    await require_project_role(db, project_id, user.id, allowed=ADMIN_ROLE)
     project = await ProjectRepo.get_by_id(db, project_id)
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if project.created_by != user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     return project
 
 

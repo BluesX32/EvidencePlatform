@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
 from app.models.annotation import Annotation
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
@@ -33,11 +33,8 @@ async def _require_project(
     current_user: User,
     db: AsyncSession,
 ):
+    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
     project = await ProjectRepo.get_by_id(db, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
     return project
 
 
