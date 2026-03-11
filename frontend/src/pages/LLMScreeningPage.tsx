@@ -21,25 +21,80 @@ import {
   type LlmResultResponse,
 } from "../api/client";
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Model catalog ─────────────────────────────────────────────────────────────
+//
+// Claude models:  use ANTHROPIC_API_KEY (direct) OR OPENROUTER_API_KEY (gateway)
+// All others:     require OPENROUTER_API_KEY — get one at https://openrouter.ai/keys
 
-const MODELS = [
+interface ModelDef {
+  id: string;
+  label: string;
+  note: string;
+  recommended?: boolean;
+}
+
+interface ModelGroup {
+  group: string;
+  key: "anthropic_or_openrouter" | "openrouter";
+  models: ModelDef[];
+}
+
+const MODEL_CATALOG: ModelGroup[] = [
   {
-    id: "claude-haiku-4-5-20251001",
-    label: "Claude Haiku (fastest, cheapest)",
-    note: "~$0.25/1k articles · ~5 min/1k",
+    group: "Claude — Anthropic",
+    key: "anthropic_or_openrouter",
+    models: [
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5",  note: "~$0.25/1k · fastest" },
+      { id: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6", note: "~$3/1k · balanced", recommended: true },
+      { id: "claude-opus-4-6",           label: "Claude Opus 4.6",   note: "~$15/1k · most capable" },
+    ],
   },
   {
-    id: "claude-sonnet-4-6",
-    label: "Claude Sonnet (recommended)",
-    note: "~$3/1k articles · ~12 min/1k",
+    group: "OpenAI — via OpenRouter",
+    key: "openrouter",
+    models: [
+      { id: "openai/gpt-4o-mini", label: "GPT-4o mini", note: "~$0.15/1k · cheap & fast" },
+      { id: "openai/gpt-4o",      label: "GPT-4o",      note: "~$2.5/1k · strong reasoning" },
+    ],
   },
   {
-    id: "claude-opus-4-6",
-    label: "Claude Opus (most thorough)",
-    note: "~$15/1k articles · ~25 min/1k",
+    group: "Google Gemini — via OpenRouter",
+    key: "openrouter",
+    models: [
+      { id: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash", note: "~$0.10/1k · very fast" },
+      { id: "google/gemini-pro-1.5",       label: "Gemini 1.5 Pro",   note: "~$1.5/1k · long context" },
+    ],
+  },
+  {
+    group: "Meta Llama — via OpenRouter",
+    key: "openrouter",
+    models: [
+      { id: "meta-llama/llama-3.3-70b-instruct",  label: "Llama 3.3 70B",  note: "~$0.12/1k · open-source" },
+      { id: "meta-llama/llama-3.1-405b-instruct", label: "Llama 3.1 405B", note: "~$2.7/1k · largest open" },
+    ],
+  },
+  {
+    group: "Mistral — via OpenRouter",
+    key: "openrouter",
+    models: [
+      { id: "mistralai/mistral-small", label: "Mistral Small", note: "~$0.10/1k · efficient" },
+      { id: "mistralai/mistral-large", label: "Mistral Large", note: "~$2/1k · capable" },
+    ],
+  },
+  {
+    group: "DeepSeek — via OpenRouter",
+    key: "openrouter",
+    models: [
+      { id: "deepseek/deepseek-chat", label: "DeepSeek V3",  note: "~$0.14/1k · cost-effective" },
+      { id: "deepseek/deepseek-r1",   label: "DeepSeek R1",  note: "~$0.55/1k · reasoning model" },
+    ],
   },
 ];
+
+// Flat lookup for the selected model metadata
+const MODEL_BY_ID = Object.fromEntries(
+  MODEL_CATALOG.flatMap((g) => g.models.map((m) => [m.id, { ...m, group: g }]))
+);
 
 const DECISION_FILTER_OPTIONS = [
   { value: "", label: "All decisions" },
@@ -684,17 +739,31 @@ export default function LLMScreeningPage() {
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                style={{ fontSize: "0.9rem", padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", minWidth: 280 }}
+                style={{ fontSize: "0.9rem", padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", minWidth: 320 }}
               >
-                {MODELS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
+                {MODEL_CATALOG.map((group) => (
+                  <optgroup key={group.group} label={group.group}>
+                    {group.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}{m.recommended ? " ★" : ""} — {m.note}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
-              <p className="muted" style={{ marginTop: "0.25rem", fontSize: "0.8rem" }}>
-                {MODELS.find((m) => m.id === selectedModel)?.note}
-              </p>
+              {/* API key requirement hint */}
+              {(() => {
+                const isClaude = selectedModel.startsWith("claude-");
+                return (
+                  <p className="muted" style={{ marginTop: "0.35rem", fontSize: "0.79rem" }}>
+                    {isClaude ? (
+                      <>Requires <code>ANTHROPIC_API_KEY</code> <em>or</em> <code>OPENROUTER_API_KEY</code></>
+                    ) : (
+                      <>Requires <code>OPENROUTER_API_KEY</code> — <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#6366f1" }}>get one at openrouter.ai</a></>
+                    )}
+                  </p>
+                );
+              })()}
             </div>
 
             {estimateLoading ? (
@@ -829,7 +898,7 @@ export default function LLMScreeningPage() {
                       >
                         <td style={{ padding: "0.55rem 0.75rem" }}>{fmtDate(run.started_at ?? run.created_at)}</td>
                         <td style={{ padding: "0.55rem 0.75rem", color: "#5f6368", fontSize: "0.78rem" }}>
-                          {run.model.replace("claude-", "").replace(/-\d{10}$/, "")}
+                          {MODEL_BY_ID[run.model]?.label ?? run.model.split("/").pop()?.replace(/-\d{10}$/, "") ?? run.model}
                         </td>
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           {statusBadge(run.status)}

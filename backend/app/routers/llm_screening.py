@@ -223,11 +223,25 @@ async def create_run(
     user: User = Depends(get_current_user),
 ) -> LlmRunResponse:
     """Create and launch an LLM screening run."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    # Require at least one LLM provider key.
+    # Claude models use ANTHROPIC_API_KEY (direct) or OPENROUTER_API_KEY (gateway).
+    # All other models require OPENROUTER_API_KEY.
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
+    is_claude = body.model.startswith("claude-")
+
+    if is_claude and not has_anthropic and not has_openrouter:
         raise HTTPException(
             400,
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Configure it before launching LLM screening runs.",
+            "No API key configured. Set ANTHROPIC_API_KEY to use Claude directly, "
+            "or OPENROUTER_API_KEY to route through OpenRouter.",
+        )
+    if not is_claude and not has_openrouter:
+        raise HTTPException(
+            400,
+            "OPENROUTER_API_KEY is not set. "
+            "Non-Claude models are accessed via OpenRouter — get a key at "
+            "https://openrouter.ai/keys and add it to your environment.",
         )
 
     project = await _require_project(project_id, db, user)

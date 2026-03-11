@@ -1,27 +1,29 @@
 """LLM screening service.
 
-Orchestrates parallel Anthropic API calls to screen all records in a project,
-map concepts to the existing thematic framework, and surface new concepts.
+Supports two provider backends, auto-selected by model name and env vars:
+
+  1. Anthropic SDK (direct) — used when model starts with "claude-" and
+     ANTHROPIC_API_KEY is set.  Uses native tool_use for structured output.
+
+  2. OpenRouter (universal gateway) — used for all other models, and as a
+     fallback for Claude when only OPENROUTER_API_KEY is set.  Uses the
+     OpenAI-compatible API with function calling.
+     See https://openrouter.ai for model catalogue and pricing.
 
 Workflow:
-  1. estimate_run() → cost/time preview (no DB side effects)
+  1. estimate_run()         → cost/time preview (no DB side effects)
   2. create_and_launch_run() → creates LlmScreeningRun row, fires background task
-  3. _execute_run() → background task: iterates all records, screens each,
-                       stores LlmScreeningResult
-
-LLM call structure (tool_use for guaranteed JSON):
-  - System: role + JSON-only instruction
-  - User: criteria + thematic framework + paper metadata
-  - Tool schema: ta_decision, ta_reason, ft_decision, ft_reason,
-                 matched_codes, new_concepts
+  3. _execute_run()          → background task: screens every record in parallel
 
 Rate limiting: asyncio.Semaphore(CONCURRENT_REQUESTS = 8)
-Retry: exponential backoff on anthropic.RateLimitError (max 3 retries)
+Retry:         exponential backoff on rate-limit errors (max 3 retries)
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -44,20 +46,53 @@ logger = logging.getLogger(__name__)
 CONCURRENT_REQUESTS = 8
 
 # ---------------------------------------------------------------------------
-# Pricing table (USD per token)
+# Pricing table (USD per token) — covers direct Anthropic + OpenRouter models
+# OpenRouter prices: https://openrouter.ai/models
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5-20251001": (0.80 / 1_000_000, 4.00 / 1_000_000),
-    "claude-sonnet-4-6": (3.00 / 1_000_000, 15.00 / 1_000_000),
-    "claude-opus-4-6": (15.00 / 1_000_000, 75.00 / 1_000_000),
+    # ── Claude (Anthropic direct or via OpenRouter) ────────────────────────
+    "claude-haiku-4-5-20251001":        (0.80 / 1_000_000,   4.00 / 1_000_000),
+    "claude-sonnet-4-6":                (3.00 / 1_000_000,  15.00 / 1_000_000),
+    "claude-opus-4-6":                  (15.00 / 1_000_000, 75.00 / 1_000_000),
+    # ── OpenAI via OpenRouter ─────────────────────────────────────────────
+    "openai/gpt-4o-mini":               (0.15 / 1_000_000,   0.60 / 1_000_000),
+    "openai/gpt-4o":                    (2.50 / 1_000_000,  10.00 / 1_000_000),
+    "openai/o1-mini":                   (1.10 / 1_000_000,   4.40 / 1_000_000),
+    # ── Google Gemini via OpenRouter ──────────────────────────────────────
+    "google/gemini-flash-1.5":          (0.075 / 1_000_000,  0.30 / 1_000_000),
+    "google/gemini-pro-1.5":            (1.25 / 1_000_000,   5.00 / 1_000_000),
+    "google/gemini-2.0-flash-001":      (0.10 / 1_000_000,   0.40 / 1_000_000),
+    # ── Meta Llama via OpenRouter ─────────────────────────────────────────
+    "meta-llama/llama-3.3-70b-instruct":  (0.12 / 1_000_000,  0.30 / 1_000_000),
+    "meta-llama/llama-3.1-405b-instruct": (2.70 / 1_000_000,  2.70 / 1_000_000),
+    # ── Mistral via OpenRouter ─────────────────────────────────────────────
+    "mistralai/mistral-small":           (0.10 / 1_000_000,   0.30 / 1_000_000),
+    "mistralai/mistral-large":           (2.00 / 1_000_000,   6.00 / 1_000_000),
+    # ── DeepSeek via OpenRouter ───────────────────────────────────────────
+    "deepseek/deepseek-chat":            (0.14 / 1_000_000,   0.28 / 1_000_000),
+    "deepseek/deepseek-r1":              (0.55 / 1_000_000,   2.19 / 1_000_000),
 }
 
 _MINUTES_PER_RECORD: dict[str, float] = {
-    "claude-haiku-4-5-20251001": 0.008,
-    "claude-sonnet-4-6": 0.015,
-    "claude-opus-4-6": 0.02,
+    "claude-haiku-4-5-20251001":          0.008,
+    "claude-sonnet-4-6":                  0.015,
+    "claude-opus-4-6":                    0.020,
+    "openai/gpt-4o-mini":                 0.007,
+    "openai/gpt-4o":                      0.012,
+    "openai/o1-mini":                     0.018,
+    "google/gemini-flash-1.5":            0.006,
+    "google/gemini-pro-1.5":              0.014,
+    "google/gemini-2.0-flash-001":        0.006,
+    "meta-llama/llama-3.3-70b-instruct":  0.010,
+    "meta-llama/llama-3.1-405b-instruct": 0.018,
+    "mistralai/mistral-small":            0.008,
+    "mistralai/mistral-large":            0.012,
+    "deepseek/deepseek-chat":             0.009,
+    "deepseek/deepseek-r1":               0.020,
 }
+
+_DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Estimated tokens per record (abstract-only baseline)
 _AVG_INPUT_TOKENS = 1500
@@ -66,7 +101,19 @@ _AVG_OUTPUT_TOKENS = 400
 
 def _cost_per_token(model: str) -> tuple[float, float]:
     """Return (input_price_per_token, output_price_per_token) in USD."""
-    return _PRICING.get(model, _PRICING["claude-sonnet-4-6"])
+    return _PRICING.get(model, _PRICING[_DEFAULT_MODEL])
+
+
+def _detect_provider(model: str) -> str:
+    """Auto-select provider backend.
+
+    Returns 'anthropic' when model is a Claude model and ANTHROPIC_API_KEY is
+    present.  Falls back to 'openrouter' for everything else (requires
+    OPENROUTER_API_KEY).
+    """
+    if model.startswith("claude-") and os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return "openrouter"
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +141,19 @@ async def estimate_run(
     mins_per = _MINUTES_PER_RECORD.get(model, 0.015)
     estimated_minutes = max(5.0, total * mins_per)
 
-    # Build per-model cost breakdown for reference
+    # Representative per-model cost comparison (subset for UI display)
+    _COMPARISON_MODELS = [
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "openai/gpt-4o-mini",
+        "openai/gpt-4o",
+        "google/gemini-flash-1.5",
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-chat",
+    ]
     cost_breakdown: dict[str, float] = {}
-    for m, (ip, op) in _PRICING.items():
+    for m in _COMPARISON_MODELS:
+        ip, op = _PRICING[m]
         cost_breakdown[m] = round(
             estimated_input_tokens * ip + estimated_output_tokens * op, 4
         )
@@ -580,15 +637,35 @@ _SYSTEM_PROMPT = (
 
 _RETRY_DELAYS = [0.5, 2.0, 8.0]
 
+# OpenAI-format tools (used for OpenRouter)
+_OAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": _TOOL_SCHEMA[0]["name"],
+            "description": _TOOL_SCHEMA[0]["description"],
+            "parameters": _TOOL_SCHEMA[0]["input_schema"],
+        },
+    }
+]
+
 
 async def _call_llm(model: str, prompt: str) -> dict[str, Any]:
-    """Call Anthropic API with tool_use, retry on RateLimitError.
+    """Dispatch to the correct provider backend based on model name + env keys.
 
-    Returns the tool input dict plus '_input_tokens' and '_output_tokens' keys.
+    Returns the tool input dict plus '_input_tokens' / '_output_tokens' keys.
     """
+    provider = _detect_provider(model)
+    if provider == "anthropic":
+        return await _call_anthropic(model, prompt)
+    return await _call_openrouter(model, prompt)
+
+
+async def _call_anthropic(model: str, prompt: str) -> dict[str, Any]:
+    """Call Anthropic API directly using native tool_use."""
     import anthropic  # type: ignore
 
-    client = anthropic.AsyncAnthropic()
+    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY from env
 
     last_exc: Optional[Exception] = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
@@ -603,22 +680,91 @@ async def _call_llm(model: str, prompt: str) -> dict[str, Any]:
                 tool_choice={"type": "any"},
                 messages=[{"role": "user", "content": prompt}],
             )
-            # Extract tool_use block
             result: dict[str, Any] = {}
             for block in response.content:
                 if block.type == "tool_use" and block.name == "submit_screening_result":
                     result = dict(block.input)
                     break
-
             result["_input_tokens"] = response.usage.input_tokens
             result["_output_tokens"] = response.usage.output_tokens
             return result
 
         except anthropic.RateLimitError as exc:
             last_exc = exc
-            logger.warning("Anthropic rate limit on attempt %d, retrying in %.1fs", attempt + 1, _RETRY_DELAYS[attempt] if attempt < len(_RETRY_DELAYS) else _RETRY_DELAYS[-1])
+            logger.warning(
+                "Anthropic rate limit on attempt %d, retrying in %.1fs",
+                attempt + 1,
+                _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)],
+            )
             continue
         except Exception:
             raise
 
     raise RuntimeError(f"Anthropic API rate-limit exceeded after retries: {last_exc}")
+
+
+async def _call_openrouter(model: str, prompt: str) -> dict[str, Any]:
+    """Call any model via OpenRouter using the OpenAI-compatible function-calling API.
+
+    OpenRouter docs: https://openrouter.ai/docs
+    Set OPENROUTER_API_KEY in the environment.
+    """
+    from openai import AsyncOpenAI, RateLimitError  # type: ignore
+
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set. "
+            "Get a key at https://openrouter.ai/keys and add it to your environment."
+        )
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://evidence-platform",
+            "X-Title": "EvidencePlatform",
+        },
+    )
+
+    last_exc: Optional[Exception] = None
+    for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
+        if delay > 0:
+            await asyncio.sleep(delay)
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_OAI_TOOLS,  # type: ignore[arg-type]
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": "submit_screening_result"},
+                },
+            )
+            result: dict[str, Any] = {}
+            choice = response.choices[0]
+            if choice.message.tool_calls:
+                raw = choice.message.tool_calls[0].function.arguments
+                result = json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+            usage = response.usage
+            result["_input_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
+            result["_output_tokens"] = getattr(usage, "completion_tokens", 0) or 0
+            return result
+
+        except RateLimitError as exc:
+            last_exc = exc
+            logger.warning(
+                "OpenRouter rate limit on attempt %d, retrying in %.1fs",
+                attempt + 1,
+                _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)],
+            )
+            continue
+        except Exception:
+            raise
+
+    raise RuntimeError(f"OpenRouter rate-limit exceeded after retries: {last_exc}")
