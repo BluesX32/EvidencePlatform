@@ -17,7 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -221,27 +221,26 @@ async def create_run(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    x_anthropic_api_key: Optional[str] = Header(default=None, alias="X-Anthropic-Api-Key"),
+    x_openrouter_api_key: Optional[str] = Header(default=None, alias="X-Openrouter-Api-Key"),
 ) -> LlmRunResponse:
     """Create and launch an LLM screening run."""
-    # Require at least one LLM provider key.
-    # Claude models use ANTHROPIC_API_KEY (direct) or OPENROUTER_API_KEY (gateway).
-    # All other models require OPENROUTER_API_KEY.
-    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
+    # Require at least one LLM provider key (header key OR env var).
+    effective_anthropic = x_anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+    effective_openrouter = x_openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
     is_claude = body.model.startswith("claude-")
 
-    if is_claude and not has_anthropic and not has_openrouter:
+    if is_claude and not effective_anthropic and not effective_openrouter:
         raise HTTPException(
             400,
-            "No API key configured. Set ANTHROPIC_API_KEY to use Claude directly, "
-            "or OPENROUTER_API_KEY to route through OpenRouter.",
+            "No API key configured. Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY, "
+            "or enter a key in the LLM Screening settings.",
         )
-    if not is_claude and not has_openrouter:
+    if not is_claude and not effective_openrouter:
         raise HTTPException(
             400,
-            "OPENROUTER_API_KEY is not set. "
-            "Non-Claude models are accessed via OpenRouter — get a key at "
-            "https://openrouter.ai/keys and add it to your environment.",
+            "OPENROUTER_API_KEY is required for non-Claude models. "
+            "Get a key at https://openrouter.ai/keys",
         )
 
     project = await _require_project(project_id, db, user)
@@ -252,6 +251,8 @@ async def create_run(
         model=body.model,
         triggered_by=user.id,
         background_tasks=background_tasks,
+        anthropic_api_key=x_anthropic_api_key,
+        openrouter_api_key=x_openrouter_api_key,
     )
     return _run_to_response(run)
 

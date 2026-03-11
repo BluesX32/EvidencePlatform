@@ -52,44 +52,83 @@ CONCURRENT_REQUESTS = 8
 
 _PRICING: dict[str, tuple[float, float]] = {
     # ── Claude (Anthropic direct or via OpenRouter) ────────────────────────
-    "claude-haiku-4-5-20251001":        (0.80 / 1_000_000,   4.00 / 1_000_000),
-    "claude-sonnet-4-6":                (3.00 / 1_000_000,  15.00 / 1_000_000),
-    "claude-opus-4-6":                  (15.00 / 1_000_000, 75.00 / 1_000_000),
+    "claude-haiku-4-5-20251001":          (0.80 / 1_000_000,   4.00 / 1_000_000),
+    "claude-sonnet-4-6":                  (3.00 / 1_000_000,  15.00 / 1_000_000),
+    "claude-opus-4-6":                    (15.00 / 1_000_000, 75.00 / 1_000_000),
     # ── OpenAI via OpenRouter ─────────────────────────────────────────────
-    "openai/gpt-4o-mini":               (0.15 / 1_000_000,   0.60 / 1_000_000),
-    "openai/gpt-4o":                    (2.50 / 1_000_000,  10.00 / 1_000_000),
-    "openai/o1-mini":                   (1.10 / 1_000_000,   4.40 / 1_000_000),
+    "openai/gpt-4o-mini":                 (0.15 / 1_000_000,   0.60 / 1_000_000),
+    "openai/gpt-4o":                      (2.50 / 1_000_000,  10.00 / 1_000_000),
+    "openai/o1-mini":                     (1.10 / 1_000_000,   4.40 / 1_000_000),
+    "openai/o3-mini":                     (1.10 / 1_000_000,   4.40 / 1_000_000),
+    "openai/gpt-5.3-chat":                (8.00 / 1_000_000,  24.00 / 1_000_000),
+    "openai/gpt-5.4":                     (10.00 / 1_000_000, 30.00 / 1_000_000),
+    "openai/gpt-5.4-pro":                 (117.00 / 1_000_000, 117.00 / 1_000_000),
     # ── Google Gemini via OpenRouter ──────────────────────────────────────
-    "google/gemini-flash-1.5":          (0.075 / 1_000_000,  0.30 / 1_000_000),
-    "google/gemini-pro-1.5":            (1.25 / 1_000_000,   5.00 / 1_000_000),
-    "google/gemini-2.0-flash-001":      (0.10 / 1_000_000,   0.40 / 1_000_000),
+    "google/gemini-flash-1.5":            (0.075 / 1_000_000,  0.30 / 1_000_000),
+    "google/gemini-pro-1.5":              (1.25 / 1_000_000,   5.00 / 1_000_000),
+    "google/gemini-2.0-flash-001":        (0.10 / 1_000_000,   0.40 / 1_000_000),
+    "google/gemini-2.5-pro-preview":      (1.25 / 1_000_000,  10.00 / 1_000_000),
+    "google/gemini-3-flash-preview":      (0.15 / 1_000_000,   0.60 / 1_000_000),
+    "google/gemini-3.1-flash-lite-preview": (0.05 / 1_000_000, 0.20 / 1_000_000),
+    "google/gemini-3.1-pro-preview":      (8.00 / 1_000_000,  24.00 / 1_000_000),
     # ── Meta Llama via OpenRouter ─────────────────────────────────────────
     "meta-llama/llama-3.3-70b-instruct":  (0.12 / 1_000_000,  0.30 / 1_000_000),
     "meta-llama/llama-3.1-405b-instruct": (2.70 / 1_000_000,  2.70 / 1_000_000),
+    "meta-llama/llama-4-scout":           (0.15 / 1_000_000,  0.60 / 1_000_000),
+    "meta-llama/llama-4-maverick":        (0.90 / 1_000_000,  2.70 / 1_000_000),
     # ── Mistral via OpenRouter ─────────────────────────────────────────────
-    "mistralai/mistral-small":           (0.10 / 1_000_000,   0.30 / 1_000_000),
-    "mistralai/mistral-large":           (2.00 / 1_000_000,   6.00 / 1_000_000),
+    "mistralai/mistral-small":            (0.10 / 1_000_000,   0.30 / 1_000_000),
+    "mistralai/mistral-small-3.1":        (0.10 / 1_000_000,   0.30 / 1_000_000),
+    "mistralai/mistral-large":            (2.00 / 1_000_000,   6.00 / 1_000_000),
+    "mistralai/mistral-large-2512":       (1.35 / 1_000_000,   4.05 / 1_000_000),
+    "mistralai/ministral-8b-2512":        (0.28 / 1_000_000,   0.84 / 1_000_000),
     # ── DeepSeek via OpenRouter ───────────────────────────────────────────
-    "deepseek/deepseek-chat":            (0.14 / 1_000_000,   0.28 / 1_000_000),
-    "deepseek/deepseek-r1":              (0.55 / 1_000_000,   2.19 / 1_000_000),
+    "deepseek/deepseek-chat":             (0.14 / 1_000_000,   0.28 / 1_000_000),
+    "deepseek/deepseek-r1":               (0.55 / 1_000_000,   2.19 / 1_000_000),
+    "deepseek/deepseek-v3.2":             (0.55 / 1_000_000,   1.65 / 1_000_000),
+    # ── Qwen (Alibaba) via OpenRouter ────────────────────────────────────
+    "qwen/qwen3.5-plus-02-15":            (0.50 / 1_000_000,   1.50 / 1_000_000),
+    "qwen/qwen3-max-thinking":            (1.80 / 1_000_000,   5.40 / 1_000_000),
+    # ── NVIDIA Nemotron (free) via OpenRouter ─────────────────────────────
+    "nemotron/nemotron-3-super":          (0.00 / 1_000_000,   0.00 / 1_000_000),
+    # ── Cohere via OpenRouter ─────────────────────────────────────────────
+    "cohere/command-a-03-2025":           (2.50 / 1_000_000,  10.00 / 1_000_000),
 }
 
 _MINUTES_PER_RECORD: dict[str, float] = {
-    "claude-haiku-4-5-20251001":          0.008,
-    "claude-sonnet-4-6":                  0.015,
-    "claude-opus-4-6":                    0.020,
-    "openai/gpt-4o-mini":                 0.007,
-    "openai/gpt-4o":                      0.012,
-    "openai/o1-mini":                     0.018,
-    "google/gemini-flash-1.5":            0.006,
-    "google/gemini-pro-1.5":              0.014,
-    "google/gemini-2.0-flash-001":        0.006,
-    "meta-llama/llama-3.3-70b-instruct":  0.010,
-    "meta-llama/llama-3.1-405b-instruct": 0.018,
-    "mistralai/mistral-small":            0.008,
-    "mistralai/mistral-large":            0.012,
-    "deepseek/deepseek-chat":             0.009,
-    "deepseek/deepseek-r1":               0.020,
+    "claude-haiku-4-5-20251001":            0.008,
+    "claude-sonnet-4-6":                    0.015,
+    "claude-opus-4-6":                      0.020,
+    "openai/gpt-4o-mini":                   0.007,
+    "openai/gpt-4o":                        0.012,
+    "openai/o1-mini":                       0.018,
+    "openai/o3-mini":                       0.018,
+    "openai/gpt-5.3-chat":                  0.013,
+    "openai/gpt-5.4":                       0.014,
+    "openai/gpt-5.4-pro":                   0.025,
+    "google/gemini-flash-1.5":              0.006,
+    "google/gemini-pro-1.5":                0.014,
+    "google/gemini-2.0-flash-001":          0.006,
+    "google/gemini-2.5-pro-preview":        0.016,
+    "google/gemini-3-flash-preview":        0.005,
+    "google/gemini-3.1-flash-lite-preview": 0.004,
+    "google/gemini-3.1-pro-preview":        0.014,
+    "meta-llama/llama-3.3-70b-instruct":    0.010,
+    "meta-llama/llama-3.1-405b-instruct":   0.018,
+    "meta-llama/llama-4-scout":             0.008,
+    "meta-llama/llama-4-maverick":          0.012,
+    "mistralai/mistral-small":              0.008,
+    "mistralai/mistral-small-3.1":          0.008,
+    "mistralai/mistral-large":              0.012,
+    "mistralai/mistral-large-2512":         0.011,
+    "mistralai/ministral-8b-2512":          0.007,
+    "deepseek/deepseek-chat":               0.009,
+    "deepseek/deepseek-r1":                 0.020,
+    "deepseek/deepseek-v3.2":              0.009,
+    "qwen/qwen3.5-plus-02-15":              0.010,
+    "qwen/qwen3-max-thinking":              0.022,
+    "nemotron/nemotron-3-super":            0.010,
+    "cohere/command-a-03-2025":             0.012,
 }
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -174,6 +213,8 @@ async def create_and_launch_run(
     model: str,
     triggered_by: Optional[uuid.UUID],
     background_tasks: BackgroundTasks,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
 ) -> LlmScreeningRun:
     """Create an LlmScreeningRun row and enqueue the background execution."""
     estimate = await estimate_run(db, project_id, model)
@@ -191,7 +232,7 @@ async def create_and_launch_run(
     await db.refresh(run)
 
     run_id = run.id
-    background_tasks.add_task(_execute_run, project_id, run_id, model)
+    background_tasks.add_task(_execute_run, project_id, run_id, model, anthropic_api_key, openrouter_api_key)
     return run
 
 
@@ -204,11 +245,13 @@ async def _execute_run(
     project_id: uuid.UUID,
     run_id: uuid.UUID,
     model: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
 ) -> None:
     """Background task: screen every record in the project using the LLM."""
     async with SessionLocal() as db:
         try:
-            await _do_execute_run(db, project_id, run_id, model)
+            await _do_execute_run(db, project_id, run_id, model, anthropic_api_key, openrouter_api_key)
         except Exception as exc:
             logger.exception("LLM screening run %s failed", run_id)
             async with SessionLocal() as err_db:
@@ -229,6 +272,8 @@ async def _do_execute_run(
     project_id: uuid.UUID,
     run_id: uuid.UUID,
     model: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
 ) -> None:
     # Mark as running
     await db.execute(
@@ -294,6 +339,8 @@ async def _do_execute_run(
                     criteria=criteria,
                     framework=framework_nodes,
                     db=db,
+                    anthropic_api_key=anthropic_api_key,
+                    openrouter_api_key=openrouter_api_key,
                 )
                 if result is None:
                     return
@@ -369,6 +416,8 @@ async def _screen_one_record(
     criteria: dict,
     framework: list,
     db: AsyncSession,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
 ) -> Optional[LlmScreeningResult]:
     """Screen a single record: fetch full text, call LLM, return result row."""
     # Extract pmid / pmcid from the first record_source for this record
@@ -411,7 +460,7 @@ async def _screen_one_record(
     prompt = _build_prompt(record, full_text, full_text_source, criteria, framework)
 
     try:
-        llm_output = await _call_llm(model, prompt)
+        llm_output = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key)
     except Exception:
         logger.exception("LLM call failed for record %s", record.id)
         return None
@@ -650,22 +699,27 @@ _OAI_TOOLS = [
 ]
 
 
-async def _call_llm(model: str, prompt: str) -> dict[str, Any]:
+async def _call_llm(
+    model: str,
+    prompt: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+) -> dict[str, Any]:
     """Dispatch to the correct provider backend based on model name + env keys.
 
     Returns the tool input dict plus '_input_tokens' / '_output_tokens' keys.
     """
     provider = _detect_provider(model)
     if provider == "anthropic":
-        return await _call_anthropic(model, prompt)
-    return await _call_openrouter(model, prompt)
+        return await _call_anthropic(model, prompt, api_key=anthropic_api_key)
+    return await _call_openrouter(model, prompt, api_key=openrouter_api_key)
 
 
-async def _call_anthropic(model: str, prompt: str) -> dict[str, Any]:
+async def _call_anthropic(model: str, prompt: str, api_key: Optional[str] = None) -> dict[str, Any]:
     """Call Anthropic API directly using native tool_use."""
     import anthropic  # type: ignore
 
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY from env
+    client = anthropic.AsyncAnthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
     last_exc: Optional[Exception] = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
@@ -703,23 +757,23 @@ async def _call_anthropic(model: str, prompt: str) -> dict[str, Any]:
     raise RuntimeError(f"Anthropic API rate-limit exceeded after retries: {last_exc}")
 
 
-async def _call_openrouter(model: str, prompt: str) -> dict[str, Any]:
+async def _call_openrouter(model: str, prompt: str, api_key: Optional[str] = None) -> dict[str, Any]:
     """Call any model via OpenRouter using the OpenAI-compatible function-calling API.
 
     OpenRouter docs: https://openrouter.ai/docs
-    Set OPENROUTER_API_KEY in the environment.
+    Set OPENROUTER_API_KEY in the environment, or pass api_key directly.
     """
     from openai import AsyncOpenAI, RateLimitError  # type: ignore
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
+    resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+    if not resolved_key:
         raise RuntimeError(
             "OPENROUTER_API_KEY is not set. "
             "Get a key at https://openrouter.ai/keys and add it to your environment."
         )
 
     client = AsyncOpenAI(
-        api_key=api_key,
+        api_key=resolved_key,
         base_url="https://openrouter.ai/api/v1",
         default_headers={
             "HTTP-Referer": "https://evidence-platform",

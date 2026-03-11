@@ -1033,8 +1033,21 @@ export const llmScreeningApi = {
       params: { model },
     }),
 
-  createRun: (projectId: string, model: string) =>
-    api.post<LlmRunResponse>(`/projects/${projectId}/llm-screening/runs`, { model }),
+  createRun: (
+    projectId: string,
+    model: string,
+    keys?: { anthropic?: string; openrouter?: string }
+  ) =>
+    api.post<LlmRunResponse>(
+      `/projects/${projectId}/llm-screening/runs`,
+      { model },
+      {
+        headers: {
+          ...(keys?.anthropic ? { "X-Anthropic-Api-Key": keys.anthropic } : {}),
+          ...(keys?.openrouter ? { "X-Openrouter-Api-Key": keys.openrouter } : {}),
+        },
+      }
+    ),
 
   listRuns: (projectId: string) =>
     api.get<LlmRunResponse[]>(`/projects/${projectId}/llm-screening/runs`),
