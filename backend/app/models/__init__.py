@@ -10,7 +10,10 @@ from app.models.match_log import MatchLog
 from app.models.overlap_cluster import OverlapCluster
 from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.overlap_strategy_run import OverlapStrategyRun
-from app.models.future import ProjectMember, Protocol, DedupPair
+from app.models.project_member import ProjectMember
+from app.models.project_invitation import ProjectInvitation
+from app.models.consensus_decision import ConsensusDecision
+from app.models.future import Protocol, DedupPair
 from app.models.screening_decision import ScreeningDecision
 from app.models.extraction_record import ExtractionRecord
 from app.models.screening_claim import ScreeningClaim
@@ -36,6 +39,8 @@ __all__ = [
     "OverlapClusterMember",
     "OverlapStrategyRun",
     "ProjectMember",
+    "ProjectInvitation",
+    "ConsensusDecision",
     "Protocol",
     "DedupPair",
     "ScreeningDecision",

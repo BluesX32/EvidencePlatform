@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
+  Users, Scale,
 } from "lucide-react";
 import { projectsApi, clearToken } from "../api/client";
 
@@ -25,6 +26,8 @@ const PROJECT_NAV = [
   { path: "/thematic",        icon: GitBranch, label: "Taxonomy"      },
   { path: "/ontology",        icon: Network,   label: "Ontology"      },
   { path: "/llm-screening",   icon: Bot,       label: "LLM Screening" },
+  { path: "/team",            icon: Users,     label: "Team"          },
+  { path: "/consensus",       icon: Scale,     label: "Consensus"     },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { Upload, BookOpen, GitMerge, CheckSquare, FlaskConical, Tag, Network, GitBranch, Bot } from "lucide-react";
+import { Upload, BookOpen, GitMerge, CheckSquare, FlaskConical, Tag, Network, GitBranch, Bot, Users, Scale } from "lucide-react";
 import {
   projectsApi,
   importsApi,
@@ -535,6 +535,12 @@ export default function ProjectPage() {
           </Link>
           <Link to={`/projects/${id}/llm-screening`} className="btn-secondary">
             <Bot size={15} /> LLM Screening
+          </Link>
+          <Link to={`/projects/${id}/team`} className="btn-secondary">
+            <Users size={15} /> Team
+          </Link>
+          <Link to={`/projects/${id}/consensus`} className="btn-secondary">
+            <Scale size={15} /> Consensus
           </Link>
         </div>
 

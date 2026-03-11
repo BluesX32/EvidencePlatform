@@ -17,17 +17,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
-class ProjectMember(Base):
-    """Reviewer roles per project. Active in Phase 2."""
-    __tablename__ = "project_members"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    # 'admin' | 'reviewer' | 'observer'
-    role: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
 
 class Protocol(Base):
     """PICO criteria, immutable versioned JSONB snapshots. Active in Phase 2."""

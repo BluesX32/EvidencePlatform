@@ -16,6 +16,8 @@ import LabelsPage from "./pages/LabelsPage";
 import OntologyPage from "./pages/OntologyPage";
 import ThematicAnalysis from "./pages/ThematicAnalysis";
 import LLMScreeningPage from "./pages/LLMScreeningPage";
+import TeamPage from "./pages/TeamPage";
+import ConsensusPage from "./pages/ConsensusPage";
 import AppShell from "./components/AppShell";
 import OnboardingTour from "./components/OnboardingTour";
 
@@ -72,8 +74,10 @@ export default function App() {
           <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
           <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
           <Route path="/projects/:id/ontology"     element={<WithShell><OntologyPage /></WithShell>} />
-          <Route path="/projects/:id/thematic"        element={<WithShell><ThematicAnalysis /></WithShell>} />
+          <Route path="/projects/:id/thematic"     element={<WithShell><ThematicAnalysis /></WithShell>} />
           <Route path="/projects/:id/llm-screening" element={<WithShell><LLMScreeningPage /></WithShell>} />
+          <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
+          <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

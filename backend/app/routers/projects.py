@@ -13,6 +13,26 @@ from app.repositories.project_repo import ProjectRepo
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+# Roles with write-level access (can edit project settings, import, configure)
+_WRITE_ROLES = frozenset({"owner", "admin"})
+# Roles with any access (observer can view)
+_ANY_ROLES = frozenset({"owner", "admin", "reviewer", "observer"})
+
+
+async def _get_project_and_role(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> tuple:
+    """Return (project, role) or raise 404/403."""
+    project = await ProjectRepo.get_by_id(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    role = await ProjectRepo.user_role(db, project_id, user_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    return project, role
+
 
 class CreateProjectRequest(BaseModel):
     name: str
@@ -43,6 +63,7 @@ class ProjectListItem(BaseModel):
     description: Optional[str]
     created_at: str
     record_count: int
+    my_role: str
 
 
 class CriterionItem(BaseModel):
@@ -66,6 +87,7 @@ class ProjectDetail(BaseModel):
     import_count: int        # completed import jobs
     failed_import_count: int
     criteria: ProjectCriteria
+    my_role: str             # owner | admin | reviewer | observer
 
 
 class UpdateCriteriaRequest(BaseModel):
@@ -95,12 +117,14 @@ async def list_projects(
     result = []
     for p in projects:
         count = await ProjectRepo.count_records(db, p.id)
+        role = await ProjectRepo.user_role(db, p.id, current_user.id) or "owner"
         result.append(ProjectListItem(
             id=str(p.id),
             name=p.name,
             description=p.description,
             created_at=p.created_at.isoformat(),
             record_count=count,
+            my_role=role,
         ))
     return result
 
@@ -111,11 +135,7 @@ async def get_project(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    project = await ProjectRepo.get_by_id(db, project_id)
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if project.created_by != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    project, role = await _get_project_and_role(db, project_id, current_user.id)
 
     record_count = await ProjectRepo.count_records(db, project.id)
     import_count = await ImportRepo.count_completed(db, project.id)
@@ -134,6 +154,7 @@ async def get_project(
         import_count=import_count,
         failed_import_count=failed_count,
         criteria=ProjectCriteria(**raw),
+        my_role=role,
     )
 
 
@@ -144,11 +165,9 @@ async def update_criteria(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    project = await ProjectRepo.get_by_id(db, project_id)
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if project.created_by != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    project, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required to edit criteria")
 
     criteria_dict = {
         "inclusion": [c.model_dump() for c in body.inclusion],
@@ -175,4 +194,5 @@ async def update_criteria(
         import_count=import_count,
         failed_import_count=failed_count,
         criteria=ProjectCriteria(**raw),
+        my_role=role,
     )

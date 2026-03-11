@@ -59,10 +59,6 @@ export interface Project {
   created_at: string;
 }
 
-export interface ProjectListItem extends Project {
-  record_count: number;
-}
-
 export interface CriterionItem {
   id: string;
   text: string;
@@ -79,6 +75,12 @@ export interface ProjectDetail extends Project {
   import_count: number;        // completed import jobs
   failed_import_count: number;
   criteria: ProjectCriteria;
+  my_role: "owner" | "admin" | "reviewer" | "observer";
+}
+
+export interface ProjectListItem extends Project {
+  record_count: number;
+  my_role: "owner" | "admin" | "reviewer" | "observer";
 }
 
 export const projectsApi = {
@@ -1116,4 +1118,163 @@ export const fulltextApi = {
 
   delete: (projectId: string, pdfId: string) =>
     api.delete(`/projects/${projectId}/fulltext/${pdfId}`),
+};
+
+// ── Team collaboration ────────────────────────────────────────────────────────
+
+export interface TeamMember {
+  user_id: string;
+  email: string;
+  name: string;
+  role: "owner" | "admin" | "reviewer" | "observer";
+  joined_at: string;
+  is_owner: boolean;
+}
+
+export interface ProjectInvitation {
+  id: string;
+  email: string;
+  role: string;
+  token: string;
+  status: "pending" | "accepted" | "revoked";
+  created_at: string;
+  accepted_at: string | null;
+}
+
+export interface MyRole {
+  role: "owner" | "admin" | "reviewer" | "observer";
+  is_owner: boolean;
+}
+
+export const teamApi = {
+  getMyRole: (projectId: string) =>
+    api.get<MyRole>(`/projects/${projectId}/team/me`),
+
+  listMembers: (projectId: string) =>
+    api.get<TeamMember[]>(`/projects/${projectId}/team/members`),
+
+  invite: (projectId: string, email: string, role: string) =>
+    api.post<ProjectInvitation>(`/projects/${projectId}/team/invite`, { email, role }),
+
+  listInvitations: (projectId: string) =>
+    api.get<ProjectInvitation[]>(`/projects/${projectId}/team/invitations`),
+
+  revokeInvitation: (projectId: string, invitationId: string) =>
+    api.delete(`/projects/${projectId}/team/invitations/${invitationId}`),
+
+  acceptInvite: (projectId: string, token: string) =>
+    api.post<{ project_id: string; role: string; message: string }>(
+      `/projects/${projectId}/team/accept`,
+      { token }
+    ),
+
+  updateMemberRole: (projectId: string, userId: string, role: string) =>
+    api.patch(`/projects/${projectId}/team/members/${userId}`, { role }),
+
+  removeMember: (projectId: string, userId: string) =>
+    api.delete(`/projects/${projectId}/team/members/${userId}`),
+};
+
+// ── Consensus & inter-rater reliability ───────────────────────────────────────
+
+export interface ReviewerDecision {
+  id: string;
+  stage: string;
+  decision: string;
+  reason_code: string | null;
+  notes: string | null;
+  reviewer_id: string | null;
+  reviewer_name: string | null;
+  created_at: string;
+}
+
+export interface ConflictItem {
+  item_id: string;
+  item_type: "record" | "cluster";
+  record_id: string | null;
+  cluster_id: string | null;
+  stage: string;
+  decisions: ReviewerDecision[];
+  conflict_type: string;
+}
+
+export interface ConsensusDecision {
+  id: string;
+  project_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  stage: string;
+  decision: string;
+  reason_code: string | null;
+  notes: string | null;
+  adjudicator_id: string | null;
+  created_at: string;
+}
+
+export interface ReviewerPairStats {
+  reviewer_a: { id: string; name: string };
+  reviewer_b: { id: string; name: string };
+  n_items_both: number;
+  n_agree: number;
+  pct_agreement: number | null;
+  kappa: number;
+  kappa_label: string;
+}
+
+export interface ReliabilityReport {
+  stage: string;
+  pairs: ReviewerPairStats[];
+  overall_pct_agreement: number | null;
+  n_pairs: number;
+}
+
+export interface ReviewerStats {
+  reviewer_id: string;
+  name: string;
+  ta_screened: number;
+  ta_included: number;
+  ta_excluded: number;
+  ft_screened: number;
+  ft_included: number;
+  ft_excluded: number;
+  extractions: number;
+}
+
+export const consensusApi = {
+  listConflicts: (projectId: string, stage?: string) =>
+    api.get<ConflictItem[]>(`/projects/${projectId}/consensus/conflicts`, {
+      params: stage ? { stage } : undefined,
+    }),
+
+  listResolved: (projectId: string) =>
+    api.get<ConsensusDecision[]>(`/projects/${projectId}/consensus/resolved`),
+
+  adjudicate: (
+    projectId: string,
+    body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      stage: string;
+      decision: string;
+      reason_code?: string | null;
+      notes?: string | null;
+    }
+  ) => api.post<ConsensusDecision>(`/projects/${projectId}/consensus/adjudicate`, body),
+
+  getReliability: (projectId: string, stage?: string) =>
+    api.get<ReliabilityReport>(`/projects/${projectId}/consensus/reliability`, {
+      params: stage ? { stage } : undefined,
+    }),
+
+  getTeamStats: (projectId: string) =>
+    api.get<ReviewerStats[]>(`/projects/${projectId}/consensus/stats`),
+
+  getTeamDecisions: (
+    projectId: string,
+    params: { record_id?: string; cluster_id?: string }
+  ) =>
+    api.get<{ decisions: ReviewerDecision[]; consensus: ConsensusDecision[] | null }>(
+      `/projects/${projectId}/consensus/team-decisions`,
+      { params }
+    ),
 };

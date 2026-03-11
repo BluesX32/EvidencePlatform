@@ -29,6 +29,7 @@ from app.models.screening_decision import ScreeningDecision
 from app.models.source import Source
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.repositories.team_repo import TeamRepo
 from app.services.direct_screening_service import (
     get_item_by_key,
     get_next_item,
@@ -51,11 +52,20 @@ async def _require_project(
     current_user: User,
     db: AsyncSession,
 ):
+    """Allow owner, admin, and reviewer roles to use screening endpoints.
+
+    Observers are read-only (viewing records) and cannot screen.
+    """
     project = await ProjectRepo.get_by_id(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.created_by != current_user.id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    if project.created_by == current_user.id:
+        return project
+    member = await TeamRepo.get_member(db, project_id, current_user.id)
+    if member is None:
+        raise HTTPException(status_code=403, detail="Not a project member")
+    if member.role == "observer":
+        raise HTTPException(status_code=403, detail="Observers cannot screen items")
     return project
 
 
