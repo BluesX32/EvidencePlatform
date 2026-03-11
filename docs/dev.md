@@ -121,3 +121,37 @@ cd backend
 
 > Integration tests (`test_overlap.py`) require the local Postgres to be running on port 5433.
 > They create data under unique project UUIDs and leave no observable side effects.
+
+---
+
+## Running frontend tests
+
+```bash
+cd frontend
+npx vitest run          # run all Vitest unit tests
+npx vitest run --reporter=verbose
+```
+
+Frontend tests cover Euler layout math (`eulerLayout.test.ts`) and are in `frontend/src/` alongside the source files they test.
+
+---
+
+## Database migrations
+
+Migrations live in `backend/alembic/versions/`. Current head is migration `016` (adds `fulltext_pdfs` table).
+
+| Migration | Description |
+|-----------|-------------|
+| 001 | Initial schema stub (legacy, drops old tables) |
+| 002–004 | Core tables: projects, sources, records, dedup |
+| 005 | Manual overlap: `overlap_clusters`, `overlap_cluster_members` |
+| 006 | Strategy run history: `overlap_strategy_runs` |
+| 007–008 | (Dropped — old corpus tables) |
+| 009 | Screening tables: `screening_decisions`, `extraction_records`, `screening_claims` |
+| 010 | Workflow strategy fields |
+| 011 | `criteria` JSONB on `projects` |
+| 012 | `record_annotations` table |
+| 013 | `project_labels` + `record_labels` tables |
+| 014 | Taxonomy / ontology tables |
+| 015 | Thematic analysis: `code_extractions`, `thematic_history` |
+| 016 | Full-text PDFs: `fulltext_pdfs` table |

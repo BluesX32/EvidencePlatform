@@ -962,3 +962,145 @@ export const thematicApi = {
   getHistory: (projectId: string) =>
     api.get<ThematicHistoryEntry[]>(`/projects/${projectId}/thematic/history`),
 };
+
+// ── LLM Screening ─────────────────────────────────────────────────────────────
+
+export interface LlmEstimateResponse {
+  total_records: number;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  estimated_cost_usd: number;
+  estimated_minutes: number;
+  model: string;
+  cost_breakdown: Record<string, number>;
+}
+
+export interface LlmRunResponse {
+  id: string;
+  project_id: string;
+  status: string;
+  model: string;
+  total_records: number | null;
+  processed_records: number;
+  included_count: number;
+  excluded_count: number;
+  uncertain_count: number;
+  new_concepts_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number | null;
+  actual_cost_usd: number | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  triggered_by: string | null;
+  progress_pct: number;
+}
+
+export interface LlmResultResponse {
+  id: string;
+  run_id: string;
+  project_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  ta_decision: string | null;
+  ta_reason: string | null;
+  ft_decision: string | null;
+  ft_reason: string | null;
+  matched_codes: string[] | null;
+  new_concepts: string[] | null;
+  full_text_source: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  model: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_action: string | null;
+  created_at: string;
+}
+
+export interface PaginatedLlmResults {
+  total: number;
+  page: number;
+  page_size: number;
+  items: LlmResultResponse[];
+}
+
+export const llmScreeningApi = {
+  estimate: (projectId: string, model = "claude-sonnet-4-6") =>
+    api.get<LlmEstimateResponse>(`/projects/${projectId}/llm-screening/estimate`, {
+      params: { model },
+    }),
+
+  createRun: (projectId: string, model: string) =>
+    api.post<LlmRunResponse>(`/projects/${projectId}/llm-screening/runs`, { model }),
+
+  listRuns: (projectId: string) =>
+    api.get<LlmRunResponse[]>(`/projects/${projectId}/llm-screening/runs`),
+
+  getRun: (projectId: string, runId: string) =>
+    api.get<LlmRunResponse>(`/projects/${projectId}/llm-screening/runs/${runId}`),
+
+  listResults: (
+    projectId: string,
+    runId: string,
+    params?: { page?: number; page_size?: number; ta_decision?: string }
+  ) =>
+    api.get<PaginatedLlmResults>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/results`,
+      { params }
+    ),
+
+  reviewResult: (
+    projectId: string,
+    runId: string,
+    resultId: string,
+    action: "accepted" | "rejected" | "merged"
+  ) =>
+    api.post<LlmResultResponse>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/results/${resultId}/review`,
+      { action }
+    ),
+};
+
+// ── Full-text PDF upload ───────────────────────────────────────────────────────
+
+export interface FulltextPdfMeta {
+  id: string;
+  original_filename: string;
+  file_size: number;
+  content_type: string;
+  uploaded_at: string;
+}
+
+export const fulltextApi = {
+  /** Fetch metadata for the uploaded PDF for a given record or cluster. */
+  getMeta: (
+    projectId: string,
+    params: { record_id?: string | null; cluster_id?: string | null }
+  ) =>
+    api.get<FulltextPdfMeta | null>(`/projects/${projectId}/fulltext`, { params }),
+
+  /** Upload a PDF (replaces any existing one for the same item). */
+  upload: (
+    projectId: string,
+    file: File,
+    params: { record_id?: string | null; cluster_id?: string | null }
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (params.record_id) form.append("record_id", params.record_id);
+    if (params.cluster_id) form.append("cluster_id", params.cluster_id);
+    return api.post<FulltextPdfMeta>(`/projects/${projectId}/fulltext`, form);
+  },
+
+  /** Download the file as a Blob (use with URL.createObjectURL to open in tab). */
+  download: (projectId: string, pdfId: string) =>
+    api.get<Blob>(`/projects/${projectId}/fulltext/${pdfId}/download`, {
+      responseType: "blob",
+    }),
+
+  delete: (projectId: string, pdfId: string) =>
+    api.delete(`/projects/${projectId}/fulltext/${pdfId}`),
+};

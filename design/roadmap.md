@@ -5,6 +5,31 @@
 
 ---
 
+## Current Status — March 2026
+
+The sections below are the original design plan. This section records actual build state.
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 0 — Foundation | Complete | Schema, auth, Docker Compose, CI |
+| Phase 1 — Import & Dedup | Complete | RIS/MEDLINE/BibTeX parsers; 3-tier Union-Find dedup engine |
+| Overlap detection | Complete (unplanned) | 5-tier cross-source OverlapDetector with manual linking, locking, strategy history, and Euler diagram visualisation |
+| Phase 2 — Screening | Complete (simplified) | Single-reviewer sequential and mixed-mode workflows; criteria panel; annotations; full-text links; saturation tracking |
+| Phase 3 — Extraction | Partially complete | Extraction library with inline editing; saturation counter; field capture without two-reviewer consensus (post-MVP) |
+| Labels & Taxonomy | Complete (unplanned) | Colour-coded labels with per-project palettes; hierarchical concept taxonomy |
+| Thematic analysis | Complete (unplanned) | Codebook themes + codes; evidence assignment; history log |
+| PDF upload | Complete (unplanned) | Per-record/cluster PDF storage; browser preview during full-text screening |
+| Phase 4 — Reporting & Export | Not started | PRISMA flow counts, audit trail export, project snapshot |
+| Phase 5 — LLM assistance | Not started | |
+| Phase 6 — Custom extraction forms | Not started | |
+
+**Divergences from the original plan:**
+- The two-reviewer blinded screening model described in Phase 2 was not built in MVP. The current implementation is single-reviewer, matching the actual research context.
+- Several features explicitly marked "Explicitly OUT of MVP" (PDF upload, labels, thematic analysis) were built in earlier sprints as they proved necessary for the target workflow.
+- Overlap detection was not a named phase in the original plan but became a significant subsystem.
+
+---
+
 ## The Systematic Review Workflow (What the Software Must Mirror)
 
 Evidence synthesis follows an invariant sequence. The software must respect this order because each step produces data that feeds the next. You cannot design around this.
@@ -65,7 +90,7 @@ If yes: MVP achieved.
 
 ## Phases
 
-### Phase 0 — Foundation
+### Phase 0 — Foundation *(Complete)*
 **Weeks 1–3**
 
 The schema is the most important artifact in this project. Getting it wrong cascades into every subsequent phase. Build this slowly and correctly.
@@ -99,7 +124,7 @@ The schema is the most important artifact in this project. Getting it wrong casc
 
 ---
 
-### Phase 1 — Import and Deduplication
+### Phase 1 — Import and Deduplication *(Complete)*
 **Weeks 4–7**
 
 Without records in the system, nothing else can be built or tested. Import and dedup must be solid before screening begins — screening operates on the deduplicated set.
@@ -127,7 +152,7 @@ Without records in the system, nothing else can be built or tested. Import and d
 
 ---
 
-### Phase 2 — Screening Workflow
+### Phase 2 — Screening Workflow *(Partially complete — single-reviewer)*
 **Weeks 8–13**
 
 The highest-volume, most cognitively demanding part of a review. Ergonomics here directly affect research quality. This is the most important UX phase.
@@ -157,7 +182,7 @@ The highest-volume, most cognitively demanding part of a review. Ergonomics here
 
 ---
 
-### Phase 3 — Data Extraction
+### Phase 3 — Data Extraction *(Partially complete)*
 **Weeks 14–18**
 
 Extraction is post-screening by definition and more domain-complex than screening. Start with a fixed schema to validate the data model before building a form builder.
@@ -187,7 +212,7 @@ Extraction is post-screening by definition and more domain-complex than screenin
 
 ---
 
-### Phase 4 — Reporting and Export
+### Phase 4 — Reporting and Export *(Not started)*
 **Weeks 19–22**
 
 The output phase. Everything prior feeds into this. The artifacts produced here are what researchers archive alongside published reviews.
@@ -209,7 +234,7 @@ The output phase. Everything prior feeds into this. The artifacts produced here 
 
 ---
 
-### Phase 5 — LLM Assistance Layer *(Post-MVP)*
+### Phase 5 — LLM Assistance Layer *(Not started — post-MVP)*
 **Weeks 23+**
 
 The human review points — dedup queue, screening interface, extraction form — were designed with suggestion display in mind. AI is added into them, not around them.
@@ -226,7 +251,7 @@ The human review points — dedup queue, screening interface, extraction form �
 
 ---
 
-### Phase 6 — Custom Extraction Forms *(Post-MVP)*
+### Phase 6 — Custom Extraction Forms *(Not started — post-MVP)*
 **Weeks 28+**
 
 **Rationale for deferral:** Custom forms require a form schema definition language, a renderer, a validation engine, and migration logic for existing extractions. That is a significant sub-project. The fixed schema in Phase 3 validates the underlying data model. Build this only after Phase 3 has been used by real researchers and the data model is confirmed stable.

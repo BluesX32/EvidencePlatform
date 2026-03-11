@@ -19,6 +19,8 @@ from app.models.record_label import RecordLabel
 from app.models.ontology_node import OntologyNode
 from app.models.code_extraction import CodeExtraction
 from app.models.thematic_history import ThematicHistory
+from app.models.fulltext_pdf import FulltextPdf
+from app.models.llm_screening import LlmScreeningRun, LlmScreeningResult
 
 __all__ = [
     "User",
@@ -44,4 +46,7 @@ __all__ = [
     "OntologyNode",
     "CodeExtraction",
     "ThematicHistory",
+    "FulltextPdf",
+    "LlmScreeningRun",
+    "LlmScreeningResult",
 ]

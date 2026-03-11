@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
+import { Upload, BookOpen, GitMerge, CheckSquare, FlaskConical, Tag, Network, GitBranch, Bot } from "lucide-react";
 import {
   projectsApi,
   importsApi,
@@ -497,17 +498,17 @@ export default function ProjectPage() {
         )}
 
         <div className="action-bar">
-          <Link to={`/projects/${id}/import`} className="btn-primary">
-            Import literature
+          <Link to={`/projects/${id}/import`} className="btn-primary btn-lg">
+            <Upload size={18} /> Import literature
           </Link>
           {(project?.record_count ?? 0) > 0 && (
             <Link to={`/projects/${id}/records`} className="btn-secondary">
-              View records
+              <BookOpen size={15} /> View records
             </Link>
           )}
           {(sources?.length ?? 0) >= 2 && (
             <Link to={`/projects/${id}/overlap`} className="btn-secondary">
-              Overlap Resolution
+              <GitMerge size={15} /> Overlap
             </Link>
           )}
           {(project?.record_count ?? 0) > 0 && (
@@ -515,19 +516,25 @@ export default function ProjectPage() {
               className="btn-secondary"
               onClick={() => setShowScreeningModal(true)}
             >
-              Start Screening
+              <CheckSquare size={15} /> Start Screening
             </button>
           )}
           {(project?.record_count ?? 0) > 0 && (
             <Link to={`/projects/${id}/extractions`} className="btn-secondary">
-              Extraction Library
+              <FlaskConical size={15} /> Extractions
             </Link>
           )}
           <Link to={`/projects/${id}/labels`} className="btn-secondary">
-            🏷️ Labels
+            <Tag size={15} /> Labels
+          </Link>
+          <Link to={`/projects/${id}/thematic`} className="btn-secondary">
+            <GitBranch size={15} /> Taxonomy
           </Link>
           <Link to={`/projects/${id}/ontology`} className="btn-secondary">
-            🌳 Taxonomy
+            <Network size={15} /> Ontology
+          </Link>
+          <Link to={`/projects/${id}/llm-screening`} className="btn-secondary">
+            <Bot size={15} /> LLM Screening
           </Link>
         </div>
 

@@ -19,8 +19,8 @@ export default function ProjectsPage() {
             Manage your systematic review projects
           </p>
         </div>
-        <Link to="/projects/new" className="btn-primary">
-          <Plus size={16} /> New project
+        <Link to="/projects/new" className="btn-primary btn-lg">
+          <Plus size={18} /> New project
         </Link>
       </div>
 
@@ -38,7 +38,7 @@ export default function ProjectsPage() {
           <div className="empty-state-icon">📋</div>
           <h3>No projects yet</h3>
           <p>Create your first systematic review project to get started.</p>
-          <Link to="/projects/new" className="btn-primary">
+          <Link to="/projects/new" className="btn-primary btn-lg">
             <Plus size={15} /> Create first project
           </Link>
         </div>

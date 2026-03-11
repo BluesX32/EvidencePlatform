@@ -833,6 +833,7 @@ export default function ThematicAnalysis() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
 
+  const [viewMode, setViewMode] = useState<"coding" | "map">("coding");
   const [selectedCodeId, setSelectedCodeId] = useState<string | null>(null);
   const [selectedThemeId, setSelectedThemeId] = useState<string | null>(null);
   const [showCreateTheme, setShowCreateTheme] = useState(false);
@@ -890,25 +891,49 @@ export default function ThematicAnalysis() {
         }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700 }}>Thematic Analysis</h1>
+          <h1 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 700 }}>Taxonomy</h1>
           <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-muted)" }}>
-            {themes.length} theme{themes.length !== 1 ? "s" : ""} ·{" "}
-            {allCodes.length} code{allCodes.length !== 1 ? "s" : ""} ·{" "}
+            {themes.length} categor{themes.length !== 1 ? "ies" : "y"} ·{" "}
+            {allCodes.length} concept{allCodes.length !== 1 ? "s" : ""} ·{" "}
             {allCodes.reduce((s, e) => s + e.code.evidence_count, 0)} evidence links
           </p>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button className="btn-ghost" onClick={() => openAddCode(undefined)}>
-            + New Code
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {/* View toggle */}
+          <div className="view-toggle">
+            <button
+              className={`view-toggle-btn${viewMode === "coding" ? " active" : ""}`}
+              onClick={() => setViewMode("coding")}
+            >
+              Coding
+            </button>
+            <button
+              className={`view-toggle-btn${viewMode === "map" ? " active" : ""}`}
+              onClick={() => setViewMode("map")}
+            >
+              Concept Map
+            </button>
+          </div>
+          <button className="btn-ghost btn-sm" onClick={() => openAddCode(undefined)}>
+            + Concept
           </button>
           <button className="btn-primary" onClick={() => setShowCreateTheme(true)}>
-            + New Theme
+            + Category
           </button>
         </div>
       </div>
 
-      {/* Body */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+      {/* Body — Concept Map view */}
+      {viewMode === "map" && (
+        <ConceptMapView
+          themes={themes}
+          ungroupedCodes={ungrouped_codes}
+          onSelectCode={(id) => { setSelectedCodeId(id); setViewMode("coding"); }}
+        />
+      )}
+
+      {/* Body — Coding workspace */}
+      <div style={{ display: viewMode === "coding" ? "flex" : "none", flex: 1, overflow: "hidden" }}>
         {/* Left: theme/code tree */}
         <div
           style={{
@@ -1015,6 +1040,97 @@ export default function ThematicAnalysis() {
           onClose={() => setShowCreateCode(false)}
         />
       )}
+    </div>
+  );
+}
+
+// ── Concept Map View ───────────────────────────────────────────────────────────
+
+function ConceptMapView({
+  themes,
+  ungroupedCodes,
+  onSelectCode,
+}: {
+  themes: ThemeItem[];
+  ungroupedCodes: ThemeCode[];
+  onSelectCode: (id: string) => void;
+}) {
+  return (
+    <div className="concept-map-scroll">
+      <div className="concept-map-grid">
+        {themes.map((theme) => (
+          <div
+            key={theme.id}
+            className="concept-map-category"
+            style={{ "--cat-color": theme.color ?? "#6366f1" } as React.CSSProperties}
+          >
+            <div className="concept-map-category-header">
+              <span className="concept-map-dot" style={{ background: theme.color ?? "#6366f1" }} />
+              <span className="concept-map-category-name">{theme.name}</span>
+              <span className="concept-map-badge">{theme.codes.length}</span>
+            </div>
+            {theme.description && (
+              <p className="concept-map-synthesis">{theme.description}</p>
+            )}
+            <div className="concept-map-concepts">
+              {theme.codes.map((code) => (
+                <button
+                  key={code.id}
+                  className="concept-map-concept"
+                  onClick={() => onSelectCode(code.id)}
+                  style={{ borderColor: code.color ?? theme.color ?? "#6366f1" }}
+                >
+                  <span
+                    className="concept-map-dot"
+                    style={{ background: code.color ?? theme.color ?? "#6366f1", width: 8, height: 8 }}
+                  />
+                  <span style={{ flex: 1, textAlign: "left" }}>{code.name}</span>
+                  {code.evidence_count > 0 && (
+                    <span className="concept-map-evidence-badge">{code.evidence_count}</span>
+                  )}
+                </button>
+              ))}
+              {theme.codes.length === 0 && (
+                <p className="concept-map-empty">No concepts yet — add one from the Coding view</p>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {ungroupedCodes.length > 0 && (
+          <div className="concept-map-category concept-map-ungrouped">
+            <div className="concept-map-category-header">
+              <span className="concept-map-category-name" style={{ color: "var(--text-muted)" }}>
+                Ungrouped concepts
+              </span>
+              <span className="concept-map-badge">{ungroupedCodes.length}</span>
+            </div>
+            <div className="concept-map-concepts">
+              {ungroupedCodes.map((code) => (
+                <button
+                  key={code.id}
+                  className="concept-map-concept"
+                  onClick={() => onSelectCode(code.id)}
+                >
+                  <span style={{ flex: 1, textAlign: "left" }}>{code.name}</span>
+                  {code.evidence_count > 0 && (
+                    <span className="concept-map-evidence-badge">{code.evidence_count}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {themes.length === 0 && ungroupedCodes.length === 0 && (
+          <div style={{ padding: "3rem", color: "var(--text-muted)", textAlign: "center" }}>
+            <p>No categories or concepts yet.</p>
+            <p style={{ fontSize: "0.85rem" }}>
+              Switch to Coding view to create a category, then add concepts to it.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

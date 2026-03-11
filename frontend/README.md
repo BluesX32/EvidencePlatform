@@ -1,73 +1,51 @@
-# React + TypeScript + Vite
+# EvidencePlatform — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript frontend for EvidencePlatform. Built with Vite and TanStack Query.
 
-Currently, two official plugins are available:
+## Pages
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+| Route | Page | Description |
+|-------|------|-------------|
+| `/` | ProjectsPage | Project list with creation entry point |
+| `/projects/new` | NewProjectPage | Project creation form |
+| `/projects/:id` | ProjectPage | Project overview: import, overlap, screening, extraction, labels, taxonomy |
+| `/projects/:id/import` | ImportPage | File upload (RIS, MEDLINE, BibTeX) and import history |
+| `/projects/:id/records` | RecordsPage | Paginated record browser |
+| `/projects/:id/overlap` | OverlapPage | Cross-source overlap summary, Euler diagram, pairwise matrix, cluster list |
+| `/projects/:id/labels` | LabelsPage | Label management and per-label article list |
+| `/projects/:id/extractions` | ExtractionLibrary | Extraction library with inline edit panel |
+| `/projects/:id/thematic` | ThematicAnalysis | Codebook themes, codes, evidence assignments |
+| `/screening/:projectId` | ScreeningWorkspace | Sequential and mixed-mode TA/FT/extraction workspace |
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev        # start dev server at http://localhost:5173
+npm run build      # production build
+npm run typecheck  # tsc --noEmit
+npx vitest run     # run Vitest unit tests
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The frontend expects the backend API at `http://localhost:8000`. This is proxied via the Vite config in development.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Key dependencies
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+| Package | Purpose |
+|---------|---------|
+| React 18 | UI framework |
+| TypeScript | Type safety |
+| Vite | Build tool and dev server |
+| TanStack Query | Server state, caching, and mutations |
+| React Router v6 | Client-side routing |
+| lucide-react | Icon set |
+| rapidfuzz (backend) | Fuzzy matching (backend only) |
+
+## Design system
+
+Global CSS tokens and component classes are in `src/index.css`. Key classes:
+
+- `.btn-primary`, `.btn-secondary`, `.btn-ghost`, `.btn-danger` — button variants
+- `.btn-lg`, `.btn-sm` — size modifiers
+- `.card`, `.page`, `.section-header` — layout primitives
+- `--brand`, `--surface`, `--border`, `--text`, `--text-muted` — CSS custom properties

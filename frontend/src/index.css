@@ -338,71 +338,117 @@ p  { margin: 0 0 .75rem; }
 button {
   display: inline-flex;
   align-items: center;
-  gap: .4rem;
-  padding: .45rem 1rem;
+  gap: .45rem;
+  padding: .5rem 1.1rem;
   border-radius: var(--radius);
   font-size: .875rem;
   font-weight: 500;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+  transition: background .15s, border-color .15s, color .15s, box-shadow .15s, transform .1s;
   font-family: inherit;
   text-decoration: none;
   line-height: 1.4;
+  white-space: nowrap;
+}
+button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
+/* Filled primary — gradient gives it depth without being flashy */
 .btn-primary {
-  background: var(--brand);
+  background: linear-gradient(160deg, #5b52f3 0%, var(--brand-dark) 100%);
   color: #fff;
   border-color: var(--brand);
-  box-shadow: 0 1px 2px rgba(79,70,229,.25);
+  box-shadow: 0 1px 3px rgba(79,70,229,.3);
+  font-weight: 600;
 }
-.btn-primary:hover  { background: var(--brand-dark); border-color: var(--brand-dark); text-decoration: none; }
-.btn-primary:active { transform: translateY(1px); }
-.btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-primary:hover {
+  background: linear-gradient(160deg, var(--brand) 0%, #3730a3 100%);
+  border-color: var(--brand-dark);
+  box-shadow: 0 4px 12px rgba(79,70,229,.35);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+.btn-primary:active  { transform: translateY(0); box-shadow: 0 1px 3px rgba(79,70,229,.3); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
 
+/* Outlined secondary */
 .btn-secondary {
   display: inline-flex;
   align-items: center;
-  gap: .4rem;
-  padding: .45rem 1rem;
+  gap: .45rem;
+  padding: .5rem 1.1rem;
   border-radius: var(--radius);
   font-size: .875rem;
   font-weight: 500;
   cursor: pointer;
   background: var(--surface);
   color: var(--brand);
-  border: 1px solid var(--brand-border);
+  border: 1.5px solid var(--brand-border);
   text-decoration: none;
-  transition: background .15s, box-shadow .15s;
+  transition: background .15s, border-color .15s, box-shadow .15s, transform .1s;
   font-family: inherit;
   line-height: 1.4;
+  white-space: nowrap;
 }
-.btn-secondary:hover { background: var(--brand-light); box-shadow: var(--shadow-sm); text-decoration: none; }
-.btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
+.btn-secondary:hover {
+  background: var(--brand-light);
+  border-color: var(--brand);
+  box-shadow: 0 2px 8px rgba(79,70,229,.15);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+.btn-secondary:active  { transform: translateY(0); }
+.btn-secondary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 
+/* Ghost — minimal, for in-context actions */
 .btn-ghost {
   background: transparent;
   color: var(--text-secondary);
   border-color: var(--border);
 }
-.btn-ghost:hover { background: var(--surface-2); text-decoration: none; }
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--border-strong); text-decoration: none; }
+.btn-ghost:active { background: #e2e8f0; }
 .btn-ghost:disabled { opacity: .5; cursor: not-allowed; }
 
+/* Danger — destructive actions */
 .btn-danger {
   background: var(--danger-light);
   color: var(--danger);
-  border-color: var(--danger-border);
+  border: 1.5px solid var(--danger-border);
+  font-weight: 500;
 }
-.btn-danger:hover { background: #fee2e2; }
+.btn-danger:hover {
+  background: #fecaca;
+  border-color: var(--danger);
+  box-shadow: 0 2px 6px rgba(220,38,38,.15);
+}
+.btn-danger:disabled { opacity: .5; cursor: not-allowed; }
 
+/* Size modifiers */
 .btn-sm {
-  padding: .3rem .7rem;
-  font-size: .8rem;
+  padding: .28rem .65rem;
+  font-size: .78rem;
+  gap: .3rem;
 }
+
+/* Large — primary page-level CTAs */
 .btn-lg {
-  padding: .65rem 1.5rem;
-  font-size: .95rem;
+  padding: .72rem 1.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  gap: .5rem;
+  border-radius: var(--radius-lg);
+}
+.btn-primary.btn-lg {
+  box-shadow: 0 4px 14px rgba(79,70,229,.35);
+  letter-spacing: .01em;
+}
+.btn-primary.btn-lg:hover {
+  box-shadow: 0 6px 20px rgba(79,70,229,.4);
+  transform: translateY(-2px);
 }
 
 /* ── Icon button ─────────────────────────────────────────────────────────── */
@@ -915,6 +961,144 @@ select {
 .shell-main > div:not(.page) {
   flex: 1;
 }
+
+/* ── View mode toggle (Taxonomy + Ontology pages) ───────────────────────── */
+.view-toggle {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 2px;
+}
+.view-toggle-btn {
+  padding: .3rem .85rem;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: .8rem;
+  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background .12s, color .12s;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.view-toggle-btn.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.view-toggle-btn:hover:not(.active) { color: var(--text); }
+
+/* ── Concept Map (Taxonomy page) ─────────────────────────────────────────── */
+.concept-map-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 1.5rem;
+  background: var(--bg);
+}
+.concept-map-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+.concept-map-category {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  min-width: 200px;
+  max-width: 300px;
+  flex: 1;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.concept-map-category-header {
+  padding: .65rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--cat-color, #6366f1) 8%, transparent);
+}
+.concept-map-category-name {
+  font-weight: 600;
+  font-size: .875rem;
+  flex: 1;
+  color: var(--text);
+}
+.concept-map-badge {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: var(--radius-full);
+  padding: 0 7px;
+  font-size: .72rem;
+  font-weight: 600;
+  line-height: 1.7;
+}
+.concept-map-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.concept-map-synthesis {
+  padding: .45rem 1rem;
+  font-size: .78rem;
+  color: var(--text-secondary);
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  font-style: italic;
+  background: var(--surface-2);
+}
+.concept-map-concepts {
+  padding: .65rem;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+.concept-map-concept {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .32rem .55rem;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  font-size: .815rem;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background .1s, border-color .1s, transform .1s;
+  font-family: inherit;
+  color: var(--text);
+}
+.concept-map-concept:hover {
+  background: var(--brand-light);
+  border-color: var(--brand-border);
+  transform: translateX(2px);
+}
+.concept-map-evidence-badge {
+  margin-left: auto;
+  background: var(--brand-light);
+  color: var(--brand);
+  border-radius: var(--radius-full);
+  padding: 0 6px;
+  font-size: .7rem;
+  font-weight: 600;
+  line-height: 1.7;
+  flex-shrink: 0;
+}
+.concept-map-empty {
+  color: var(--text-muted);
+  font-size: .78rem;
+  text-align: center;
+  padding: .4rem 0;
+  margin: 0;
+}
+.concept-map-ungrouped .concept-map-category-header { background: var(--surface-2); }
 
 /* ── Tree row hover actions ──────────────────────────────────────────────── */
 .tree-row-actions { opacity: 0; transition: opacity .15s; }

@@ -19,7 +19,7 @@
  *   • Namespace filter → show only nodes of selected namespace
  *   • Parent selector in editor → reparent node (cycle-safe)
  */
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, Suspense, lazy, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -30,6 +30,12 @@ import {
   type OntologyNamespace,
 } from "../api/client";
 import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
+
+// Lazy-load ForceGraph3D — react-force-graph is a named export, not a default
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ForceGraph3D = lazy(() =>
+  import("react-force-graph").then((m) => ({ default: (m as any).ForceGraph3D }))
+);
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -42,9 +48,11 @@ export default function OntologyPage() {
   const qc = useQueryClient();
 
   // UI state
+  const [viewMode, setViewMode] = useState<"tree" | "graph3d">("tree");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [nsFilter, setNsFilter] = useState<OntologyNamespace | "all">("all");
+  const graphContainerRef = useRef<HTMLDivElement>(null);
 
   // Editor form state (for selected node)
   const [editName, setEditName] = useState("");
@@ -246,6 +254,21 @@ export default function OntologyPage() {
     return nodes.filter((n) => !descendants.has(n.id));
   }, [nodes, selectedId]);
 
+  // ── 3D Graph data ─────────────────────────────────────────────────────────
+  const graphData = useMemo(() => {
+    const graphNodes = nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      namespace: n.namespace,
+      nodeColor: n.color ?? NS_COLORS[n.namespace] ?? "#9ca3af",
+      val: n.parent_id ? 1 : 2.5,
+    }));
+    const graphLinks = nodes
+      .filter((n) => n.parent_id !== null)
+      .map((n) => ({ source: n.parent_id!, target: n.id }));
+    return { nodes: graphNodes, links: graphLinks };
+  }, [nodes]);
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -275,8 +298,24 @@ export default function OntologyPage() {
         </Link>
         <span style={{ color: "#9ca3af" }}>›</span>
         <span style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>
-          Taxonomy / Ontology
+          Ontology
         </span>
+
+        {/* View toggle */}
+        <div className="view-toggle" style={{ marginLeft: 8 }}>
+          <button
+            className={`view-toggle-btn${viewMode === "tree" ? " active" : ""}`}
+            onClick={() => setViewMode("tree")}
+          >
+            Tree
+          </button>
+          <button
+            className={`view-toggle-btn${viewMode === "graph3d" ? " active" : ""}`}
+            onClick={() => setViewMode("graph3d")}
+          >
+            3D Graph
+          </button>
+        </div>
 
         {/* Namespace filter */}
         <select
@@ -358,8 +397,46 @@ export default function OntologyPage() {
         </div>
       )}
 
-      {/* ── Body ── */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+      {/* ── 3D Graph body ── */}
+      {viewMode === "graph3d" && (
+        <div ref={graphContainerRef} style={{ flex: 1, overflow: "hidden", background: "#0f172a", position: "relative" }}>
+          {nodes.length === 0 ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8", fontSize: "0.9rem" }}>
+              No nodes yet — add some in Tree view first.
+            </div>
+          ) : (
+            <Suspense fallback={
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
+                Loading 3D graph…
+              </div>
+            }>
+              <ForceGraph3D
+                graphData={graphData}
+                nodeLabel="name"
+                nodeColor={(n: { nodeColor: string }) => n.nodeColor}
+                nodeVal={(n: { val: number }) => n.val}
+                linkColor={() => "rgba(148,163,184,0.4)"}
+                linkWidth={1.5}
+                linkDirectionalArrowLength={4}
+                linkDirectionalArrowRelPos={1}
+                backgroundColor="#0f172a"
+                width={graphContainerRef.current?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth - 220 : 900)}
+                height={graphContainerRef.current?.clientHeight ?? (typeof window !== "undefined" ? window.innerHeight - 130 : 600)}
+                onNodeClick={(node: { id: string }) => {
+                  setViewMode("tree");
+                  setSelectedId(node.id);
+                }}
+              />
+            </Suspense>
+          )}
+          <div style={{ position: "absolute", bottom: 16, right: 20, color: "#475569", fontSize: "0.75rem", textAlign: "right", pointerEvents: "none" }}>
+            Drag to rotate · Scroll to zoom · Click a node to edit
+          </div>
+        </div>
+      )}
+
+      {/* ── Tree body ── */}
+      <div style={{ display: viewMode === "tree" ? "flex" : "none", flex: 1, overflow: "hidden" }}>
         {/* ── Tree panel ── */}
         <div
           style={{

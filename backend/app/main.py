@@ -2,8 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import annotations, auth, dedup_jobs, extractions, imports, labels, ontology, overlaps, projects, records, sources, strategies, thematic
+from app.routers import annotations, auth, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, thematic
 from app.routers import screening
+from app.routers import llm_screening
 
 app = FastAPI(title="EvidencePlatform API", version="0.1.0")
 
@@ -29,6 +30,8 @@ app.include_router(annotations.router)
 app.include_router(labels.router)
 app.include_router(ontology.router)
 app.include_router(thematic.router)
+app.include_router(fulltext.router)
+app.include_router(llm_screening.router)
 
 
 @app.get("/health")

@@ -9,10 +9,13 @@ Open-source infrastructure for systematic, reproducible evidence synthesis. Impo
 | Step | What happens |
 |------|-------------|
 | **Import** | Upload RIS, MEDLINE, or BibTeX files from PubMed, Embase, Cochrane, etc. |
-| **Overlap detection** | Automatically groups duplicate papers across sources using DOI, PMID, title, and author matching |
-| **Screening** | Title/abstract → full-text screening with inclusion/exclusion criteria and annotations |
-| **Extraction** | Capture structured evidence (populations, interventions, outcomes, study design) with a saturation counter |
-| **Labels & Taxonomy** | Tag articles with colour-coded labels; build a hierarchical concept taxonomy |
+| **Deduplication** | Automatically merges duplicate records within each source using a 3-tier Union-Find engine |
+| **Overlap detection** | Identifies cross-source duplicates with a configurable 5-tier strategy (exact DOI/PMID, title+year+author, fuzzy); manual linking and locking supported |
+| **Screening** | Title/abstract → full-text pipeline with configurable inclusion/exclusion criteria, inline annotations, back/forward navigation, and full-text link resolution (Unpaywall/DOI/PMC/PubMed/Scholar) |
+| **Extraction** | Structured evidence capture (populations, interventions, outcomes, study design) with a saturation counter that tracks diminishing returns |
+| **Thematic analysis** | Codebook-driven thematic mapping — create themes and codes, assign evidence excerpts, and review coded passages |
+| **Labels & Taxonomy** | Tag articles with colour-coded labels; build a hierarchical concept taxonomy for the project |
+| **PDF management** | Attach and store full-text PDFs per record or cluster; open in browser during the full-text screening stage |
 
 ---
 
@@ -179,7 +182,7 @@ source .venv/bin/activate
 python -m pytest tests/ -v --tb=short
 ```
 
-The test suite covers parsers, deduplication, overlap detection, screening workflow, and extraction logic (~480 tests).
+The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, and strategy history (485 backend tests + 23 Vitest frontend tests).
 
 ---
 
@@ -196,7 +199,7 @@ EvidencePlatform/
 │   │   ├── repositories/    # Database queries
 │   │   ├── parsers/         # RIS / MEDLINE / BibTeX parsers
 │   │   └── utils/           # Dedup, overlap detection, matching
-│   ├── migrations/          # Alembic migration versions
+│   ├── alembic/             # Alembic migrations (016 versions)
 │   └── tests/               # pytest test suite
 ├── frontend/
 │   ├── src/

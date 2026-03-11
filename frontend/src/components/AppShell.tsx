@@ -8,7 +8,7 @@ import { useParams, useLocation, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
-  FlaskConical, Tag, Network, Layers, LogOut, FolderOpen, ChevronLeft,
+  FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
 } from "lucide-react";
 import { projectsApi, clearToken } from "../api/client";
 
@@ -22,8 +22,9 @@ const PROJECT_NAV = [
   { path: "/screen",     icon: CheckSquare,      label: "Screening"   },
   { path: "/extractions",icon: FlaskConical,     label: "Extractions" },
   { path: "/labels",     icon: Tag,              label: "Labels"      },
-  { path: "/ontology",   icon: Network,          label: "Taxonomy"    },
-  { path: "/thematic",   icon: Layers,           label: "Thematic"    },
+  { path: "/thematic",        icon: GitBranch, label: "Taxonomy"      },
+  { path: "/ontology",        icon: Network,   label: "Ontology"      },
+  { path: "/llm-screening",   icon: Bot,       label: "LLM Screening" },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -34,7 +35,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
-    queryFn: () => projectsApi.getById(projectId!),
+    queryFn: () => projectsApi.get(projectId!).then(r => r.data),
     enabled: !!projectId,
     staleTime: 60_000,
   });
