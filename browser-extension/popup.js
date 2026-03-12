@@ -5,6 +5,7 @@ const cancelBtn = document.getElementById("cancel-btn");
 const apiBaseInput = document.getElementById("api-base");
 const saveBtn = document.getElementById("save-btn");
 const saveMsg = document.getElementById("save-msg");
+const reloadBtn = document.getElementById("reload-btn");
 
 // ── Load settings ─────────────────────────────────────────────────────────────
 
@@ -38,6 +39,16 @@ cancelBtn.addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "EP_CANCEL_WATCH" }, () => {
     setStatus("idle", "Ready", "Watch cancelled.");
     cancelBtn.style.display = "none";
+  });
+});
+
+// Reload the active EP tab so the content script is injected after install
+reloadBtn.addEventListener("click", () => {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+    const tab = tabs[0];
+    if (tab?.id) {
+      chrome.tabs.reload(tab.id, {}, () => window.close());
+    }
   });
 });
 

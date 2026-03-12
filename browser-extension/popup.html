@@ -127,10 +127,19 @@
     <span id="save-msg">Saved ✓</span>
   </div>
 
+  <div class="section">
+    <div class="label">First time?</div>
+    <p style="font-size:11px;color:#64748b;margin-bottom:6px">
+      If the EP tab was open before you installed the extension, reload it
+      so the content script is injected.
+    </p>
+    <button class="btn btn-secondary" id="reload-btn">Reload EvidencePlatform tab</button>
+  </div>
+
   <div class="section" style="font-size:11px;color:#64748b">
-    Open EvidencePlatform, navigate to a paper's full-text review stage,
-    and click <strong>Open &amp; Capture</strong> to start a watch session.
-    Then complete SSO on the publisher site and download the PDF.
+    Navigate to a paper's full-text review stage, click
+    <strong>Find PDF → ⬇ Capture</strong> to start a session,
+    then complete SSO on the publisher site and download the PDF.
   </div>
 
   <script src="popup.js"></script>

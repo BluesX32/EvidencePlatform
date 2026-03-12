@@ -9,6 +9,7 @@
     "cookies",
     "storage",
     "tabs",
+    "scripting",
     "notifications"
   ],
   "host_permissions": ["<all_urls>"],
