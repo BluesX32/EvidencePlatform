@@ -11,9 +11,9 @@
  *   Links open normally in new tabs so the user can download and upload
  *   manually via the existing PDFUploadPanel.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getToken } from "../api/client";
+import { api, getToken, fulltextApi } from "../api/client";
 import type { ScreeningNextItem } from "../api/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ interface FulltextLink {
   is_pdf: boolean;
 }
 
-type CaptureStatus = "idle" | "watching" | "success" | "error";
+type CaptureStatus = "idle" | "watching" | "success" | "error" | "manual";
 
 // The EP backend base URL — must match what the extension will call.
 const API_BASE = "http://localhost:8000";
@@ -115,7 +115,9 @@ export function PDFFetchButton({
   const [extensionReady, setExtensionReady] = useState(false);
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus>("idle");
   const [captureError, setCaptureError] = useState("");
+  const [manualFilename, setManualFilename] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Extension detection & event bridge ──────────────────────────────────────
 
@@ -137,6 +139,14 @@ export function PDFFetchButton({
         case "EP_CAPTURE_ERROR":
           setCaptureStatus("error");
           setCaptureError(e.data.error || "Unknown error");
+          break;
+
+        // Auto-capture failed after download completed — offer one-click manual upload
+        case "EP_CAPTURE_FAILED_MANUAL":
+          setCaptureStatus("manual");
+          setManualFilename(e.data.filename || "document.pdf");
+          setCaptureError(e.data.error || "");
+          setExpanded(true);
           break;
 
         default:
@@ -213,11 +223,62 @@ export function PDFFetchButton({
   const resetCapture = () => {
     setCaptureStatus("idle");
     setCaptureError("");
+    setManualFilename("");
+  };
+
+  // Called when user picks the downloaded file for manual upload
+  const handleManualFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await fulltextApi.upload(projectId, file, {
+        record_id: item.record_id ?? undefined,
+        cluster_id: item.cluster_id ?? undefined,
+      });
+      setCaptureStatus("success");
+      qc.invalidateQueries({ queryKey: ["fulltext-pdf", projectId, itemKey] });
+    } catch {
+      setCaptureStatus("error");
+      setCaptureError("Upload failed. Check the file and try again.");
+    }
   };
 
   // ── No identifiers — nothing to show ────────────────────────────────────────
 
   if (!item.doi && !item.pmid && !item.pmcid && !item.title) return null;
+
+  // ── Manual upload prompt (auto-capture failed, file already on disk) ─────────
+
+  if (captureStatus === "manual") {
+    return (
+      <div style={{ ...card, background: "#fffbeb", border: "1px solid #fcd34d" }}>
+        <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#92400e" }}>
+          PDF downloaded — attach it to this record
+        </div>
+        <div style={{ fontSize: "0.75rem", color: "#78350f" }}>
+          Auto-capture failed ({captureError}). Your file was saved as{" "}
+          <strong>{manualFilename}</strong>. Select it below to attach it.
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <label
+            style={{ ...chipBase, background: "#4f46e5", color: "#fff", cursor: "pointer" }}
+          >
+            ↑ Upload: {manualFilename}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              style={{ display: "none" }}
+              onChange={handleManualFile}
+            />
+          </label>
+          <button onClick={resetCapture} style={{ ...cancelBtn }}>
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ── Success state ────────────────────────────────────────────────────────────
 
