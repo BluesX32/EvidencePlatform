@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
-  Users, Scale,
+  Users, Scale, HelpCircle,
 } from "lucide-react";
 import { projectsApi, clearToken } from "../api/client";
 
@@ -110,8 +110,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
         )}
 
-        {/* Sign-out */}
+        {/* Footer actions */}
         <div className="sidebar-footer">
+          <button
+            className="sidebar-signout"
+            onClick={() => {
+              localStorage.removeItem("ep_tour_done");
+              window.location.href = "/projects";
+            }}
+            title="Restart the onboarding tour"
+          >
+            <HelpCircle size={14} />
+            Tutorial
+          </button>
           <button className="sidebar-signout" onClick={handleSignOut}>
             <LogOut size={14} />
             Sign out
