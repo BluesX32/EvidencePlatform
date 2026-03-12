@@ -1087,6 +1087,14 @@ export interface FulltextPdfMeta {
   file_size: number;
   content_type: string;
   uploaded_at: string;
+  drawing_data?: Record<string, DrawingStroke[]> | null;
+}
+
+export interface DrawingStroke {
+  color: string;
+  width: number;
+  points: [number, number][];
+  tool?: "pen" | "eraser";
 }
 
 export const fulltextApi = {
@@ -1118,6 +1126,16 @@ export const fulltextApi = {
 
   delete: (projectId: string, pdfId: string) =>
     api.delete(`/projects/${projectId}/fulltext/${pdfId}`),
+
+  /** Save freehand drawing strokes for a PDF. */
+  saveDrawing: (
+    projectId: string,
+    pdfId: string,
+    drawing_data: Record<string, DrawingStroke[]>
+  ) =>
+    api.patch<FulltextPdfMeta>(`/projects/${projectId}/fulltext/${pdfId}/drawing`, {
+      drawing_data,
+    }),
 };
 
 // ── Team collaboration ────────────────────────────────────────────────────────

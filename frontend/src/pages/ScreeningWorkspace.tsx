@@ -957,17 +957,42 @@ function ExcludeControls({
   disabled: boolean;
 }) {
   const [custom, setCustom] = useState("");
+  const [savedReasons, setSavedReasons] = useLocalStorage<string[]>("ep_custom_exclude_reasons", []);
 
   function submit(reason?: string) {
     onExclude(reason);
     setCustom("");
   }
 
+  function submitCustom() {
+    const trimmed = custom.trim();
+    // If non-empty and not already in built-in or saved list, persist it
+    if (trimmed && !EXCLUDE_REASONS.some((r) => r.code === trimmed) && !savedReasons.includes(trimmed)) {
+      setSavedReasons([...savedReasons, trimmed]);
+    }
+    submit(trimmed || undefined);
+  }
+
+  function removesaved(reason: string) {
+    setSavedReasons(savedReasons.filter((r) => r !== reason));
+  }
+
+  const reasonChipStyle: React.CSSProperties = {
+    padding: "0.18rem 0.6rem",
+    borderRadius: "1rem",
+    border: "1px solid #dadce0",
+    background: "#f8f9fa",
+    color: "#5f6368",
+    fontSize: "0.74rem",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+
   return (
     <div>
       <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
         <button
-          onClick={() => submit(custom.trim() || undefined)}
+          onClick={submitCustom}
           disabled={disabled}
           style={{
             padding: "0.5rem 1.1rem",
@@ -985,22 +1010,15 @@ function ExcludeControls({
           ✕ Exclude
         </button>
         <span style={{ fontSize: "0.71rem", color: "#9aa0a6", flexShrink: 0 }}>reason:</span>
+
+        {/* Built-in reasons */}
         {EXCLUDE_REASONS.map((r) => (
           <button
             key={r.code}
             onClick={() => submit(r.code)}
             disabled={disabled}
             title={`Exclude — ${r.label}`}
-            style={{
-              padding: "0.18rem 0.6rem",
-              borderRadius: "1rem",
-              border: "1px solid #dadce0",
-              background: "#f8f9fa",
-              color: "#5f6368",
-              fontSize: "0.74rem",
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            }}
+            style={reasonChipStyle}
             onMouseEnter={(e) => {
               const b = e.currentTarget as HTMLButtonElement;
               b.style.background = "#fce8e6";
@@ -1017,14 +1035,40 @@ function ExcludeControls({
             {r.label}
           </button>
         ))}
+
+        {/* Custom saved reasons */}
+        {savedReasons.map((r) => (
+          <span key={r} style={{ display: "inline-flex", alignItems: "center", gap: "0.1rem" }}>
+            <button
+              onClick={() => submit(r)}
+              disabled={disabled}
+              title={`Exclude — ${r}`}
+              style={{ ...reasonChipStyle, borderColor: "#c5d9f7", background: "#e8f0fe", color: "#1a73e8", borderRadius: "1rem 0 0 1rem", paddingRight: "0.4rem" }}
+              onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.background = "#fce8e6"; b.style.borderColor = "#c5221f"; b.style.color = "#c5221f"; }}
+              onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.background = "#e8f0fe"; b.style.borderColor = "#c5d9f7"; b.style.color = "#1a73e8"; }}
+            >
+              {r}
+            </button>
+            <button
+              onClick={() => removesaved(r)}
+              title="Remove this reason"
+              style={{ padding: "0.18rem 0.35rem", borderRadius: "0 1rem 1rem 0", border: "1px solid #c5d9f7", borderLeft: "none", background: "#e8f0fe", color: "#9aa0a6", fontSize: "0.7rem", cursor: "pointer", lineHeight: 1 }}
+              onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "#c5221f"; b.style.background = "#fce8e6"; b.style.borderColor = "#f28b82"; }}
+              onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.color = "#9aa0a6"; b.style.background = "#e8f0fe"; b.style.borderColor = "#c5d9f7"; }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
       </div>
+
       <input
         type="text"
-        placeholder="or type a custom reason then click Exclude above…"
+        placeholder="Type a custom reason and press Enter to save + exclude…"
         value={custom}
         onChange={(e) => setCustom(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !disabled) submit(custom.trim() || undefined);
+          if (e.key === "Enter" && !disabled) submitCustom();
         }}
         disabled={disabled}
         style={{
@@ -1033,7 +1077,7 @@ function ExcludeControls({
           padding: "0.22rem 0.55rem",
           border: "1px solid #e0e0e0",
           borderRadius: "0.25rem",
-          width: 280,
+          width: 300,
           color: "#3c4043",
           background: "#fafafa",
         }}

@@ -18,6 +18,7 @@ dist/
 # Node
 node_modules/
 frontend/dist/
+backend/uploads
 
 # Alembic
 backend/migrations/versions/__pycache__/

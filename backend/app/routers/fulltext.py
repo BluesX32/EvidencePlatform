@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
@@ -54,6 +55,7 @@ class FulltextPdfMeta(BaseModel):
     file_size: int
     content_type: str
     uploaded_at: str
+    drawing_data: Optional[Any] = None
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
@@ -87,6 +89,7 @@ def _to_meta(row: FulltextPdf) -> FulltextPdfMeta:
         file_size=row.file_size,
         content_type=row.content_type,
         uploaded_at=row.uploaded_at.isoformat(),
+        drawing_data=row.drawing_data,
     )
 
 
@@ -245,3 +248,28 @@ async def delete_pdf(
     await db.delete(row)
     await db.commit()
     return {}
+
+
+# ── Save drawing ──────────────────────────────────────────────────────────────
+
+
+class DrawingSaveBody(BaseModel):
+    drawing_data: Any
+
+
+@router.patch("/projects/{project_id}/fulltext/{pdf_id}/drawing", response_model=FulltextPdfMeta)
+async def save_drawing(
+    project_id: str,
+    pdf_id: str,
+    body: DrawingSaveBody,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FulltextPdfMeta:
+    await _require_project(project_id, db, user)
+    row = await db.get(FulltextPdf, uuid.UUID(pdf_id))
+    if not row or str(row.project_id) != project_id:
+        raise HTTPException(404, "PDF not found")
+    row.drawing_data = body.drawing_data
+    await db.commit()
+    await db.refresh(row)
+    return _to_meta(row)
