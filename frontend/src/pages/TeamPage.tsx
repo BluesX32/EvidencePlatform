@@ -7,7 +7,6 @@ import {
   Trash2,
   Copy,
   Check,
-  ChevronDown,
   ArrowLeft,
   BarChart2,
   Shield,
@@ -242,7 +241,7 @@ export default function TeamPage() {
                     )}
                   </td>
                   <td style={{ padding: "10px 16px", textAlign: "right" }}>
-                    {!m.is_owner && (isAdmin || m.user_id === myRole?.role) && (
+                    {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
                       <button
                         onClick={() => removeMut.mutate(m.user_id)}
                         style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", padding: 4 }}

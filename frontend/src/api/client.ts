@@ -726,7 +726,7 @@ export const screeningApi = {
 
   nextItem: (
     projectId: string,
-    params: { source_id: string; mode: string; strategy?: string; bucket?: string }
+    params: { source_id: string; mode: string; strategy?: string; bucket?: string; randomize?: boolean }
   ) =>
     api.get<ScreeningNextItem>(`/projects/${projectId}/screening/next`, { params }),
 
@@ -1144,6 +1144,7 @@ export interface ProjectInvitation {
 export interface MyRole {
   role: "owner" | "admin" | "reviewer" | "observer";
   is_owner: boolean;
+  user_id: string;
 }
 
 export const teamApi = {

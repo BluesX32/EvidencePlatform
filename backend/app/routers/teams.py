@@ -94,11 +94,11 @@ async def get_my_role(
     """Return current user's role in this project."""
     project = await _get_project_or_404(db, project_id)
     if project.created_by == current_user.id:
-        return {"role": "owner", "is_owner": True}
+        return {"role": "owner", "is_owner": True, "user_id": str(current_user.id)}
     member = await TeamRepo.get_member(db, project_id, current_user.id)
     if member is None:
         raise HTTPException(status_code=403, detail="Not a project member")
-    return {"role": member.role, "is_owner": False}
+    return {"role": member.role, "is_owner": False, "user_id": str(current_user.id)}
 
 
 @router.get("/members")
