@@ -1114,6 +1114,7 @@ function ScreeningPanel({
   autoAdvanceExtract = false,
   levels = DEFAULT_LEVELS,
   onDecision,
+  randomize = false,
 }: {
   projectId: string;
   bucket: string;
@@ -1122,6 +1123,7 @@ function ScreeningPanel({
   autoAdvanceExtract?: boolean;
   levels?: string[];
   onDecision?: (entry: TimingEntry) => void;
+  randomize?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
@@ -1160,7 +1162,7 @@ function ScreeningPanel({
     setForm(EMPTY_EXTRACTION);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode, strategy, bucket });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode, strategy, bucket, randomize: randomize || undefined });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -1586,6 +1588,7 @@ function MixedPanel({
   autoAdvanceExtract,
   levels,
   onDecision,
+  randomize = false,
 }: {
   projectId: string;
   source: string;
@@ -1593,6 +1596,7 @@ function MixedPanel({
   autoAdvanceExtract: boolean;
   levels: string[];
   onDecision?: (entry: TimingEntry) => void;
+  randomize?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
@@ -1620,7 +1624,7 @@ function MixedPanel({
     setForm(EMPTY_EXTRACTION);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed" });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed", randomize: randomize || undefined });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -1844,12 +1848,14 @@ function ExtractionPanel({
   strategy,
   levels,
   onDecision,
+  randomize = false,
 }: {
   projectId: string;
   source: string;
   strategy: string;
   levels: string[];
   onDecision?: (entry: TimingEntry) => void;
+  randomize?: boolean;
 }) {
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1871,7 +1877,7 @@ function ExtractionPanel({
     setFetchError(null);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending" });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending", randomize: randomize || undefined });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -2335,6 +2341,7 @@ export default function ScreeningWorkspace() {
 
   const [autoAdvanceFT, setAutoAdvanceFT] = useLocalStorage("autoAdvanceFT", true);
   const [autoAdvanceExtract, setAutoAdvanceExtract] = useLocalStorage("autoAdvanceExtract", true);
+  const [randomize, setRandomize] = useLocalStorage("screeningRandomize", false);
 
   const { entries: timingEntries, addEntry: addTimingEntry, clearLog: clearTimingLog } =
     useTimingLog(projectId ?? "");
@@ -2385,7 +2392,7 @@ export default function ScreeningWorkspace() {
               Mixed mode
             </span>
           )}
-          <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto", flexWrap: "wrap", alignItems: "center" }}>
             {showMixed && (
               <AutoToggle checked={autoAdvanceFT} onChange={setAutoAdvanceFT} label="Auto FT"
                 tooltip="When you include a paper at TA stage, automatically advance to full-text review for the same paper." />
@@ -2394,6 +2401,12 @@ export default function ScreeningWorkspace() {
               <AutoToggle checked={autoAdvanceExtract} onChange={setAutoAdvanceExtract} label="Auto Extract"
                 tooltip="When you include a paper at full-text stage, automatically open the data extraction form." />
             )}
+            <AutoToggle
+              checked={randomize}
+              onChange={setRandomize}
+              label="⇄ Shuffle"
+              tooltip="Randomize paper order — useful for minimizing position bias or blinded screening."
+            />
           </div>
         </div>
 
@@ -2436,11 +2449,11 @@ export default function ScreeningWorkspace() {
           )}
 
           {showMixed ? (
-            <MixedPanel projectId={projectId} source={source} autoAdvanceFT={autoAdvanceFT} autoAdvanceExtract={autoAdvanceExtract} levels={projectLevels} onDecision={addTimingEntry} />
+            <MixedPanel projectId={projectId} source={source} autoAdvanceFT={autoAdvanceFT} autoAdvanceExtract={autoAdvanceExtract} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
           ) : showExtractPanel ? (
-            <ExtractionPanel projectId={projectId} source={source} strategy={strategy} levels={projectLevels} onDecision={addTimingEntry} />
+            <ExtractionPanel projectId={projectId} source={source} strategy={strategy} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
           ) : (
-            <ScreeningPanel projectId={projectId} bucket={bucket} source={source} strategy={strategy} autoAdvanceExtract={isFTBucket ? autoAdvanceExtract : false} levels={projectLevels} onDecision={addTimingEntry} />
+            <ScreeningPanel projectId={projectId} bucket={bucket} source={source} strategy={strategy} autoAdvanceExtract={isFTBucket ? autoAdvanceExtract : false} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
           )}
         </main>
 

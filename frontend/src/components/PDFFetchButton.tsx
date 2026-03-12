@@ -145,10 +145,19 @@ export function PDFFetchButton({
     };
 
     window.addEventListener("message", handleMsg);
-    // Probe: content script responds with EP_EXTENSION_READY if present
-    window.postMessage({ type: "EP_PROBE" }, "*");
 
-    return () => window.removeEventListener("message", handleMsg);
+    // Probe the extension. The content script replies with EP_EXTENSION_READY.
+    // We retry a few times to handle the race where the content script hasn't
+    // finished loading when this effect first runs.
+    window.postMessage({ type: "EP_PROBE" }, "*");
+    const t1 = setTimeout(() => window.postMessage({ type: "EP_PROBE" }, "*"), 400);
+    const t2 = setTimeout(() => window.postMessage({ type: "EP_PROBE" }, "*"), 1200);
+
+    return () => {
+      window.removeEventListener("message", handleMsg);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [projectId, itemKey, qc]);
 
   // ── Candidate link fetch ─────────────────────────────────────────────────────
