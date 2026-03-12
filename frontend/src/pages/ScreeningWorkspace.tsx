@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, ontologyApi, fulltextApi } from "../api/client";
 import type { ExtractionJson, Snippet, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
+import { PDFFetchButton } from "../components/PDFFetchButton";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -663,89 +664,6 @@ function PaperCard({
         <div style={{ marginTop: 10 }}>
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// FTAccessLinks — full-text access shortcuts shown during FT review stage
-// ---------------------------------------------------------------------------
-
-function FTAccessLinks({ item }: { item: ScreeningNextItem }) {
-  const { doi, pmid, pmcid, title } = item;
-  if (!doi && !pmid && !pmcid) return null;
-
-  const linkStyle: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "0.2rem",
-    padding: "0.22rem 0.65rem",
-    borderRadius: "1rem",
-    border: "1px solid #c7d7fd",
-    background: "#fff",
-    color: "#1558d6",
-    fontSize: "0.78rem",
-    fontWeight: 600,
-    textDecoration: "none",
-    cursor: "pointer",
-  };
-
-  return (
-    <div
-      style={{
-        background: "#eef3ff",
-        border: "1px solid #c7d7fd",
-        borderRadius: "0.375rem",
-        padding: "0.55rem 1rem",
-        display: "flex",
-        gap: "0.4rem",
-        alignItems: "center",
-        flexWrap: "wrap",
-      }}
-    >
-      <span
-        style={{
-          color: "#3b4a7a",
-          fontWeight: 600,
-          fontSize: "0.73rem",
-          textTransform: "uppercase",
-          letterSpacing: "0.07em",
-          marginRight: "0.25rem",
-          flexShrink: 0,
-        }}
-      >
-        Full text:
-      </span>
-      {doi && (
-        <a href={`https://doi.org/${doi}`} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-          ↗ DOI
-        </a>
-      )}
-      {doi && (
-        <a href={`https://unpaywall.org/${doi}`} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-          ↗ Unpaywall
-        </a>
-      )}
-      {pmid && (
-        <a href={`https://pubmed.ncbi.nlm.nih.gov/${pmid}`} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-          ↗ PubMed
-        </a>
-      )}
-      {pmcid && (
-        <a href={`https://www.ncbi.nlm.nih.gov/pmc/articles/${pmcid}`} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-          ↗ PMC
-        </a>
-      )}
-      {title && (
-        <a
-          href={`https://scholar.google.com/scholar?q=${encodeURIComponent(title)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={linkStyle}
-        >
-          ↗ Scholar
-        </a>
       )}
     </div>
   );
@@ -1444,7 +1362,7 @@ function ScreeningPanel({
 
       <PaperCard item={displayItem} projectId={projectId} showAnnotations />
 
-      {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <FTAccessLinks item={displayItem} />}
+      {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <PDFFetchButton projectId={projectId} item={displayItem} />}
       {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <PDFUploadPanel projectId={projectId} item={displayItem} />}
 
       {!isBrowseBucket && !isBrowsingHistory && (
@@ -1888,7 +1806,7 @@ function MixedPanel({
 
       {showFT && phase !== "extraction" && (
         <>
-          <FTAccessLinks item={item} />
+          <PDFFetchButton projectId={projectId} item={item} />
           <PDFUploadPanel projectId={projectId} item={item} />
           <DecisionBar stage="FT" includeLabel={autoAdvanceExtract ? "✓ Include — extract data" : "✓ Include"}
             onInclude={() => handleFT("include")} onExclude={(reason) => handleFT("exclude", reason)} onSkip={fetchNext}

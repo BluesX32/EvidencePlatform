@@ -3,10 +3,11 @@
 One PDF may be stored per article (record or cluster). Files are saved to
 the local filesystem under uploads/{project_id}/.
 
-POST /projects/{id}/fulltext           → FulltextPdfMeta   (upload)
-GET  /projects/{id}/fulltext           → FulltextPdfMeta | null  (metadata by item key)
+POST /projects/{id}/fulltext               → FulltextPdfMeta   (upload)
+GET  /projects/{id}/fulltext               → FulltextPdfMeta | null  (metadata by item key)
+GET  /projects/{id}/fulltext/links         → list[FulltextLink]  (candidate URLs)
 GET  /projects/{id}/fulltext/{pdf_id}/download → FileResponse
-DELETE /projects/{id}/fulltext/{pdf_id} → {}
+DELETE /projects/{id}/fulltext/{pdf_id}   → {}
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from app.dependencies import get_current_user, require_project_role, REVIEWER_RO
 from app.models.fulltext_pdf import FulltextPdf
 from app.models.project import Project
 from app.models.user import User
+from app.services.fulltext_link_service import FulltextLink, resolve_links
 
 router = APIRouter(tags=["fulltext"])
 
@@ -154,6 +156,29 @@ async def upload_pdf(
     await db.commit()
     await db.refresh(row)
     return _to_meta(row)
+
+
+# ── Candidate links ───────────────────────────────────────────────────────────
+
+
+@router.get("/projects/{project_id}/fulltext/links", response_model=list[FulltextLink])
+async def get_fulltext_links(
+    project_id: str,
+    doi: Optional[str] = None,
+    pmid: Optional[str] = None,
+    pmcid: Optional[str] = None,
+    title: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[FulltextLink]:
+    """Return a ranked list of candidate full-text URLs for a paper.
+
+    The caller supplies whatever identifiers it has (doi/pmid/pmcid/title) and
+    the service queries Unpaywall plus constructs static links for PMC, the
+    publisher DOI resolver, PubMed, and Google Scholar.
+    """
+    await _require_project(project_id, db, user)
+    return await resolve_links(doi=doi, pmid=pmid, pmcid=pmcid, title=title)
 
 
 # ── Get metadata ──────────────────────────────────────────────────────────────

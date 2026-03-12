@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EvidencePlatform PDF Capture</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: #1e293b;
+      background: #f8fafc;
+    }
+    header {
+      background: #4f46e5;
+      color: #fff;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    header h1 { font-size: 13px; font-weight: 600; }
+    header .badge {
+      margin-left: auto;
+      font-size: 10px;
+      background: rgba(255,255,255,0.25);
+      border-radius: 99px;
+      padding: 2px 7px;
+    }
+    .section {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .section:last-child { border-bottom: none; }
+    .label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #64748b;
+      margin-bottom: 6px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.green { background: #22c55e; }
+    .dot.yellow { background: #eab308; animation: pulse 1s infinite; }
+    .dot.red { background: #ef4444; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    #watch-status { font-weight: 500; }
+    .meta { color: #64748b; font-size: 11px; margin-top: 3px; }
+    .btn {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 5px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .btn-primary { background: #4f46e5; color: #fff; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn:hover { opacity: 0.88; }
+    a { color: #4f46e5; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .setting-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    input {
+      width: 100%;
+      padding: 5px 8px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    input:focus { outline: 2px solid #4f46e5; border-color: transparent; }
+    #save-msg { color: #22c55e; font-size: 11px; display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="16" y1="13" x2="8" y2="13"/>
+      <line x1="16" y1="17" x2="8" y2="17"/>
+      <polyline points="10 9 9 9 8 9"/>
+    </svg>
+    <h1>EvidencePlatform</h1>
+    <span class="badge">PDF Capture</span>
+  </header>
+
+  <div class="section">
+    <div class="label">Status</div>
+    <div class="status-row">
+      <div class="dot" id="status-dot"></div>
+      <span id="watch-status">Checking…</span>
+    </div>
+    <div class="meta" id="watch-meta"></div>
+    <button class="btn btn-secondary" id="cancel-btn" style="display:none">
+      Cancel watch
+    </button>
+  </div>
+
+  <div class="section">
+    <div class="label">Settings</div>
+    <div class="setting-row">
+      <label for="api-base">Backend URL</label>
+      <input type="text" id="api-base" placeholder="http://localhost:8000" />
+    </div>
+    <button class="btn btn-primary" id="save-btn" style="margin-top:8px">Save</button>
+    <span id="save-msg">Saved ✓</span>
+  </div>
+
+  <div class="section" style="font-size:11px;color:#64748b">
+    Open EvidencePlatform, navigate to a paper's full-text review stage,
+    and click <strong>Open &amp; Capture</strong> to start a watch session.
+    Then complete SSO on the publisher site and download the PDF.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
