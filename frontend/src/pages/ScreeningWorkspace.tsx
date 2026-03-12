@@ -364,9 +364,12 @@ function AnnotationsPanel({
   item: ScreeningNextItem;
 }) {
   const queryClient = useQueryClient();
+  // "highlight" = triggered by text selection; "note" = triggered by button
+  const [formMode, setFormMode] = useState<null | "highlight" | "note">(null);
   const [selectedText, setSelectedText] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
-  const [showForm, setShowForm] = useState(false);
+  // Prevents the mouseup from the Save/Cancel click re-opening the form
+  const ignoreNextMouseup = useRef(false);
 
   const itemKey = item.record_id ?? item.cluster_id;
 
@@ -392,18 +395,43 @@ function AnnotationsPanel({
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["annotations", itemKey] });
-      setSelectedText("");
-      setCommentDraft("");
-      setShowForm(false);
+      closeForm();
     },
   });
 
-  function handleMouseUp() {
-    const sel = window.getSelection()?.toString().trim();
-    if (sel && sel.length > 0) {
-      setSelectedText(sel);
-      setShowForm(true);
-    }
+  // Document-level mouseup captures text selected anywhere in the paper card.
+  // We only act when the form is not already open, and skip the mouseup
+  // triggered by clicking Save/Cancel (guarded by ignoreNextMouseup).
+  useEffect(() => {
+    const handler = () => {
+      if (ignoreNextMouseup.current) {
+        ignoreNextMouseup.current = false;
+        return;
+      }
+      if (formMode !== null) return;
+      const sel = window.getSelection()?.toString().trim();
+      if (sel && sel.length > 2) {
+        setSelectedText(sel);
+        setFormMode("highlight");
+      }
+    };
+    document.addEventListener("mouseup", handler);
+    return () => document.removeEventListener("mouseup", handler);
+  }, [formMode]);
+
+  function closeForm() {
+    ignoreNextMouseup.current = true;
+    setFormMode(null);
+    setSelectedText("");
+    setCommentDraft("");
+    window.getSelection()?.removeAllRanges();
+  }
+
+  function openNoteForm() {
+    ignoreNextMouseup.current = true;
+    setSelectedText("");
+    setCommentDraft("");
+    setFormMode("note");
   }
 
   function deleteAnnotation(annId: string) {
@@ -411,6 +439,9 @@ function AnnotationsPanel({
       queryClient.invalidateQueries({ queryKey: ["annotations", itemKey] });
     });
   }
+
+  // Can save if there is at least one non-empty field
+  const canSave = (selectedText.trim().length > 0 || commentDraft.trim().length > 0) && !createMutation.isPending;
 
   return (
     <div style={{ marginTop: "0.75rem" }}>
@@ -426,17 +457,23 @@ function AnnotationsPanel({
             position: "relative",
           }}
         >
-          <blockquote
-            style={{
-              margin: "0 0 0.25rem",
-              fontStyle: "italic",
-              color: "#555",
-              fontSize: "0.8rem",
-            }}
-          >
-            "{a.selected_text}"
-          </blockquote>
-          <span>{a.comment}</span>
+          {/* Highlighted quote — only shown when text was selected */}
+          {a.selected_text && (
+            <blockquote
+              style={{
+                margin: "0 0 0.25rem",
+                fontStyle: "italic",
+                color: "#555",
+                fontSize: "0.8rem",
+                background: "#fff9c4",
+                padding: "0.15rem 0.35rem",
+                borderRadius: "0.2rem",
+              }}
+            >
+              "{a.selected_text}"
+            </blockquote>
+          )}
+          {a.comment && <span style={{ whiteSpace: "pre-wrap" }}>{a.comment}</span>}
           <button
             onClick={() => deleteAnnotation(a.id)}
             style={{
@@ -457,7 +494,7 @@ function AnnotationsPanel({
         </div>
       ))}
 
-      {showForm && (
+      {formMode !== null && (
         <div
           style={{
             background: "#f8f9fa",
@@ -467,16 +504,22 @@ function AnnotationsPanel({
             marginTop: "0.25rem",
           }}
         >
-          <div
-            style={{
-              fontStyle: "italic",
-              fontSize: "0.8rem",
-              color: "#555",
-              marginBottom: "0.4rem",
-            }}
-          >
-            "{selectedText}"
-          </div>
+          {/* Show the captured highlight when in highlight mode */}
+          {formMode === "highlight" && selectedText && (
+            <div
+              style={{
+                fontStyle: "italic",
+                fontSize: "0.8rem",
+                color: "#555",
+                marginBottom: "0.4rem",
+                background: "#fff9c4",
+                padding: "0.2rem 0.4rem",
+                borderRadius: "0.2rem",
+              }}
+            >
+              "{selectedText}"
+            </div>
+          )}
           <textarea
             value={commentDraft}
             onChange={(e) => setCommentDraft(e.target.value)}
@@ -491,24 +534,21 @@ function AnnotationsPanel({
               padding: "0.3rem 0.4rem",
               resize: "vertical",
             }}
-            placeholder="Your comment…"
+            placeholder={formMode === "highlight" ? "Comment on this highlight (optional)…" : "Your note…"}
             autoFocus
           />
           <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.4rem" }}>
             <button
               className="btn-primary"
               onClick={() => createMutation.mutate()}
-              disabled={!commentDraft.trim() || createMutation.isPending}
+              disabled={!canSave}
               style={{ fontSize: "0.82rem" }}
             >
               Save
             </button>
             <button
               className="btn-secondary"
-              onClick={() => {
-                setShowForm(false);
-                setSelectedText("");
-              }}
+              onClick={closeForm}
               style={{ fontSize: "0.82rem" }}
             >
               Cancel
@@ -517,17 +557,25 @@ function AnnotationsPanel({
         </div>
       )}
 
-      {!showForm && (
-        <div
-          style={{
-            fontSize: "0.75rem",
-            color: "#bbb",
-            marginTop: "0.2rem",
-            userSelect: "none",
-          }}
-          onMouseUp={handleMouseUp}
-        >
-          Select text above to annotate
+      {formMode === null && (
+        <div style={{ display: "flex", alignItems: "center", gap: "0.45rem", marginTop: "0.3rem" }}>
+          <span style={{ fontSize: "0.74rem", color: "#bbb", userSelect: "none" }}>
+            Select text to highlight •
+          </span>
+          <button
+            onClick={openNoteForm}
+            style={{
+              fontSize: "0.74rem",
+              color: "#1a73e8",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              fontWeight: 500,
+            }}
+          >
+            ➕ add note
+          </button>
         </div>
       )}
     </div>

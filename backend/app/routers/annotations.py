@@ -86,8 +86,10 @@ async def create_annotation(
         raise HTTPException(
             status_code=422, detail="Provide record_id OR cluster_id, not both"
         )
-    if not body.selected_text.strip():
-        raise HTTPException(status_code=422, detail="selected_text must not be empty")
+    if not body.selected_text.strip() and not body.comment.strip():
+        raise HTTPException(
+            status_code=422, detail="At least one of selected_text or comment must not be empty"
+        )
 
     ann = Annotation(
         project_id=project_id,
