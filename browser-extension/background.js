@@ -1,32 +1,45 @@
 /**
  * EvidencePlatform PDF Capture — Background Service Worker (Manifest V3)
  *
- * MV3 service workers are ephemeral: they can be suspended (and their
- * in-memory state lost) at any time.  We persist the watch state in
- * chrome.storage.session, which survives service-worker restarts within
- * the same browser session.
+ * Design: tag downloads on onCreated (no interruption), then re-fetch on
+ * onChanged(state=complete) using item.finalUrl — the URL after all publisher
+ * redirect chains. This is far more reliable than re-fetching item.url, which
+ * is the redirect initiator and often returns an auth HTML page instead of
+ * the actual PDF bytes.
+ *
+ * The browser download always completes normally. If auto-capture fails, we
+ * notify the EP tab so the user can attach the already-downloaded file.
  */
 
-// ── Watch state helpers (chrome.storage.session) ──────────────────────────────
-
-const WATCH_KEY = "ep_watch_state";
+// ── Storage helpers ───────────────────────────────────────────────────────────
 
 async function getWatchState() {
-  const data = await chrome.storage.session.get(WATCH_KEY);
-  const state = data[WATCH_KEY];
-  if (!state || Date.now() > state.expiresAt) {
-    await chrome.storage.session.remove(WATCH_KEY);
+  const { ep_watch } = await chrome.storage.session.get("ep_watch");
+  if (!ep_watch || Date.now() > ep_watch.expiresAt) {
+    await chrome.storage.session.remove("ep_watch");
     return null;
   }
-  return state;
+  return ep_watch;
 }
 
 async function saveWatchState(state) {
-  await chrome.storage.session.set({ [WATCH_KEY]: state });
+  await chrome.storage.session.set({ ep_watch: state });
 }
 
 async function clearWatchState() {
-  await chrome.storage.session.remove(WATCH_KEY);
+  await chrome.storage.session.remove("ep_watch");
+}
+
+// Per-download association — survives service-worker restarts
+async function savePendingDownload(downloadId, state) {
+  await chrome.storage.session.set({ [`ep_dl_${downloadId}`]: state });
+}
+
+async function consumePendingDownload(downloadId) {
+  const key = `ep_dl_${downloadId}`;
+  const data = await chrome.storage.session.get(key);
+  await chrome.storage.session.remove(key);
+  return data[key] || null;
 }
 
 // ── On first install: inject content script into already-open tabs ─────────────
@@ -78,57 +91,76 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ── Download interception ─────────────────────────────────────────────────────
+// ── Tag downloads on creation ─────────────────────────────────────────────────
+// We tag the download and let Chrome proceed uninterrupted. We intentionally
+// do NOT try to fetch the PDF here — item.url is the redirect initiator,
+// not the final PDF delivery URL.
 
 chrome.downloads.onCreated.addListener(async (item) => {
   const state = await getWatchState();
   if (!state) return;
+  if (!_couldBeDocument(item)) return;
 
-  const looksLikePdf =
-    (item.mime && item.mime.includes("pdf")) ||
-    (item.filename && item.filename.toLowerCase().endsWith(".pdf")) ||
-    (item.url && item.url.toLowerCase().includes(".pdf"));
-  if (!looksLikePdf) return;
+  await savePendingDownload(item.id, state);
+  await clearWatchState(); // one download per watch session
+  console.log(`[EP] Tagged download ${item.id}`);
+});
 
-  // Clear immediately — one capture per watch
-  await clearWatchState();
+// ── Capture on completion ─────────────────────────────────────────────────────
+// After Chrome finishes downloading, re-fetch using item.finalUrl — the URL
+// after all redirects — which delivers the actual PDF bytes.
 
-  // Pause the browser download while we handle it
-  try { await chrome.downloads.pause(item.id); } catch (_) {}
+chrome.downloads.onChanged.addListener(async (delta) => {
+  if (!delta.state || delta.state.current !== "complete") return;
+
+  const state = await consumePendingDownload(delta.id);
+  if (!state) return;
+
+  const [item] = await chrome.downloads.search({ id: delta.id });
+  if (!item) return;
+
+  const fetchUrl = item.finalUrl || item.url;
+  const filename = _basename(item.filename || fetchUrl || "document.pdf");
 
   try {
-    const pdfBlob = await _fetchPdf(item.url, item.referrer);
-    const filename = _basename(item.filename || item.url || "document.pdf");
-    await _uploadToEP(state, pdfBlob, filename);
-
-    // Cancel the now-redundant browser download
-    chrome.downloads.cancel(item.id).catch(() => {});
-    chrome.downloads.erase({ id: item.id }).catch(() => {});
-
+    const blob = await _fetchWithCookies(fetchUrl, item.referrer || item.url);
+    await _uploadToEP(state, blob, filename);
     _notifyTab(state.sourceTabId, { type: "EP_CAPTURE_SUCCESS" });
     _showNotification("PDF Captured", "The PDF has been saved to EvidencePlatform.");
   } catch (err) {
-    console.error("[EP] Capture failed:", err.message);
-    chrome.downloads.resume(item.id).catch(() => {}); // give the user their file back
-    _notifyTab(state.sourceTabId, { type: "EP_CAPTURE_ERROR", error: err.message });
+    console.error("[EP] Auto-capture failed:", err.message);
+    // Send filename so the EP page can show a one-click manual upload prompt
+    _notifyTab(state.sourceTabId, {
+      type: "EP_CAPTURE_FAILED_MANUAL",
+      filename,
+      error: err.message,
+    });
     _showNotification(
-      "PDF Capture Failed",
-      `Auto-capture failed: ${err.message}. Please upload the file manually.`
+      "Return to EvidencePlatform",
+      `Auto-capture failed. Click 'Upload: ${filename}' in the EP tab.`
     );
   }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Accept any download that could plausibly be a document. */
+function _couldBeDocument(item) {
+  const mime = (item.mime || "").toLowerCase();
+  if (mime.startsWith("image/")) return false;
+  if (mime.startsWith("video/")) return false;
+  if (mime.startsWith("audio/")) return false;
+  if (mime === "text/html" || mime === "text/css" || mime === "application/javascript") return false;
+  return true; // includes application/pdf, application/octet-stream, unknown
+}
+
 /**
- * Re-fetch the PDF at `url` using the user's cookies for that domain.
- *
- * Extension service workers with host_permissions bypass CORS, so even
- * cross-origin fetches succeed regardless of the server's CORS policy.
- * chrome.cookies.getAll reads the *user's* cookie jar (not the extension's),
- * so institutional SSO session cookies are included.
+ * Fetch `url` using the user's cookies.
+ * Extension service workers with <all_urls> host_permissions bypass CORS.
+ * chrome.cookies.getAll reads the user's profile cookie jar, so SSO
+ * session cookies are included automatically.
  */
-async function _fetchPdf(url, referrer) {
+async function _fetchWithCookies(url, referrer) {
   const cookies = await chrome.cookies.getAll({ url });
   const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 
