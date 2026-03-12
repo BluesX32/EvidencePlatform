@@ -5,6 +5,7 @@ import { screeningApi, projectsApi, annotationsApi, ontologyApi, fulltextApi } f
 import type { ExtractionJson, Snippet, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
+import { PDFViewerPanel } from "../components/PDFViewerPanel";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -773,7 +774,8 @@ function PDFUploadPanel({
 
       {meta ? (
         <>
-          <button onClick={handleOpen} style={pillStyle}>
+          <button onClick={handleOpen} style={{ ...pillStyle, maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block" }}
+            title={meta.original_filename}>
             {String.fromCodePoint(0x1F4C4)} {meta.original_filename}
           </button>
           <span style={{ fontSize: "0.72rem", color: "#64748b" }}>
@@ -1143,6 +1145,8 @@ function ScreeningPanel({
   const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
 
+  const [pdfOpen, setPdfOpen] = useState(false);
+
   const itemStartedAt = useRef<number>(Date.now());
 
   const bucketToMode: Record<string, string> = {
@@ -1324,8 +1328,16 @@ function ScreeningPanel({
             ))}
           </div>
         </div>
-        <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: "0.9rem" }}>
-          ✓ FT Included — Extract Data
+        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.9rem" }}>
+          <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.07em" }}>
+            ✓ FT Included — Extract Data
+          </div>
+          <button
+            onClick={() => setPdfOpen((v) => !v)}
+            style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+          >
+            📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+          </button>
         </div>
         <ExtractionForm
           projectId={projectId} form={form} setForm={setForm} levels={levels}
@@ -1336,6 +1348,7 @@ function ScreeningPanel({
           }}
           onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
         />
+        {pdfOpen && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
       </div>
     );
   }
@@ -1366,6 +1379,17 @@ function ScreeningPanel({
 
       {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <PDFFetchButton projectId={projectId} item={displayItem} />}
       {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <PDFUploadPanel projectId={projectId} item={displayItem} />}
+      {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && (
+        <div style={{ marginTop: "0.35rem" }}>
+          <button
+            onClick={() => setPdfOpen((v) => !v)}
+            style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+          >
+            📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+          </button>
+        </div>
+      )}
+      {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
 
       {!isBrowseBucket && !isBrowsingHistory && (
         <DecisionBar
@@ -1614,6 +1638,8 @@ function MixedPanel({
   const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
 
+  const [pdfOpen, setPdfOpen] = useState(false);
+
   const itemStartedAt = useRef<number>(Date.now());
 
   const fetchNext = useCallback(async () => {
@@ -1812,6 +1838,14 @@ function MixedPanel({
         <>
           <PDFFetchButton projectId={projectId} item={item} />
           <PDFUploadPanel projectId={projectId} item={item} />
+          <div style={{ marginTop: "0.35rem", marginBottom: "0.1rem" }}>
+            <button
+              onClick={() => setPdfOpen((v) => !v)}
+              style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+            >
+              📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+            </button>
+          </div>
           <DecisionBar stage="FT" includeLabel={autoAdvanceExtract ? "✓ Include — extract data" : "✓ Include"}
             onInclude={() => handleFT("include")} onExclude={(reason) => handleFT("exclude", reason)} onSkip={fetchNext}
             isPending={decideMutation.isPending} isLoading={loading} isError={decideMutation.isError} />
@@ -1820,8 +1854,16 @@ function MixedPanel({
 
       {phase === "extraction" && (
         <div style={{ marginTop: "0.5rem" }}>
-          <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8f3f97", marginBottom: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Extract Data
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.75rem" }}>
+            <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Extract Data
+            </div>
+            <button
+              onClick={() => setPdfOpen((v) => !v)}
+              style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+            >
+              📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+            </button>
           </div>
           <ExtractionForm
             projectId={projectId} form={form} setForm={setForm} levels={levels}
@@ -1834,6 +1876,8 @@ function MixedPanel({
           />
         </div>
       )}
+
+      {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
     </div>
   );
 }
@@ -1869,6 +1913,8 @@ function ExtractionPanel({
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
+
+  const [pdfOpen, setPdfOpen] = useState(false);
 
   const itemStartedAt = useRef<number>(Date.now());
 
@@ -2003,6 +2049,14 @@ function ExtractionPanel({
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       </div>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: "0.5rem" }}>
+        <button
+          onClick={() => setPdfOpen((v) => !v)}
+          style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+        >
+          📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+        </button>
+      </div>
       <ExtractionForm
         projectId={projectId} form={form} setForm={setForm} levels={levels}
         onSave={() => {
@@ -2012,6 +2066,7 @@ function ExtractionPanel({
         }}
         onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
       />
+      {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
     </div>
   );
 }

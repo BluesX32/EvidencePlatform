@@ -263,7 +263,7 @@ export function PDFFetchButton({
           <label
             style={{ ...chipBase, background: "#4f46e5", color: "#fff", cursor: "pointer" }}
           >
-            ↑ Upload: {manualFilename}
+            ↑ {manualFilename.length > 28 ? manualFilename.slice(0, 25) + "…" : manualFilename}
             <input
               ref={fileInputRef}
               type="file"
