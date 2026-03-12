@@ -60,6 +60,8 @@ A full **PRISMA-aligned** title-abstract (TA) and full-text (FT) screening pipel
 - **Browse buckets** — reviewers can jump to any stage bucket (TA-included, FT-included, extracted) without losing progress
 - **Back/forward navigation** — full review history within a session
 - **Full-text link resolution** — automatic links to Unpaywall, PMC, PubMed, and Google Scholar per record
+- **Custom exclusion reasons** — reviewers can type and save their own exclusion reasons as persistent chips alongside the built-in reason set; custom reasons are stored locally and reusable across sessions
+- **Anchored annotations** — select any passage in the metadata or notes pane, add a comment, and it is stored as a structured annotation linked to the record; annotations are shown in a collapsible drawer during review
 
 ### 5. LLM-Assisted Screening
 AI-powered screening runs that process the entire corpus against project inclusion/exclusion criteria. Supports **15+ large language models** across providers:
@@ -104,8 +106,16 @@ A code-based thematic synthesis module for building and managing an evolving cod
 ### 9. Label System
 Project-scoped labels with custom names and colors. Labels can be assigned to any article at any screening stage. A dedicated **Labels page** shows per-label article counts, filtered article lists, and progress stats — useful for tracking sub-populations, study designs, or methodological categories across a review.
 
-### 10. PDF Management
-Full-text PDFs can be uploaded per record or per cluster and stored server-side. PDFs are surfaced inline during the FT screening stage and accessible as a direct download or browser preview. One PDF per record/cluster is enforced; uploads are associated with the uploading reviewer.
+### 10. PDF Viewer and Annotation
+Full-text PDFs are uploaded per record or per cluster and stored server-side (one per record/cluster). A floating, draggable PDF viewer opens inline during the FT screening stage and provides:
+
+- **Page navigation** — previous/next page with current-page indicator
+- **Freehand drawing** — pen tool with configurable color and stroke width; strokes are saved to the database and persist across sessions
+- **Eraser tool** — remove individual drawn strokes; clear-page button wipes all drawings on the current page
+- **Text selection and anchored notes** — select any text passage in select mode; a popup appears to add a note; the selection is stored as a normalised highlight (fractional `{x,y,w,h}` coordinates) and rendered as a persistent yellow overlay on the PDF; clicking a highlight opens the associated note in the notes drawer; clicking a note jumps to its page
+- **Notes drawer** — collapsible panel at the bottom of the viewer listing all annotations for the document with page badges, quoted text previews, and delete controls
+- **Drag to reposition / drag left edge to resize** — the panel floats at a configurable position within the viewport
+- **Download** — direct download of the uploaded PDF from the viewer header
 
 ---
 
@@ -121,7 +131,7 @@ Full-text PDFs can be uploaded per record or per cluster and stored server-side.
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (16 versioned migrations) |
+| Schema migrations | Alembic (20 versioned migrations) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |
 
