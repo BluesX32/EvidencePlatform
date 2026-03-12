@@ -1367,7 +1367,7 @@ function ScreeningPanel({
       <div>
         {nav}
         <ProgressBar remaining={item.remaining} />
-        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
+        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "0.6rem", background: "#fff" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
           <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
             {item.year && <span>{item.year}</span>}
@@ -1376,15 +1376,32 @@ function ScreeningPanel({
             ))}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.9rem" }}>
+
+        {/* PDF access in extraction stage */}
+        <PDFFetchButton projectId={projectId} item={item} />
+        <PDFUploadPanel projectId={projectId} item={item} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginTop: "0.6rem", marginBottom: "0.9rem" }}>
           <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.07em" }}>
             ✓ FT Included — Extract Data
           </div>
           <button
             onClick={() => setPdfOpen((v) => !v)}
-            style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+            style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
           >
             📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+          </button>
+          {/* Escape hatch: change FT decision to exclude without losing the item */}
+          <button
+            onClick={() => {
+              if (!window.confirm("Exclude this paper at Full-Text stage and return to screening?")) return;
+              decide("exclude");
+              setExtractPhase(false);
+            }}
+            disabled={decideMutation.isPending}
+            style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer" }}
+          >
+            ✕ Exclude at FT
           </button>
         </div>
         <ExtractionForm
@@ -1902,15 +1919,29 @@ function MixedPanel({
 
       {phase === "extraction" && (
         <div style={{ marginTop: "0.5rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.75rem" }}>
+          {/* PDF access in extraction stage */}
+          <PDFFetchButton projectId={projectId} item={item!} />
+          <PDFUploadPanel projectId={projectId} item={item!} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginTop: "0.5rem", marginBottom: "0.75rem" }}>
             <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.05em" }}>
               Extract Data
             </div>
             <button
               onClick={() => setPdfOpen((v) => !v)}
-              style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+              style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
             >
               📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+            </button>
+            <button
+              onClick={() => {
+                if (!window.confirm("Exclude this paper at Full-Text stage and return to screening?")) return;
+                handleFT("exclude");
+              }}
+              disabled={decideMutation.isPending}
+              style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer" }}
+            >
+              ✕ Exclude at FT
             </button>
           </div>
           <ExtractionForm
@@ -2038,6 +2069,12 @@ function ExtractionPanel({
     },
   });
 
+  const ftExcludeMutation = useMutation({
+    mutationFn: (body: { record_id?: string | null; cluster_id?: string | null; reason_code?: string }) =>
+      screeningApi.submitDecision(projectId, { ...body, stage: "FT", decision: "exclude", strategy }),
+    onSuccess: () => fetchNext(),
+  });
+
   const nav = historyLen > 0 ? (
     <HistoryNav historyIdx={historyIdx} historyTotal={historyLen} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
   ) : null;
@@ -2097,12 +2134,26 @@ function ExtractionPanel({
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: "0.5rem" }}>
+      {/* PDF access in extraction stage */}
+      <PDFFetchButton projectId={projectId} item={item} />
+      <PDFUploadPanel projectId={projectId} item={item} />
+
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.4rem", marginBottom: "0.5rem" }}>
         <button
           onClick={() => setPdfOpen((v) => !v)}
           style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: pdfOpen ? "#4f46e5" : "#fff", color: pdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
         >
           📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+        </button>
+        <button
+          onClick={() => {
+            if (!window.confirm("Exclude this paper at Full-Text stage and move to the next?")) return;
+            ftExcludeMutation.mutate({ record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null });
+          }}
+          disabled={ftExcludeMutation.isPending}
+          style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer" }}
+        >
+          ✕ Exclude at FT
         </button>
       </div>
       <ExtractionForm
