@@ -54,19 +54,26 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
   });
 
   const [noteDraft, setNoteDraft] = useState("");
+  // Pass comment as a variable to mutate() — avoids stale closure over noteDraft
   const createMut = useMutation({
-    mutationFn: () =>
+    mutationFn: (comment: string) =>
       annotationsApi.create(projectId, {
         record_id: item.record_id ?? null,
         cluster_id: item.cluster_id ?? null,
-        selected_text: "",       // free-form PDF note has no highlight
-        comment: noteDraft.trim(),
+        selected_text: "",
+        comment,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["annotations", itemKey] });
       setNoteDraft("");
     },
   });
+
+  function submitNote() {
+    const comment = noteDraft.trim();
+    if (!comment) return;
+    createMut.mutate(comment);
+  }
 
   function deleteAnnotation(annId: string) {
     annotationsApi.delete(projectId, annId).then(() =>
@@ -354,15 +361,20 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                       outline: "none",
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && noteDraft.trim()) {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault();
-                        createMut.mutate();
+                        submitNote();
                       }
                     }}
                   />
+                  {createMut.isError && (
+                    <div style={{ fontSize: "0.73rem", color: "#991b1b", marginTop: "0.2rem" }}>
+                      Failed to save — {(createMut.error as any)?.response?.data?.detail ?? "please try again."}
+                    </div>
+                  )}
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.3rem" }}>
                     <button
-                      onClick={() => createMut.mutate()}
+                      onClick={submitNote}
                       disabled={!noteDraft.trim() || createMut.isPending}
                       style={{
                         fontSize: "0.75rem",
