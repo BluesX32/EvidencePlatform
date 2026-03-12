@@ -540,6 +540,13 @@ export interface ScreeningNextItem {
   pmcid?: string | null;
 }
 
+export interface HighlightRect {
+  x: number; // normalised 0-1 fraction of page width
+  y: number; // normalised 0-1 fraction of page height
+  w: number;
+  h: number;
+}
+
 export interface Annotation {
   id: string;
   project_id: string;
@@ -547,6 +554,8 @@ export interface Annotation {
   cluster_id: string | null;
   selected_text: string;
   comment: string;
+  page_num: number | null;
+  highlight_rects: HighlightRect[] | null;
   reviewer_id: string | null;
   created_at: string;
 }
@@ -561,6 +570,8 @@ export const annotationsApi = {
       cluster_id?: string | null;
       selected_text: string;
       comment: string;
+      page_num?: number | null;
+      highlight_rects?: HighlightRect[] | null;
     }
   ) => api.post<Annotation>(`/projects/${projectId}/annotations`, body),
   delete: (projectId: string, annId: string) =>

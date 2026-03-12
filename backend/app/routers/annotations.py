@@ -46,6 +46,8 @@ def _ann_out(a: Annotation) -> Dict[str, Any]:
         "cluster_id": str(a.cluster_id) if a.cluster_id else None,
         "selected_text": a.selected_text,
         "comment": a.comment,
+        "page_num": a.page_num,
+        "highlight_rects": a.highlight_rects,
         "reviewer_id": str(a.reviewer_id) if a.reviewer_id else None,
         "created_at": a.created_at,
     }
@@ -61,6 +63,8 @@ class AnnotationCreate(BaseModel):
     cluster_id: Optional[uuid.UUID] = None
     selected_text: str
     comment: str = ""
+    page_num: Optional[int] = None
+    highlight_rects: Optional[Any] = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +101,8 @@ async def create_annotation(
         cluster_id=body.cluster_id,
         selected_text=body.selected_text,
         comment=body.comment,
+        page_num=body.page_num,
+        highlight_rects=body.highlight_rects,
         reviewer_id=current_user.id,
     )
     db.add(ann)

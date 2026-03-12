@@ -9,9 +9,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as pdfjsLib from "pdfjs-dist";
-import { ChevronLeft, ChevronRight, Pen, Eraser, Trash2, StickyNote } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pen, Eraser, Trash2, StickyNote, MousePointer2 } from "lucide-react";
 import { fulltextApi, annotationsApi } from "../api/client";
-import type { FulltextPdfMeta, ScreeningNextItem, Annotation, DrawingStroke } from "../api/client";
+import type { FulltextPdfMeta, ScreeningNextItem, Annotation, DrawingStroke, HighlightRect } from "../api/client";
 
 // Point pdfjs at its worker (Vite resolves ?url imports)
 // @ts-ignore
@@ -24,7 +24,15 @@ interface Props {
   onClose: () => void;
 }
 
-type Tool = "pen" | "eraser";
+type Tool = "pen" | "eraser" | "select";
+
+interface SelectionInfo {
+  text: string;
+  rects: HighlightRect[];
+  pageNum: number;
+  popupX: number;
+  popupY: number;
+}
 
 const INIT_WIDTH = 520;
 const INIT_HEIGHT_OFFSET = 56;
@@ -98,12 +106,15 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       annotationsApi.create(projectId, {
         record_id: item.record_id ?? null,
         cluster_id: item.cluster_id ?? null,
-        selected_text: "",
+        selected_text: pendingSelection?.text ?? "",
         comment,
+        page_num: pendingSelection?.pageNum ?? null,
+        highlight_rects: pendingSelection?.rects ?? null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["annotations", itemKey] });
       setNoteDraft("");
+      setPendingSelection(null);
     },
   });
 
@@ -184,9 +195,17 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
   // ── Drawing state ────────────────────────────────────────────────────────────
   const [drawingData, setDrawingData] = useState<DrawingData>({});
-  const [tool, setTool] = useState<Tool>("pen");
+  const [tool, setTool] = useState<Tool>("select");
   const [penColor, setPenColor] = useState("#e53e3e");
   const [penWidth, setPenWidth] = useState(3);
+
+  // ── Text selection / annotation state ────────────────────────────────────────
+  const textLayerRef = useRef<HTMLDivElement>(null);
+  const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
+  const vpRef = useRef<any>(null);
+  const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [pendingSelection, setPendingSelection] = useState<SelectionInfo | null>(null);
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
 
   // Load drawing data from server when meta arrives
   useEffect(() => {
@@ -248,6 +267,12 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
           drawCanvas.width = vp.width;
           drawCanvas.height = vp.height;
 
+          // sync highlight canvas size
+          if (highlightCanvasRef.current) {
+            highlightCanvasRef.current.width = vp.width;
+            highlightCanvasRef.current.height = vp.height;
+          }
+
           const ctx = pdfCanvas.getContext("2d")!;
           pdfPage
             .render({ canvasContext: ctx, viewport: vp })
@@ -255,6 +280,32 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
               setPageRendering(false);
               const dCtx = drawCanvas.getContext("2d")!;
               renderStrokesToCtx(dCtx, strokes);
+              // Render text layer for selection
+              vpRef.current = vp;
+              if (textLayerRef.current) {
+                textLayerRef.current.innerHTML = "";
+                textLayerRef.current.style.width = `${vp.width}px`;
+                textLayerRef.current.style.height = `${vp.height}px`;
+                textLayerRef.current.style.transform = "";
+                pdfPage.getTextContent().then((tc: any) => {
+                  if (!textLayerRef.current) return;
+                  pdfjsLib.renderTextLayer({
+                    textContentSource: tc,
+                    container: textLayerRef.current,
+                    viewport: vp,
+                  });
+                  // Scale text layer to match displayed canvas (which is CSS-shrunk via maxWidth:100%)
+                  requestAnimationFrame(() => {
+                    if (!textLayerRef.current || !pdfCanvasRef.current) return;
+                    const r = pdfCanvasRef.current.getBoundingClientRect();
+                    if (r.width > 0 && vp.width > 0) {
+                      const s = r.width / vp.width;
+                      textLayerRef.current.style.transform = `scale(${s})`;
+                      textLayerRef.current.style.transformOrigin = "top left";
+                    }
+                  });
+                });
+              }
             })
             .catch(() => setPageRendering(false));
         })
@@ -277,6 +328,80 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     const strokes = drawingData[String(pageNum)] ?? [];
     renderStrokesToCtx(dCtx, strokes);
   }, [drawingData, pageNum]);
+
+  // ── Highlight rendering ───────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = highlightCanvasRef.current;
+    if (!canvas || canvas.width === 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const pageAnns = annotations.filter(
+      (a) => a.page_num === pageNum && a.highlight_rects?.length
+    );
+    for (const ann of pageAnns) {
+      ctx.save();
+      ctx.fillStyle =
+        ann.id === activeNoteId
+          ? "rgba(79, 70, 229, 0.28)"
+          : "rgba(255, 213, 0, 0.38)";
+      for (const r of ann.highlight_rects!) {
+        ctx.fillRect(
+          r.x * canvas.width,
+          r.y * canvas.height,
+          r.w * canvas.width,
+          r.h * canvas.height
+        );
+      }
+      ctx.restore();
+    }
+  }, [annotations, pageNum, activeNoteId]);
+
+  // ── Text selection handlers ───────────────────────────────────────────────────
+  function onTextLayerMouseUp(e: React.MouseEvent<HTMLDivElement>) {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+      setSelectionInfo(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    const range = sel.getRangeAt(0);
+    const clientRects = Array.from(range.getClientRects());
+    const canvasEl = pdfCanvasRef.current;
+    if (!canvasEl) return;
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const rects: HighlightRect[] = clientRects
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({
+        x: (r.left - canvasRect.left) / canvasRect.width,
+        y: (r.top - canvasRect.top) / canvasRect.height,
+        w: r.width / canvasRect.width,
+        h: r.height / canvasRect.height,
+      }));
+    setSelectionInfo({ text, rects, pageNum, popupX: e.clientX, popupY: e.clientY });
+  }
+
+  function onTextLayerClick(e: React.MouseEvent<HTMLDivElement>) {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return; // text was selected, not a bare click
+    const canvasEl = pdfCanvasRef.current;
+    if (!canvasEl) return;
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const cx = (e.clientX - canvasRect.left) / canvasRect.width;
+    const cy = (e.clientY - canvasRect.top) / canvasRect.height;
+    const pageAnns = annotations.filter(
+      (a) => a.page_num === pageNum && a.highlight_rects?.length
+    );
+    for (const ann of pageAnns) {
+      for (const r of ann.highlight_rects!) {
+        if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
+          setActiveNoteId(ann.id);
+          setNotesOpen(true);
+          return;
+        }
+      }
+    }
+  }
 
   // ── Mouse drawing events ──────────────────────────────────────────────────────
   function getCanvasXY(e: React.MouseEvent<HTMLCanvasElement>): [number, number] {
@@ -353,6 +478,20 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     });
     scheduleSave();
   }
+
+  // Rescale text layer when panel is resized by dragging
+  useEffect(() => {
+    if (!textLayerRef.current || !pdfCanvasRef.current || !vpRef.current) return;
+    requestAnimationFrame(() => {
+      if (!textLayerRef.current || !pdfCanvasRef.current || !vpRef.current) return;
+      const r = pdfCanvasRef.current.getBoundingClientRect();
+      if (r.width > 0 && vpRef.current.width > 0) {
+        const s = r.width / vpRef.current.width;
+        textLayerRef.current.style.transform = `scale(${s})`;
+        textLayerRef.current.style.transformOrigin = "top left";
+      }
+    });
+  }, [width]);
 
   // ── Panel position & size ────────────────────────────────────────────────────
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -513,6 +652,18 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
   return (
     <div ref={panelRef} style={panelStyle} aria-label="PDF viewer panel">
+      {/* Text layer CSS — injected once per panel */}
+      <style>{`
+        .ep-textlayer span, .ep-textlayer br {
+          color: transparent !important;
+          position: absolute;
+          white-space: pre;
+          transform-origin: 0% 0%;
+          cursor: text;
+          line-height: 1;
+        }
+        .ep-textlayer ::selection { background: rgba(79,70,229,0.25) !important; color: transparent !important; }
+      `}</style>
       {!minimized && <div style={dragHandle} onMouseDown={onResizeMouseDown} />}
 
       {/* Header */}
@@ -581,7 +732,14 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
               <div style={{ width: "1px", height: "20px", background: "#e2e8f0", margin: "0 0.15rem" }} />
 
-              {/* ── Drawing tools ── */}
+              {/* ── Tools ── */}
+              <button
+                style={{ ...toolBtn(tool === "select"), display: "flex", alignItems: "center", gap: "0.25rem" }}
+                onClick={() => setTool("select")}
+                title="Select text to add annotation notes"
+              >
+                <MousePointer2 size={13} /> Select
+              </button>
               <button
                 style={{ ...toolBtn(tool === "pen"), display: "flex", alignItems: "center", gap: "0.25rem" }}
                 onClick={() => setTool("pen")}
@@ -662,26 +820,74 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
             {meta && (
               <div style={{ position: "relative", display: "inline-block", minWidth: "100%" }}>
                 {/* PDF canvas */}
+                <canvas ref={pdfCanvasRef} style={{ display: "block", maxWidth: "100%" }} />
+                {/* Highlight canvas — yellow annotation highlights */}
                 <canvas
-                  ref={pdfCanvasRef}
-                  style={{ display: "block", maxWidth: "100%" }}
+                  ref={highlightCanvasRef}
+                  style={{ display: "block", position: "absolute", top: 0, left: 0, maxWidth: "100%", pointerEvents: "none" }}
                 />
-                {/* Drawing canvas — overlaid, transparent background */}
+                {/* Text layer — invisible selectable text for annotation */}
+                <div
+                  ref={textLayerRef}
+                  className="ep-textlayer"
+                  style={{
+                    position: "absolute", top: 0, left: 0, overflow: "hidden",
+                    pointerEvents: tool === "select" ? "auto" : "none",
+                    userSelect: tool === "select" ? "text" : "none",
+                  }}
+                  onMouseUp={tool === "select" ? onTextLayerMouseUp : undefined}
+                  onClick={tool === "select" ? onTextLayerClick : undefined}
+                />
+                {/* Drawing canvas */}
                 <canvas
                   ref={drawCanvasRef}
                   style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    cursor: tool === "eraser" ? "crosshair" : "crosshair",
-                    maxWidth: "100%",
-                    touchAction: "none",
+                    position: "absolute", top: 0, left: 0, maxWidth: "100%", touchAction: "none",
+                    cursor: "crosshair",
+                    pointerEvents: tool === "select" ? "none" : "auto",
                   }}
                   onMouseDown={onDrawMouseDown}
                   onMouseMove={onDrawMouseMove}
                   onMouseUp={onDrawMouseUp}
                   onMouseLeave={onDrawMouseUp}
                 />
+              </div>
+            )}
+
+            {/* Selection popup */}
+            {selectionInfo && (
+              <div style={{
+                position: "fixed",
+                left: Math.min(selectionInfo.popupX, window.innerWidth - 240),
+                top: selectionInfo.popupY - 48,
+                background: "#fff",
+                border: "1.5px solid #4f46e5",
+                borderRadius: "0.4rem",
+                padding: "0.3rem 0.55rem",
+                display: "flex", gap: "0.45rem", alignItems: "center",
+                boxShadow: "0 2px 12px rgba(0,0,0,0.15)",
+                zIndex: 400, fontSize: "0.8rem",
+              }}>
+                <span style={{ color: "#64748b", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  "{selectionInfo.text.length > 35 ? selectionInfo.text.slice(0, 35) + "…" : selectionInfo.text}"
+                </span>
+                <button
+                  onClick={() => {
+                    setPendingSelection(selectionInfo);
+                    setSelectionInfo(null);
+                    setNotesOpen(true);
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                  style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: "0.25rem", padding: "0.2rem 0.55rem", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, whiteSpace: "nowrap" }}
+                >
+                  + Note
+                </button>
+                <button
+                  onClick={() => { setSelectionInfo(null); window.getSelection()?.removeAllRanges(); }}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: "0.9rem", lineHeight: 1, padding: "0.1rem" }}
+                >
+                  ×
+                </button>
               </div>
             )}
           </div>
@@ -726,42 +932,38 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                   {annotations.map((a) => (
                     <div
                       key={a.id}
+                      onClick={() => { setActiveNoteId(a.id === activeNoteId ? null : a.id); if (a.page_num != null) setPageNum(a.page_num); }}
                       style={{
-                        background: "#fffde7",
-                        borderLeft: "3px solid #fdd835",
+                        background: a.id === activeNoteId ? "#eef2ff" : "#fffde7",
+                        borderLeft: `3px solid ${a.id === activeNoteId ? "#4f46e5" : "#fdd835"}`,
                         padding: "0.35rem 0.6rem",
                         marginBottom: "0.3rem",
                         fontSize: "0.78rem",
                         position: "relative",
                         borderRadius: "0 0.25rem 0.25rem 0",
+                        cursor: "pointer",
                       }}
                     >
+                      {/* Page badge */}
+                      {a.page_num != null && (
+                        <span style={{ fontSize: "0.68rem", color: "#4f46e5", fontWeight: 600, marginBottom: "0.2rem", display: "inline-block" }}>
+                          p.{a.page_num}
+                          {a.page_num !== pageNum && (
+                            <span style={{ marginLeft: "0.3rem", opacity: 0.7 }}>↵ jump</span>
+                          )}
+                        </span>
+                      )}
                       {a.selected_text && (
-                        <blockquote
-                          style={{
-                            margin: "0 0 0.2rem",
-                            fontStyle: "italic",
-                            color: "#555",
-                            fontSize: "0.75rem",
-                          }}
-                        >
-                          "{a.selected_text}"
+                        <blockquote style={{ margin: "0.1rem 0 0.25rem", fontStyle: "italic", color: "#555", fontSize: "0.74rem", borderLeft: "none", paddingLeft: 0 }}>
+                          "{a.selected_text.length > 120 ? a.selected_text.slice(0, 120) + "…" : a.selected_text}"
                         </blockquote>
                       )}
-                      <span style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{a.comment}</span>
+                      {a.comment && (
+                        <span style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{a.comment}</span>
+                      )}
                       <button
-                        onClick={() => deleteAnnotation(a.id)}
-                        style={{
-                          position: "absolute",
-                          top: "0.25rem",
-                          right: "0.25rem",
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          color: "#c5221f",
-                          fontSize: "0.75rem",
-                          lineHeight: 1,
-                        }}
+                        onClick={(e) => { e.stopPropagation(); deleteAnnotation(a.id); if (activeNoteId === a.id) setActiveNoteId(null); }}
+                        style={{ position: "absolute", top: "0.25rem", right: "0.25rem", background: "none", border: "none", cursor: "pointer", color: "#c5221f", fontSize: "0.75rem", lineHeight: 1 }}
                         title="Delete note"
                       >
                         ✕
@@ -777,10 +979,18 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                     flexShrink: 0,
                   }}
                 >
+                  {pendingSelection && (
+                    <div style={{ background: "#eef2ff", borderLeft: "3px solid #4f46e5", padding: "0.25rem 0.5rem", marginBottom: "0.4rem", fontSize: "0.74rem", color: "#3730a3", borderRadius: "0 0.25rem 0.25rem 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.4rem" }}>
+                      <em style={{ flex: 1, lineHeight: 1.4 }}>
+                        p.{pendingSelection.pageNum}: "{pendingSelection.text.length > 80 ? pendingSelection.text.slice(0, 80) + "…" : pendingSelection.text}"
+                      </em>
+                      <button onClick={() => setPendingSelection(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#6366f1", fontSize: "0.8rem", lineHeight: 1, flexShrink: 0 }}>×</button>
+                    </div>
+                  )}
                   <textarea
                     value={noteDraft}
                     onChange={(e) => setNoteDraft(e.target.value)}
-                    placeholder="Add a note about this paper…"
+                    placeholder={pendingSelection ? "Add a note about this selection…" : "Add a note about this paper…"}
                     rows={2}
                     style={{
                       width: "100%",

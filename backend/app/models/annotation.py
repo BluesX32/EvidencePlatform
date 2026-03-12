@@ -1,12 +1,12 @@
-"""SQLAlchemy model for record_annotations (anchored comments, migration 012)."""
+"""SQLAlchemy model for record_annotations (anchored comments, migration 012+020)."""
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -39,6 +39,8 @@ class Annotation(Base):
     )
     selected_text: Mapped[str] = mapped_column(Text, nullable=False)
     comment: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    page_num: Mapped[Optional[int]] = mapped_column(Integer(), nullable=True)
+    highlight_rects: Mapped[Optional[Any]] = mapped_column(JSONB(), nullable=True)
     reviewer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
