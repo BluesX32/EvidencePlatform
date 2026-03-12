@@ -148,7 +148,10 @@ class TeamRepo:
     ) -> list[ProjectInvitation]:
         rows = await db.execute(
             select(ProjectInvitation)
-            .where(ProjectInvitation.project_id == project_id)
+            .where(
+                ProjectInvitation.project_id == project_id,
+                ProjectInvitation.status == "pending",
+            )
             .order_by(ProjectInvitation.created_at.desc())
         )
         return list(rows.scalars().all())
@@ -178,5 +181,5 @@ class TeamRepo:
     async def revoke_invitation(
         db: AsyncSession, invitation: ProjectInvitation
     ) -> None:
-        invitation.status = "revoked"
+        await db.delete(invitation)
         await db.flush()

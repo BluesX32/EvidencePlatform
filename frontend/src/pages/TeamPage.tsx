@@ -109,11 +109,13 @@ export default function TeamPage() {
   const revokeMut = useMutation({
     mutationFn: (invId: string) => teamApi.revokeInvitation(projectId!, invId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["team-invitations", projectId] }),
+    onError: (e: unknown) => alert("Failed to revoke invitation: " + (e as { message?: string })?.message),
   });
 
   const removeMut = useMutation({
     mutationFn: (userId: string) => teamApi.removeMember(projectId!, userId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["team-members", projectId] }),
+    onError: (e: unknown) => alert("Failed to remove member: " + (e as { message?: string })?.message),
   });
 
   const roleMut = useMutation({
