@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { Layers, Shuffle } from "lucide-react";
 import { screeningApi } from "../api/client";
 import type { ScreeningSource } from "../api/client";
 
@@ -66,6 +67,8 @@ const cardBtn = (selected: boolean): React.CSSProperties => ({
   background: selected ? "#f0f4ff" : "#fff",
   cursor: "pointer",
   width: "100%",
+  boxSizing: "border-box",
+  overflow: "hidden",
 });
 
 export default function StartScreeningModal({ projectId, onClose }: Props) {
@@ -154,36 +157,107 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
         {/* ── Step 1: Strategy selection ─────────────────────────────── */}
         {step === 1 && (
           <>
-            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem" }}>Start Screening</h2>
-            <p style={{ margin: "0 0 1.5rem", color: "#5f6368", fontSize: "0.9rem" }}>
-              Choose a workflow strategy.
+            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.25rem", fontWeight: 700 }}>
+              Start Screening
+            </h2>
+            <p style={{ margin: "0 0 1.5rem", color: "#5f6368", fontSize: "0.875rem" }}>
+              Choose a workflow strategy to begin.
             </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.875rem" }}>
+
+              {/* Sequential card */}
               <button
                 style={cardBtn(false)}
                 onClick={() => handleStrategySelect("sequential")}
               >
-                <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
-                  Sequential
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
-                  Classic gating: Title/Abstract first, then Full-text, then Extraction.
-                  Jump to any stage or browse completed items.
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "0.875rem" }}>
+                  <div style={{
+                    flexShrink: 0,
+                    width: 36, height: 36,
+                    borderRadius: "0.5rem",
+                    background: "#eef2ff",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Layers size={18} color="#4f46e5" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                      <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Sequential</span>
+                      <span style={{
+                        fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em",
+                        padding: "0.15rem 0.45rem", borderRadius: "999px",
+                        background: "#eef2ff", color: "#4f46e5",
+                        textTransform: "uppercase",
+                      }}>
+                        Recommended
+                      </span>
+                    </div>
+                    <p style={{ margin: "0 0 0.6rem", fontSize: "0.85rem", color: "#374151", lineHeight: 1.5, overflowWrap: "break-word" }}>
+                      Classic gated workflow. Each stage unlocks in order.
+                    </p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                      {["Title / Abstract", "Full-text", "Extraction"].map((step, i, arr) => (
+                        <span key={step} style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                          <span style={{
+                            fontSize: "0.78rem", padding: "0.15rem 0.5rem",
+                            border: "1px solid #e0e7ff", borderRadius: "0.3rem",
+                            background: "#f5f3ff", color: "#4338ca", fontWeight: 500,
+                          }}>{step}</span>
+                          {i < arr.length - 1 && (
+                            <span style={{ color: "#9ca3af", fontSize: "0.75rem" }}>→</span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ color: "#9ca3af", flexShrink: 0, alignSelf: "center", fontSize: "1.1rem" }}>›</div>
                 </div>
               </button>
+
+              {/* Mixed / Parallel card */}
               <button
                 style={cardBtn(false)}
                 onClick={() => handleStrategySelect("mixed")}
               >
-                <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
-                  Mixed / Parallel
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#5f6368" }}>
-                  Saturation-driven: screen title/abstract and review full-text in the
-                  same session. Include at TA, then immediately decide on full-text —
-                  no waiting.
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "0.875rem" }}>
+                  <div style={{
+                    flexShrink: 0,
+                    width: 36, height: 36,
+                    borderRadius: "0.5rem",
+                    background: "#ecfdf5",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Shuffle size={18} color="#059669" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                      <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Mixed / Parallel</span>
+                      <span style={{
+                        fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em",
+                        padding: "0.15rem 0.45rem", borderRadius: "999px",
+                        background: "#ecfdf5", color: "#059669",
+                        textTransform: "uppercase",
+                      }}>
+                        Fast
+                      </span>
+                    </div>
+                    <p style={{ margin: "0 0 0.6rem", fontSize: "0.85rem", color: "#374151", lineHeight: 1.5, overflowWrap: "break-word" }}>
+                      Review TA and full-text in one session, back to back.
+                    </p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                      {["TA + FT in one pass", "Auto-advance on include", "Saturation tracking"].map((tag) => (
+                        <span key={tag} style={{
+                          fontSize: "0.78rem", padding: "0.15rem 0.5rem",
+                          border: "1px solid #a7f3d0", borderRadius: "0.3rem",
+                          background: "#f0fdf4", color: "#047857", fontWeight: 500,
+                        }}>{tag}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ color: "#9ca3af", flexShrink: 0, alignSelf: "center", fontSize: "1.1rem" }}>›</div>
                 </div>
               </button>
+
             </div>
           </>
         )}

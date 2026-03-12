@@ -658,6 +658,26 @@ _BUCKET_TO_MODE: Dict[str, str] = {
     "extract_pending": "extract",
 }
 
+# ---------------------------------------------------------------------------
+# Randomized ORDER BY variants (RANDOM() instead of created_at)
+# Built once at module load from the base SQL strings.
+# ---------------------------------------------------------------------------
+
+def _rand(sql: text) -> text:  # type: ignore[name-defined]
+    """Return a copy of a text() SQL with ORDER BY created_at → ORDER BY RANDOM()."""
+    return text(
+        sql.text
+        .replace("ORDER BY created_at\nLIMIT 1", "ORDER BY RANDOM()\nLIMIT 1")
+        .replace("ORDER BY priority, created_at\nLIMIT 1", "ORDER BY RANDOM()\nLIMIT 1")
+    )
+
+
+_NEXT_ITEM_SQL_RAND = _rand(_NEXT_ITEM_SQL)
+_NEXT_ITEM_SQL_MIXED_RAND = _rand(_NEXT_ITEM_SQL_MIXED)
+_TA_INCLUDED_SQL_RAND = _rand(_TA_INCLUDED_SQL)
+_FT_INCLUDED_SQL_RAND = _rand(_FT_INCLUDED_SQL)
+_EXTRACT_DONE_SQL_RAND = _rand(_EXTRACT_DONE_SQL)
+
 
 # ---------------------------------------------------------------------------
 # Typed SQL statements
@@ -691,6 +711,22 @@ _EXTRACT_DONE_STMT = _EXTRACT_DONE_SQL.bindparams(
     # reviewer_id is intentionally absent — extract_done SQL does not filter by reviewer
 )
 
+# Randomized (ORDER BY RANDOM()) bound statements
+_TA_INCLUDED_RAND_STMT = _TA_INCLUDED_SQL_RAND.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_FT_INCLUDED_RAND_STMT = _FT_INCLUDED_SQL_RAND.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_EXTRACT_DONE_RAND_STMT = _EXTRACT_DONE_SQL_RAND.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+)
+
 # Count SQL (string replacement done once at module load — avoids repeating
 # the replacement on every /next call)
 _COUNT_SQL_SEQ = text(
@@ -712,6 +748,16 @@ _SEQ_STMT = _NEXT_ITEM_SQL.bindparams(
     bindparam("reviewer_id", type_=_UUID_TYPE),
 )
 _MIXED_STMT = _NEXT_ITEM_SQL_MIXED.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_SEQ_RAND_STMT = _NEXT_ITEM_SQL_RAND.bindparams(
+    bindparam("project_id",  type_=_UUID_TYPE),
+    bindparam("source_id",   type_=_UUID_TYPE),
+    bindparam("reviewer_id", type_=_UUID_TYPE),
+)
+_MIXED_RAND_STMT = _NEXT_ITEM_SQL_MIXED_RAND.bindparams(
     bindparam("project_id",  type_=_UUID_TYPE),
     bindparam("source_id",   type_=_UUID_TYPE),
     bindparam("reviewer_id", type_=_UUID_TYPE),
@@ -771,6 +817,7 @@ async def get_next_item(
     mode: str,
     reviewer_id: Optional[uuid.UUID],
     bucket: Optional[str] = None,
+    randomize: bool = False,
 ) -> Dict[str, Any]:
     """
     Return the next available item for screening/review/extraction.
@@ -809,21 +856,28 @@ async def get_next_item(
     }
 
     try:
-        # Resolve effective SQL based on bucket (overrides mode) or mode
+        # Resolve effective SQL based on bucket (overrides mode) or mode.
+        # When randomize=True, use ORDER BY RANDOM() variants.
         if bucket == "ta_included":
-            result = await db.execute(_TA_INCLUDED_STMT, base_params)
+            stmt = _TA_INCLUDED_RAND_STMT if randomize else _TA_INCLUDED_STMT
+            result = await db.execute(stmt, base_params)
         elif bucket == "ft_included":
-            result = await db.execute(_FT_INCLUDED_STMT, base_params)
+            stmt = _FT_INCLUDED_RAND_STMT if randomize else _FT_INCLUDED_STMT
+            result = await db.execute(stmt, base_params)
         elif bucket == "extract_done":
-            result = await db.execute(_EXTRACT_DONE_STMT, base_params)
+            stmt = _EXTRACT_DONE_RAND_STMT if randomize else _EXTRACT_DONE_STMT
+            result = await db.execute(stmt, base_params)
         elif bucket in _BUCKET_TO_MODE:
             # ta_unscreened → screen, ft_pending → fulltext, extract_pending → extract
             effective_mode = _BUCKET_TO_MODE[bucket]
-            result = await db.execute(_SEQ_STMT, {**base_params, "mode": effective_mode})
+            stmt = _SEQ_RAND_STMT if randomize else _SEQ_STMT
+            result = await db.execute(stmt, {**base_params, "mode": effective_mode})
         elif mode == "mixed":
-            result = await db.execute(_MIXED_STMT, base_params)
+            stmt = _MIXED_RAND_STMT if randomize else _MIXED_STMT
+            result = await db.execute(stmt, base_params)
         else:
-            result = await db.execute(_SEQ_STMT, {**base_params, "mode": mode})
+            stmt = _SEQ_RAND_STMT if randomize else _SEQ_STMT
+            result = await db.execute(stmt, {**base_params, "mode": mode})
 
         row = result.one_or_none()
 

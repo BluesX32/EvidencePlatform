@@ -104,6 +104,44 @@ function buildRuleSummary(
 }
 
 // ---------------------------------------------------------------------------
+// Module card style helpers
+// ---------------------------------------------------------------------------
+
+/** Module card wrapper */
+const MC = (bg: string, border: string): React.CSSProperties => ({
+  display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "0.4rem",
+  padding: "0.9rem 1rem",
+  borderRadius: "0.625rem",
+  border: `1.5px solid ${border}`,
+  background: bg,
+  textDecoration: "none",
+  color: "inherit",
+  cursor: "pointer",
+  boxSizing: "border-box",
+  width: "100%",
+  textAlign: "left",
+});
+
+/** Module card icon box */
+const MI = (bg: string): React.CSSProperties => ({
+  width: 32, height: 32,
+  borderRadius: "0.375rem",
+  background: bg,
+  display: "flex", alignItems: "center", justifyContent: "center",
+  marginBottom: "0.2rem",
+  flexShrink: 0,
+});
+
+/** Module card description text */
+const MD: React.CSSProperties = {
+  fontSize: "0.775rem",
+  color: "#64748b",
+  lineHeight: 1.4,
+  overflowWrap: "break-word",
+  wordBreak: "break-word",
+};
+
+// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
@@ -497,51 +535,90 @@ export default function ProjectPage() {
           </div>
         )}
 
-        <div className="action-bar">
+        {/* ── Module navigation ──────────────────────────────────────────── */}
+        <div style={{ marginBottom: "2rem" }}>
           <Link to={`/projects/${id}/import`} className="btn-primary btn-lg">
             <Upload size={18} /> Import literature
           </Link>
-          {(project?.record_count ?? 0) > 0 && (
-            <Link to={`/projects/${id}/records`} className="btn-secondary">
-              <BookOpen size={15} /> View records
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+            gap: "0.75rem",
+            marginTop: "1.25rem",
+          }}>
+
+            {(project?.record_count ?? 0) > 0 && (
+              <Link to={`/projects/${id}/records`} style={MC("#eff6ff","#bfdbfe")}>
+                <div style={MI("#bfdbfe")}><BookOpen size={16} color="#1d4ed8" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#1d4ed8" }}>Records</span>
+                <span style={MD}>Browse imported articles</span>
+              </Link>
+            )}
+
+            {(sources?.length ?? 0) >= 2 && (
+              <Link to={`/projects/${id}/overlap`} style={MC("#f5f3ff","#ddd6fe")}>
+                <div style={MI("#ddd6fe")}><GitMerge size={16} color="#7c3aed" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#7c3aed" }}>Overlap</span>
+                <span style={MD}>Detect cross-source duplicates</span>
+              </Link>
+            )}
+
+            {(project?.record_count ?? 0) > 0 && (
+              <button onClick={() => setShowScreeningModal(true)} style={{ ...MC("#f0fdf4","#bbf7d0"), fontFamily: "inherit" }}>
+                <div style={MI("#bbf7d0")}><CheckSquare size={16} color="#15803d" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#15803d" }}>Screening</span>
+                <span style={MD}>TA and full-text review</span>
+              </button>
+            )}
+
+            {(project?.record_count ?? 0) > 0 && (
+              <Link to={`/projects/${id}/llm-screening`} style={MC("#fff7ed","#fed7aa")}>
+                <div style={MI("#fed7aa")}><Bot size={16} color="#ea580c" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#ea580c" }}>LLM Screening</span>
+                <span style={MD}>AI-assisted article screening</span>
+              </Link>
+            )}
+
+            {(project?.record_count ?? 0) > 0 && (
+              <Link to={`/projects/${id}/extractions`} style={MC("#ecfeff","#a5f3fc")}>
+                <div style={MI("#a5f3fc")}><FlaskConical size={16} color="#0891b2" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#0891b2" }}>Extractions</span>
+                <span style={MD}>Structured evidence library</span>
+              </Link>
+            )}
+
+            <Link to={`/projects/${id}/labels`} style={MC("#fff1f2","#fecdd3")}>
+              <div style={MI("#fecdd3")}><Tag size={16} color="#e11d48" /></div>
+              <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#e11d48" }}>Labels</span>
+              <span style={MD}>Tag and categorize articles</span>
             </Link>
-          )}
-          {(sources?.length ?? 0) >= 2 && (
-            <Link to={`/projects/${id}/overlap`} className="btn-secondary">
-              <GitMerge size={15} /> Overlap
+
+            <Link to={`/projects/${id}/thematic`} style={MC("#f0fdfa","#99f6e4")}>
+              <div style={MI("#99f6e4")}><GitBranch size={16} color="#0d9488" /></div>
+              <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#0d9488" }}>Thematic</span>
+              <span style={MD}>Build codebooks and themes</span>
             </Link>
-          )}
-          {(project?.record_count ?? 0) > 0 && (
-            <button
-              className="btn-secondary"
-              onClick={() => setShowScreeningModal(true)}
-            >
-              <CheckSquare size={15} /> Start Screening
-            </button>
-          )}
-          {(project?.record_count ?? 0) > 0 && (
-            <Link to={`/projects/${id}/extractions`} className="btn-secondary">
-              <FlaskConical size={15} /> Extractions
+
+            <Link to={`/projects/${id}/ontology`} style={MC("#fdf4ff","#e9d5ff")}>
+              <div style={MI("#e9d5ff")}><Network size={16} color="#9333ea" /></div>
+              <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#9333ea" }}>Ontology</span>
+              <span style={MD}>Concept mapping and relations</span>
             </Link>
-          )}
-          <Link to={`/projects/${id}/labels`} className="btn-secondary">
-            <Tag size={15} /> Labels
-          </Link>
-          <Link to={`/projects/${id}/thematic`} className="btn-secondary">
-            <GitBranch size={15} /> Taxonomy
-          </Link>
-          <Link to={`/projects/${id}/ontology`} className="btn-secondary">
-            <Network size={15} /> Ontology
-          </Link>
-          <Link to={`/projects/${id}/llm-screening`} className="btn-secondary">
-            <Bot size={15} /> LLM Screening
-          </Link>
-          <Link to={`/projects/${id}/team`} className="btn-secondary">
-            <Users size={15} /> Team
-          </Link>
-          <Link to={`/projects/${id}/consensus`} className="btn-secondary">
-            <Scale size={15} /> Consensus
-          </Link>
+
+            <Link to={`/projects/${id}/team`} style={MC("#f8fafc","#e2e8f0")}>
+              <div style={MI("#e2e8f0")}><Users size={16} color="#475569" /></div>
+              <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#475569" }}>Team</span>
+              <span style={MD}>Manage reviewers and access</span>
+            </Link>
+
+            <Link to={`/projects/${id}/consensus`} style={MC("#fffbeb","#fde68a")}>
+              <div style={MI("#fde68a")}><Scale size={16} color="#b45309" /></div>
+              <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#b45309" }}>Consensus</span>
+              <span style={MD}>Resolve conflicts and adjudicate</span>
+            </Link>
+
+          </div>
         </div>
 
         {/* ── Labels ───────────────────────────────────────────────────────── */}

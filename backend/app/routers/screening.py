@@ -146,6 +146,7 @@ async def next_item(
         None,
         description="ta_unscreened|ta_included|ft_pending|ft_included|extract_pending|extract_done",
     ),
+    randomize: bool = Query(False, description="Use ORDER BY RANDOM() instead of created_at"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -193,6 +194,7 @@ async def next_item(
             mode=effective_mode,
             reviewer_id=current_user.id,
             bucket=bucket,
+            randomize=randomize,
         )
         await db.commit()
         logger.info(
