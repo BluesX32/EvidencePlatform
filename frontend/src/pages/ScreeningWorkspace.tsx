@@ -2565,7 +2565,7 @@ function AutoToggle({ checked, onChange, label, tooltip }: { checked: boolean; o
 
 export default function ScreeningWorkspace() {
   const { id: projectId } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [criteriaOpen, setCriteriaOpen] = useState(false);
 
   const bucket = searchParams.get("bucket") ?? "ta_unscreened";
@@ -2577,7 +2577,9 @@ export default function ScreeningWorkspace() {
 
   const [autoAdvanceFT, setAutoAdvanceFT] = useLocalStorage("autoAdvanceFT", true);
   const [autoAdvanceExtract, setAutoAdvanceExtract] = useLocalStorage("autoAdvanceExtract", true);
-  const [randomize, setRandomize] = useLocalStorage("screeningRandomize", false);
+  const urlRandomize = searchParams.get("randomize") === "true";
+  const [storedRandomize, setRandomize] = useLocalStorage("screeningRandomize", false);
+  const randomize = urlRandomize || storedRandomize;
 
   const { entries: timingEntries, addEntry: addTimingEntry, clearLog: clearTimingLog } =
     useTimingLog(projectId ?? "");
@@ -2639,7 +2641,16 @@ export default function ScreeningWorkspace() {
             )}
             <AutoToggle
               checked={randomize}
-              onChange={setRandomize}
+              onChange={(val: boolean) => {
+                setRandomize(val);
+                // Also clear/set the URL param so the derived value stays consistent
+                setSearchParams((prev) => {
+                  const next = new URLSearchParams(prev);
+                  if (val) next.set("randomize", "true");
+                  else next.delete("randomize");
+                  return next;
+                }, { replace: true });
+              }}
               label="⇄ Shuffle"
               tooltip="Randomize paper order — useful for minimizing position bias or blinded screening."
             />
