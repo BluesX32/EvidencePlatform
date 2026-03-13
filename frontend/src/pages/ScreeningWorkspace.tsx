@@ -261,7 +261,37 @@ function computeStats(entries: TimingEntry[]) {
 // Shared helper components
 // ---------------------------------------------------------------------------
 
-function ProgressBar({ remaining }: { remaining: number | null | undefined }) {
+function ProgressBar({
+  remaining,
+  queuePosition,
+  queueTotal,
+  queueSeed,
+}: {
+  remaining: number | null | undefined;
+  queuePosition?: number | null;
+  queueTotal?: number | null;
+  queueSeed?: number | null;
+}) {
+  if (queuePosition != null && queueTotal != null) {
+    const pct = Math.round((queuePosition / queueTotal) * 100);
+    return (
+      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <span style={{ fontWeight: 600, color: "#374151", fontSize: 14 }}>
+            {queuePosition} / {queueTotal}
+          </span>
+          {queueSeed != null && (
+            <span style={{ color: "#9ca3af", fontSize: 11 }} title="Randomization seed — share with colleagues to reproduce this paper order">
+              seed {queueSeed}
+            </span>
+          )}
+        </div>
+        <div style={{ height: 4, background: "#e5e7eb", borderRadius: 2 }}>
+          <div style={{ height: "100%", width: `${pct}%`, background: "#6366f1", borderRadius: 2, transition: "width 0.3s" }} />
+        </div>
+      </div>
+    );
+  }
   if (remaining === undefined || remaining === null) return null;
   return (
     <div
@@ -1209,6 +1239,7 @@ function ScreeningPanel({
   levels = DEFAULT_LEVELS,
   onDecision,
   randomize = false,
+  seed,
 }: {
   projectId: string;
   bucket: string;
@@ -1218,6 +1249,7 @@ function ScreeningPanel({
   levels?: string[];
   onDecision?: (entry: TimingEntry) => void;
   randomize?: boolean;
+  seed?: number;
 }) {
   const queryClient = useQueryClient();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
@@ -1258,7 +1290,7 @@ function ScreeningPanel({
     setForm(EMPTY_EXTRACTION);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode, strategy, bucket, randomize: randomize || undefined });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode, strategy, bucket, randomize: randomize || undefined, seed: seed });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -1410,7 +1442,7 @@ function ScreeningPanel({
     return (
       <div>
         {nav}
-        <ProgressBar remaining={item.remaining} />
+        <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
         <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "0.6rem", background: "#fff" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
           <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
@@ -1472,7 +1504,7 @@ function ScreeningPanel({
         <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>
       )}
 
-      <ProgressBar remaining={isBrowsingHistory ? undefined : item?.remaining} />
+      <ProgressBar remaining={isBrowsingHistory ? undefined : item?.remaining} queuePosition={isBrowsingHistory ? undefined : item?.queue_position} queueTotal={isBrowsingHistory ? undefined : item?.queue_total} queueSeed={isBrowsingHistory ? undefined : item?.queue_seed} />
 
       {/* History mode banner */}
       {isBrowsingHistory && (
@@ -1722,6 +1754,7 @@ function MixedPanel({
   levels,
   onDecision,
   randomize = false,
+  seed,
 }: {
   projectId: string;
   source: string;
@@ -1730,6 +1763,7 @@ function MixedPanel({
   levels: string[];
   onDecision?: (entry: TimingEntry) => void;
   randomize?: boolean;
+  seed?: number;
 }) {
   const queryClient = useQueryClient();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
@@ -1759,7 +1793,7 @@ function MixedPanel({
     setForm(EMPTY_EXTRACTION);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed", randomize: randomize || undefined });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed", randomize: randomize || undefined, seed: seed });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -1934,7 +1968,7 @@ function MixedPanel({
   return (
     <div>
       {nav}
-      <ProgressBar remaining={item.remaining} />
+      <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
       <PaperCard item={item} projectId={projectId} showAnnotations />
 
       {!showFT && (
@@ -2016,6 +2050,7 @@ function ExtractionPanel({
   levels,
   onDecision,
   randomize = false,
+  seed,
 }: {
   projectId: string;
   source: string;
@@ -2023,6 +2058,7 @@ function ExtractionPanel({
   levels: string[];
   onDecision?: (entry: TimingEntry) => void;
   randomize?: boolean;
+  seed?: number;
 }) {
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2046,7 +2082,7 @@ function ExtractionPanel({
     setFetchError(null);
     setBrowseItem(null);
     try {
-      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending", randomize: randomize || undefined });
+      const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending", randomize: randomize || undefined, seed: seed });
       if ((res.data as any).error) {
         setFetchError((res.data as any).error.message ?? "Server error — please retry.");
       } else {
@@ -2164,7 +2200,7 @@ function ExtractionPanel({
   return (
     <div>
       {nav}
-      <ProgressBar remaining={item.remaining} />
+      <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
       <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
         <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
         <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
@@ -2536,6 +2572,8 @@ export default function ScreeningWorkspace() {
   const legacyMode = searchParams.get("mode");
   const source = searchParams.get("source") ?? "all";
   const strategy = (searchParams.get("strategy") ?? "sequential") as "sequential" | "mixed";
+  const seedParam = searchParams.get("seed");
+  const seedNum = seedParam ? parseInt(seedParam, 10) : undefined;
 
   const [autoAdvanceFT, setAutoAdvanceFT] = useLocalStorage("autoAdvanceFT", true);
   const [autoAdvanceExtract, setAutoAdvanceExtract] = useLocalStorage("autoAdvanceExtract", true);
@@ -2647,11 +2685,11 @@ export default function ScreeningWorkspace() {
           )}
 
           {showMixed ? (
-            <MixedPanel projectId={projectId} source={source} autoAdvanceFT={autoAdvanceFT} autoAdvanceExtract={autoAdvanceExtract} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
+            <MixedPanel projectId={projectId} source={source} autoAdvanceFT={autoAdvanceFT} autoAdvanceExtract={autoAdvanceExtract} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} seed={seedNum} />
           ) : showExtractPanel ? (
-            <ExtractionPanel projectId={projectId} source={source} strategy={strategy} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
+            <ExtractionPanel projectId={projectId} source={source} strategy={strategy} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} seed={seedNum} />
           ) : (
-            <ScreeningPanel projectId={projectId} bucket={bucket} source={source} strategy={strategy} autoAdvanceExtract={isFTBucket ? autoAdvanceExtract : false} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} />
+            <ScreeningPanel projectId={projectId} bucket={bucket} source={source} strategy={strategy} autoAdvanceExtract={isFTBucket ? autoAdvanceExtract : false} levels={projectLevels} onDecision={addTimingEntry} randomize={randomize} seed={seedNum} />
           )}
         </main>
 

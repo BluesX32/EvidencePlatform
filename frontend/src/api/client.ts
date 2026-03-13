@@ -42,11 +42,23 @@ export interface TokenResponse {
   access_token: string;
 }
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+}
+
 export const authApi = {
   register: (email: string, password: string, name: string) =>
     api.post<RegisterResponse>("/auth/register", { email, password, name }),
   login: (email: string, password: string) =>
     api.post<TokenResponse>("/auth/login", { email, password }),
+  me: () =>
+    api.get<UserProfile>("/auth/me"),
+  updateProfile: (name: string) =>
+    api.patch<UserProfile>("/auth/me", { name }),
+  changePassword: (current_password: string, new_password: string) =>
+    api.patch("/auth/me/password", { current_password, new_password }),
 };
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -538,6 +550,9 @@ export interface ScreeningNextItem {
   ft_decision?: string | null;
   pmid?: string | null;
   pmcid?: string | null;
+  queue_position?: number | null;
+  queue_total?: number | null;
+  queue_seed?: number | null;
 }
 
 export interface HighlightRect {
@@ -731,15 +746,37 @@ export interface SaturationStatus {
   threshold: number;
 }
 
+export interface ScreeningQueueInfo {
+  seed: number;
+  source_id: string;
+  stage: string;
+  position: number;
+  total: number;
+  created_at: string;
+}
+
+export interface ScreeningQueueHistoryEntry extends ScreeningQueueInfo {
+  reviewer_id: string;
+}
+
 export const screeningApi = {
   getSources: (projectId: string) =>
     api.get<ScreeningSource[]>(`/projects/${projectId}/screening/sources`),
 
   nextItem: (
     projectId: string,
-    params: { source_id: string; mode: string; strategy?: string; bucket?: string; randomize?: boolean }
+    params: { source_id: string; mode: string; strategy?: string; bucket?: string; randomize?: boolean; seed?: number }
   ) =>
     api.get<ScreeningNextItem>(`/projects/${projectId}/screening/next`, { params }),
+
+  createQueue: (projectId: string, params: { source?: string; stage?: string; seed?: number | null; reset?: boolean }) =>
+    api.post<ScreeningQueueInfo>(`/projects/${projectId}/screening/queue`, null, { params }),
+
+  getQueue: (projectId: string, params: { source?: string; stage?: string }) =>
+    api.get<ScreeningQueueInfo | null>(`/projects/${projectId}/screening/queue`, { params }),
+
+  getQueueHistory: (projectId: string) =>
+    api.get<ScreeningQueueHistoryEntry[]>(`/projects/${projectId}/screening/queue-history`),
 
   getItem: (
     projectId: string,

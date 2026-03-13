@@ -19,6 +19,7 @@ Canonical key helpers (kept for backward compatibility with existing tests):
 from __future__ import annotations
 
 import logging
+import random as _random
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,7 @@ from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.screening_claim import ScreeningClaim
 from app.models.screening_decision import ScreeningDecision
+from app.models.screening_queue import ScreeningQueue
 from app.models.source import Source
 
 logger = logging.getLogger(__name__)
@@ -807,6 +809,151 @@ _FT_DEC_SQL = text("""
 
 
 # ---------------------------------------------------------------------------
+# Screening queue helpers
+# ---------------------------------------------------------------------------
+
+_ALL_SLOTS_SQL = text("""
+WITH
+  records_in_scope AS (
+    SELECT DISTINCT r.id AS record_id, r.created_at
+    FROM records r
+    JOIN record_sources rs ON rs.record_id = r.id
+    WHERE r.project_id = :project_id
+      AND (:source_id IS NULL OR rs.source_id = :source_id)
+  ),
+  clustered_records AS (
+    SELECT DISTINCT rs.record_id
+    FROM record_sources rs
+    JOIN overlap_cluster_members ocm ON ocm.record_source_id = rs.id
+    JOIN overlap_clusters oc ON oc.id = ocm.cluster_id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+  ),
+  standalone_in_scope AS (
+    SELECT ris.record_id, NULL::uuid AS cluster_id, ris.created_at
+    FROM records_in_scope ris
+    WHERE ris.record_id NOT IN (SELECT record_id FROM clustered_records)
+  ),
+  clusters_in_scope AS (
+    SELECT NULL::uuid AS record_id, oc.id AS cluster_id, MIN(r.created_at) AS created_at
+    FROM overlap_clusters oc
+    JOIN overlap_cluster_members ocm ON ocm.cluster_id = oc.id
+    JOIN record_sources rs ON rs.id = ocm.record_source_id
+    JOIN records r ON r.id = rs.record_id
+    JOIN records_in_scope ris ON ris.record_id = r.id
+    WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
+    GROUP BY oc.id
+  )
+SELECT record_id, cluster_id FROM standalone_in_scope
+UNION ALL
+SELECT record_id, cluster_id FROM clusters_in_scope
+ORDER BY created_at
+""")
+
+
+async def _build_all_slots(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    source_uuid: Optional[uuid.UUID],
+) -> List[Dict[str, str]]:
+    """Return all canonical slots for this project+source in creation order."""
+    rows = await db.execute(
+        _ALL_SLOTS_SQL.bindparams(
+            bindparam("project_id", type_=_UUID_TYPE),
+            bindparam("source_id", type_=_UUID_TYPE),
+        ),
+        {"project_id": project_id, "source_id": source_uuid},
+    )
+    slots = []
+    for row in rows.all():
+        if row.cluster_id is not None:
+            slots.append({"type": "cluster", "id": str(row.cluster_id)})
+        else:
+            slots.append({"type": "record", "id": str(row.record_id)})
+    return slots
+
+
+async def get_or_create_queue(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: uuid.UUID,
+    source_id_str: str,
+    stage: str,
+    seed: Optional[int] = None,
+) -> ScreeningQueue:
+    """Get existing queue or create new one with given seed (auto-generate if None)."""
+    existing = await db.execute(
+        select(ScreeningQueue).where(
+            ScreeningQueue.project_id == project_id,
+            ScreeningQueue.reviewer_id == reviewer_id,
+            ScreeningQueue.source_id == source_id_str,
+            ScreeningQueue.stage == stage,
+        )
+    )
+    queue = existing.scalar_one_or_none()
+    if queue is not None:
+        return queue
+
+    # Build new queue
+    source_uuid = None if source_id_str == "all" else uuid.UUID(source_id_str)
+    slots = await _build_all_slots(db, project_id, source_uuid)
+
+    actual_seed = seed if seed is not None else _random.randint(1, 2**31 - 1)
+    rng = _random.Random(actual_seed)
+    rng.shuffle(slots)
+
+    queue = ScreeningQueue(
+        project_id=project_id,
+        reviewer_id=reviewer_id,
+        source_id=source_id_str,
+        stage=stage,
+        seed=actual_seed,
+        slots=slots,
+        position=0,
+    )
+    db.add(queue)
+    await db.flush()
+    logger.info(
+        "screening_queue created project=%s reviewer=%s source=%s stage=%s seed=%d total=%d",
+        project_id, reviewer_id, source_id_str, stage, actual_seed, len(slots),
+    )
+    return queue
+
+
+async def reset_queue(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: uuid.UUID,
+    source_id_str: str,
+    stage: str,
+    seed: Optional[int] = None,
+) -> ScreeningQueue:
+    """Delete existing queue and create a fresh one with a new (or specified) seed."""
+    await db.execute(
+        delete(ScreeningQueue).where(
+            ScreeningQueue.project_id == project_id,
+            ScreeningQueue.reviewer_id == reviewer_id,
+            ScreeningQueue.source_id == source_id_str,
+            ScreeningQueue.stage == stage,
+        )
+    )
+    await db.flush()
+    return await get_or_create_queue(db, project_id, reviewer_id, source_id_str, stage, seed)
+
+
+async def list_queues_for_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+) -> List[ScreeningQueue]:
+    """Return all queues for this project (seed history)."""
+    rows = await db.execute(
+        select(ScreeningQueue)
+        .where(ScreeningQueue.project_id == project_id)
+        .order_by(ScreeningQueue.created_at.desc())
+    )
+    return list(rows.scalars().all())
+
+
+# ---------------------------------------------------------------------------
 # get_next_item
 # ---------------------------------------------------------------------------
 
@@ -818,6 +965,7 @@ async def get_next_item(
     reviewer_id: Optional[uuid.UUID],
     bucket: Optional[str] = None,
     randomize: bool = False,
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Return the next available item for screening/review/extraction.
@@ -827,14 +975,17 @@ async def get_next_item(
       ta_unscreened | ta_included | ft_pending | ft_included |
       extract_pending | extract_done
 
+    When randomize=True and reviewer_id is set, uses a persistent seeded queue
+    for reproducible ordering with position tracking.
+
     Inserts a screening_claim row (soft lock) before returning metadata.
     Browse buckets (ta_included, ft_included, extract_done) still insert a
     claim so the frontend can hold a soft lock while reviewing.
     Returns {"done": True} when no items are available.
     """
     logger.info(
-        "get_next_item project=%s source=%s mode=%s bucket=%s reviewer=%s",
-        project_id, source_id, mode, bucket, reviewer_id,
+        "get_next_item project=%s source=%s mode=%s bucket=%s reviewer=%s randomize=%s",
+        project_id, source_id, mode, bucket, reviewer_id, randomize,
     )
 
     source_uuid: Optional[uuid.UUID] = None
@@ -844,6 +995,129 @@ async def get_next_item(
         except ValueError:
             logger.warning("get_next_item invalid source_id=%s", source_id)
             return {"done": True}
+
+    # Queue-based ordering (when randomize=True and reviewer_id is provided)
+    if randomize and reviewer_id is not None:
+        source_id_str = str(source_uuid) if source_uuid else "all"
+        effective_stage = "mixed" if mode == "mixed" else (
+            "fulltext" if mode == "fulltext" else
+            "extract" if mode == "extract" else "screen"
+        )
+        if bucket in _BUCKET_TO_MODE:
+            effective_stage = _BUCKET_TO_MODE[bucket]  # "screen"|"fulltext"|"extract"
+        queue = await get_or_create_queue(
+            db, project_id, reviewer_id, source_id_str, effective_stage, seed
+        )
+        # Advance past already-decided items starting at queue.position
+        slots = queue.slots
+        pos = queue.position
+        while pos < len(slots):
+            slot = slots[pos]
+            slot_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
+            slot_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
+            # Check if this slot has a decision from this reviewer for this stage
+            dec_q = select(ScreeningDecision).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+            )
+            if slot_record_id:
+                dec_q = dec_q.where(ScreeningDecision.record_id == slot_record_id)
+            else:
+                dec_q = dec_q.where(ScreeningDecision.cluster_id == slot_cluster_id)
+            # For mixed mode, check FT decision (if FT decided, item is done; otherwise show it)
+            if mode in ("mixed",):
+                # Item is "done" when FT has been decided OR TA was excluded
+                dec_q_ta = dec_q.where(ScreeningDecision.stage == "TA")
+                dec_q_ft = dec_q.where(ScreeningDecision.stage == "FT")
+                ta_row = await db.execute(dec_q_ta)
+                ta_dec = ta_row.scalar_one_or_none()
+                ft_row = await db.execute(dec_q_ft)
+                ft_dec = ft_row.scalar_one_or_none()
+                if (ta_dec and ta_dec.decision == "exclude") or ft_dec:
+                    pos += 1
+                    continue
+            else:
+                # For screen mode: check TA; for fulltext: check FT; for extract: check extraction
+                check_stage = {"screen": "TA", "fulltext": "FT", "extract": "FT"}.get(effective_stage, "TA")
+                dec_q = dec_q.where(ScreeningDecision.stage == check_stage)
+                row = await db.execute(dec_q)
+                if row.scalar_one_or_none():
+                    pos += 1
+                    continue
+            break  # found undecided item at pos
+
+        if pos != queue.position:
+            queue.position = pos
+            await db.flush()
+
+        if pos >= len(slots):
+            logger.info("get_next_item queue exhausted project=%s", project_id)
+            return {
+                "done": True,
+                "queue_position": len(slots),
+                "queue_total": len(slots),
+                "queue_seed": queue.seed,
+            }
+
+        # Return item at queue position
+        slot = slots[pos]
+        found_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
+        found_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
+
+        # Create claim
+        if found_record_id is not None:
+            await db.execute(
+                text(
+                    "INSERT INTO screening_claims (id, project_id, record_id, reviewer_id, claimed_at) "
+                    "VALUES (gen_random_uuid(), :project_id, :record_id, :reviewer_id, now()) "
+                    "ON CONFLICT (project_id, record_id) WHERE record_id IS NOT NULL "
+                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                ),
+                {"project_id": project_id, "record_id": found_record_id, "reviewer_id": reviewer_id},
+            )
+        else:
+            await db.execute(
+                text(
+                    "INSERT INTO screening_claims (id, project_id, cluster_id, reviewer_id, claimed_at) "
+                    "VALUES (gen_random_uuid(), :project_id, :cluster_id, :reviewer_id, now()) "
+                    "ON CONFLICT (project_id, cluster_id) WHERE cluster_id IS NOT NULL "
+                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                ),
+                {"project_id": project_id, "cluster_id": found_cluster_id, "reviewer_id": reviewer_id},
+            )
+
+        # Fetch metadata
+        if found_record_id is not None:
+            meta = await _fetch_standalone_record(db, found_record_id, project_id)
+        else:
+            meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
+
+        # Fetch decisions
+        ta_decision: Optional[str] = None
+        ft_decision: Optional[str] = None
+        dec_params = {
+            "project_id": project_id,
+            "reviewer_id": reviewer_id,
+            "record_id": found_record_id,
+            "cluster_id": found_cluster_id,
+        }
+        ta_row = await db.execute(_TA_DEC_SQL, dec_params)
+        ta_decision = ta_row.scalar_one_or_none()
+        ft_row = await db.execute(_FT_DEC_SQL, dec_params)
+        ft_decision = ft_row.scalar_one_or_none()
+
+        return {
+            "done": False,
+            "record_id": str(found_record_id) if found_record_id else None,
+            "cluster_id": str(found_cluster_id) if found_cluster_id else None,
+            "remaining": len(slots) - pos - 1,
+            "ta_decision": ta_decision,
+            "ft_decision": ft_decision,
+            "queue_position": pos + 1,   # 1-indexed
+            "queue_total": len(slots),
+            "queue_seed": queue.seed,
+            **meta,
+        }
 
     # Pass reviewer_id as uuid.UUID (not str) so asyncpg types it as uuid, matching
     # the reviewer_id column type. Passing a Python str causes asyncpg to type the
@@ -997,6 +1271,9 @@ async def get_next_item(
             "remaining": remaining,
             "ta_decision": ta_decision,
             "ft_decision": ft_decision,
+            "queue_position": None,
+            "queue_total": None,
+            "queue_seed": None,
             **meta,
         }
 

@@ -30,11 +30,15 @@ from app.models.source import Source
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 from app.repositories.team_repo import TeamRepo
+from app.models.screening_queue import ScreeningQueue
 from app.services.direct_screening_service import (
     get_item_by_key,
     get_next_item,
+    get_or_create_queue,
     get_project_sources_with_stats,
     get_saturation,
+    list_queues_for_project,
+    reset_queue,
     submit_decision,
     submit_extraction,
 )
@@ -147,6 +151,7 @@ async def next_item(
         description="ta_unscreened|ta_included|ft_pending|ft_included|extract_pending|extract_done",
     ),
     randomize: bool = Query(False, description="Use ORDER BY RANDOM() instead of created_at"),
+    seed: Optional[int] = Query(None, description="Seed for reproducible randomization"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -195,6 +200,7 @@ async def next_item(
             reviewer_id=current_user.id,
             bucket=bucket,
             randomize=randomize,
+            seed=seed,
         )
         await db.commit()
         logger.info(
@@ -358,6 +364,92 @@ async def list_extractions(
     )
     extractions = rows.scalars().all()
     return [_extraction_out(e) for e in extractions]
+
+
+# ---------------------------------------------------------------------------
+# Screening queue endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/queue", status_code=200)
+async def create_or_get_queue(
+    project_id: uuid.UUID,
+    source: str = Query("all"),
+    stage: str = Query("screen"),
+    seed: Optional[int] = Query(None),
+    reset: bool = Query(False, description="Force re-randomize even if queue exists"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create (or get) the screening queue for this reviewer. reset=True forces new randomization."""
+    await _require_project(project_id, current_user, db)
+    if reset:
+        queue = await reset_queue(db, project_id, current_user.id, source, stage, seed)
+    else:
+        queue = await get_or_create_queue(db, project_id, current_user.id, source, stage, seed)
+    await db.commit()
+    return {
+        "seed": queue.seed,
+        "source_id": queue.source_id,
+        "stage": queue.stage,
+        "position": queue.position,
+        "total": len(queue.slots),
+        "created_at": queue.created_at.isoformat(),
+    }
+
+
+@router.get("/queue")
+async def get_queue_info(
+    project_id: uuid.UUID,
+    source: str = Query("all"),
+    stage: str = Query("screen"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current queue info for this reviewer."""
+    await _require_project(project_id, current_user, db)
+    result = await db.execute(
+        select(ScreeningQueue).where(
+            ScreeningQueue.project_id == project_id,
+            ScreeningQueue.reviewer_id == current_user.id,
+            ScreeningQueue.source_id == source,
+            ScreeningQueue.stage == stage,
+        )
+    )
+    queue = result.scalar_one_or_none()
+    if queue is None:
+        return None
+    return {
+        "seed": queue.seed,
+        "source_id": queue.source_id,
+        "stage": queue.stage,
+        "position": queue.position,
+        "total": len(queue.slots),
+        "created_at": queue.created_at.isoformat(),
+    }
+
+
+@router.get("/queue-history")
+async def get_queue_history(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all queues for this project (seed history across all reviewers visible to this user)."""
+    await _require_project(project_id, current_user, db)
+    queues = await list_queues_for_project(db, project_id)
+    return [
+        {
+            "seed": q.seed,
+            "source_id": q.source_id,
+            "stage": q.stage,
+            "position": q.position,
+            "total": len(q.slots),
+            "reviewer_id": str(q.reviewer_id),
+            "created_at": q.created_at.isoformat(),
+        }
+        for q in queues
+    ]
 
 
 # ---------------------------------------------------------------------------

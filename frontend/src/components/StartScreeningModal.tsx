@@ -77,10 +77,18 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<string>("all");
+  const [seed, setSeed] = useState<string>("");
+  const [showSeedHistory, setShowSeedHistory] = useState(false);
 
   const { data: sources, isLoading } = useQuery({
     queryKey: ["screening-sources", projectId],
     queryFn: () => screeningApi.getSources(projectId).then((r) => r.data),
+  });
+
+  const { data: seedHistory } = useQuery({
+    queryKey: ["queue-history", projectId],
+    queryFn: () => screeningApi.getQueueHistory(projectId).then((r) => r.data),
+    enabled: showSeedHistory,
   });
 
   // Sort: "all" row first, then sources alphabetically
@@ -96,15 +104,31 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
     setStep(2);
   }
 
-  function handleStart() {
+  async function handleStart() {
+    const seedNum = seed ? parseInt(seed, 10) : null;
+    const sourceParam = selectedSource || "all";
+    const stageParam = selectedStrategy === "mixed" ? "mixed" : (selectedBucket || "screen");
+
+    try {
+      await screeningApi.createQueue(projectId, {
+        source: sourceParam,
+        stage: stageParam,
+        seed: seedNum !== null && !isNaN(seedNum) ? seedNum : null,
+        reset: false,
+      });
+    } catch {
+      // Queue creation is best-effort; proceed anyway
+    }
+
+    const seedSuffix = seedNum !== null && !isNaN(seedNum) ? `&seed=${seedNum}` : "";
     if (selectedStrategy === "mixed") {
       navigate(
-        `/projects/${projectId}/screen?strategy=mixed&source=${selectedSource}`
+        `/projects/${projectId}/screen?strategy=mixed&source=${selectedSource}&randomize=true${seedSuffix}`
       );
     } else {
       if (!selectedBucket) return;
       navigate(
-        `/projects/${projectId}/screen?strategy=sequential&bucket=${selectedBucket}&source=${selectedSource}`
+        `/projects/${projectId}/screen?strategy=sequential&bucket=${selectedBucket}&source=${selectedSource}&randomize=true${seedSuffix}`
       );
     }
     onClose();
@@ -346,7 +370,49 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            {/* Seed section */}
+            <div style={{ marginTop: 16, padding: "12px 16px", background: "#f9fafb", borderRadius: 8, border: "1px solid #e5e7eb" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <label style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
+                  Randomization seed
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowSeedHistory(v => !v)}
+                  style={{ fontSize: 12, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}
+                >
+                  Seed history
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="number"
+                  placeholder="Leave blank for random seed"
+                  value={seed}
+                  onChange={e => setSeed(e.target.value)}
+                  style={{ flex: 1, padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6, fontSize: 13 }}
+                />
+              </div>
+              <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+                Enter a specific number to reproduce a colleague's paper order.
+              </p>
+              {showSeedHistory && seedHistory && seedHistory.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  {seedHistory.map((h, i) => (
+                    <div
+                      key={i}
+                      style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #f3f4f6", cursor: "pointer", color: "#6366f1" }}
+                      onClick={() => setSeed(String(h.seed))}
+                    >
+                      <span>Seed {h.seed} — {h.stage} / {h.source_id}</span>
+                      <span style={{ color: "#9ca3af" }}>{new Date(h.created_at).toLocaleDateString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.25rem" }}>
               {selectedStrategy === "mixed" ? (
                 <button
                   className="btn-primary"
