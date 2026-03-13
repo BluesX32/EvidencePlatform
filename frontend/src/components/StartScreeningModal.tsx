@@ -110,11 +110,20 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
     const stageParam = selectedStrategy === "mixed" ? "mixed" : (selectedBucket || "screen");
 
     try {
+      // Normalize stage to backend values
+      const normalizedStage =
+        selectedStrategy === "mixed"
+          ? "mixed"
+          : stageParam === "ft_pending" || stageParam === "ft_included"
+          ? "fulltext"
+          : stageParam === "extract_pending" || stageParam === "extract_done"
+          ? "extract"
+          : "screen";
       await screeningApi.createQueue(projectId, {
         source: sourceParam,
-        stage: stageParam,
+        stage: normalizedStage,
         seed: seedNum !== null && !isNaN(seedNum) ? seedNum : null,
-        reset: false,
+        reset: true,   // Always start from paper 1 when clicking "Start Screening"
       });
     } catch {
       // Queue creation is best-effort; proceed anyway

@@ -1312,7 +1312,7 @@ function ScreeningPanel({
     } finally {
       setLoading(false);
     }
-  }, [projectId, source, mode, strategy, bucket]);
+  }, [projectId, source, mode, strategy, bucket, randomize, seed]);
 
   useEffect(() => {
     fetchNext();
@@ -1821,7 +1821,7 @@ function MixedPanel({
     } finally {
       setLoading(false);
     }
-  }, [projectId, source]);
+  }, [projectId, source, randomize, seed]);
 
   useEffect(() => { fetchNext(); }, [fetchNext]);
 

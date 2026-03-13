@@ -843,9 +843,9 @@ WITH
     WHERE oc.project_id = :project_id AND oc.scope = 'cross_source'
     GROUP BY oc.id
   )
-SELECT record_id, cluster_id FROM standalone_in_scope
+SELECT record_id, cluster_id, created_at FROM standalone_in_scope
 UNION ALL
-SELECT record_id, cluster_id FROM clusters_in_scope
+SELECT record_id, cluster_id, created_at FROM clusters_in_scope
 ORDER BY created_at
 """)
 
