@@ -123,7 +123,7 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
         source: sourceParam,
         stage: normalizedStage,
         seed: seedNum !== null && !isNaN(seedNum) ? seedNum : null,
-        reset: true,   // Always start from paper 1 when clicking "Start Screening"
+        reset: false,  // Resume from last unfinished paper
       });
     } catch {
       // Queue creation is best-effort; proceed anyway
