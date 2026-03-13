@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated
 
 from app.database import get_db
+from app.dependencies import get_current_user
+from app.models.user import User
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -49,6 +51,29 @@ class RegisterResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("New password must be at least 8 characters")
+        return v
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Name cannot be empty")
+        return v.strip()
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: Annotated[AsyncSession, Depends(get_db)]):
     try:
@@ -75,3 +100,36 @@ async def login(body: LoginRequest, db: Annotated[AsyncSession, Depends(get_db)]
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = AuthService.create_access_token(str(user.id))
     return TokenResponse(access_token=token)
+
+
+@router.get("/me")
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Return the authenticated user's profile."""
+    return {"id": str(current_user.id), "email": current_user.email, "name": current_user.name}
+
+
+@router.patch("/me")
+async def update_profile(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the authenticated user's display name."""
+    current_user.name = body.name
+    db.add(current_user)
+    await db.commit()
+    return {"id": str(current_user.id), "email": current_user.email, "name": current_user.name}
+
+
+@router.patch("/me/password", status_code=204)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the authenticated user's password."""
+    if not AuthService.verify_password(body.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    current_user.password_hash = AuthService.hash_password(body.new_password)
+    db.add(current_user)
+    await db.commit()
