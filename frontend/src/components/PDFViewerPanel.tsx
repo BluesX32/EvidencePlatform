@@ -1,31 +1,27 @@
 /**
  * PDFViewerPanel — floating, draggable PDF viewer with:
- *  - PDF.js canvas rendering + proper text layer (text selection works)
- *  - Three layout modes: single page, two pages side-by-side, continuous scroll
- *  - Freehand drawing persisted via PATCH /fulltext/{id}/drawing
- *  - Notes drawer backed by annotationsApi
+ *
+ *  - pdfjs canvas rendering (page images)
+ *  - DIY text layer: spans positioned via pdfjsLib.Util.transform so
+ *    text is natively selectable without depending on the fragile
+ *    pdfjs TextLayer CSS-variable mechanism
+ *  - Select text → "Add Note" popup → annotation stored with page + rects
+ *  - Yellow highlight overlay drawn on pages with existing annotations
+ *  - Notes drawer: shows all annotations with page badges; clicking jumps
+ *    to that page so the user always knows where they annotated
+ *
+ * Three layout modes: single page | continuous scroll
+ * Drag the header to reposition; drag the left edge to resize.
  */
 import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as pdfjsLib from "pdfjs-dist";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Pen,
-  Eraser,
-  Trash2,
-  StickyNote,
-  MousePointer2,
-  BookOpen,
-  Columns2,
-  AlignJustify,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, StickyNote, BookOpen, AlignJustify } from "lucide-react";
 import { fulltextApi, annotationsApi } from "../api/client";
 import type {
   FulltextPdfMeta,
   ScreeningNextItem,
   Annotation,
-  DrawingStroke,
   HighlightRect,
 } from "../api/client";
 
@@ -33,16 +29,13 @@ import type {
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
-// ── Types & constants ─────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Props {
   projectId: string;
   item: ScreeningNextItem;
   onClose: () => void;
 }
-
-type Tool = "pen" | "eraser" | "select";
-type LayoutMode = "single" | "two" | "continuous";
 
 interface SelectionInfo {
   text: string;
@@ -52,54 +45,21 @@ interface SelectionInfo {
   popupY: number;
 }
 
-type DrawingData = Record<string, DrawingStroke[]>;
+type LayoutMode = "single" | "continuous";
 
-const INIT_WIDTH = 520;
-const INIT_HEIGHT_OFFSET = 56;
-const INIT_RIGHT = 0;
-const NOTES_H = 220;
 const RENDER_SCALE = 1.5;
-const SAVE_DEBOUNCE_MS = 1500;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function renderStrokesToCtx(ctx: CanvasRenderingContext2D, strokes: DrawingStroke[]) {
-  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  for (const s of strokes) {
-    if (s.points.length < 2) continue;
-    ctx.save();
-    if (s.tool === "eraser") {
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.strokeStyle = "rgba(0,0,0,1)";
-    } else {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.strokeStyle = s.color;
-    }
-    ctx.lineWidth = s.width;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    ctx.moveTo(s.points[0][0], s.points[0][1]);
-    for (let i = 1; i < s.points.length; i++) {
-      ctx.lineTo(s.points[i][0], s.points[i][1]);
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
-}
+const INIT_WIDTH = 560;
+const INIT_TOP = 56;
+const NOTES_H = 240;
 
 // ── SinglePageView ────────────────────────────────────────────────────────────
-// Renders a single PDF page: PDF canvas + highlight canvas + text layer + draw canvas.
-// Handles its own rendering, text selection, and drawing.
+// Renders one PDF page: canvas + highlight overlay + selectable DIY text layer.
+// The text layer spans are positioned manually using pdfjsLib.Util.transform so
+// they align with the canvas rendering without relying on pdfjs TextLayer CSS vars.
 
 interface PageViewProps {
   pdfDoc: any;
   pageNum: number;
-  drawingStrokes: DrawingStroke[];
-  onNewStroke: (pageNum: number, stroke: DrawingStroke) => void;
-  tool: Tool;
-  penColor: string;
-  penWidth: number;
   annotations: Annotation[];
   activeNoteId: string | null;
   onTextSelect: (info: SelectionInfo) => void;
@@ -109,46 +69,20 @@ interface PageViewProps {
 const SinglePageView = memo(function SinglePageView({
   pdfDoc,
   pageNum,
-  drawingStrokes,
-  onNewStroke,
-  tool,
-  penColor,
-  penWidth,
   annotations,
   activeNoteId,
   onTextSelect,
   onAnnotationClick,
 }: PageViewProps) {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
-  const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
-  const drawCanvasRef = useRef<HTMLCanvasElement>(null);
+  const hlCanvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const vpRef = useRef<any>(null);
-  const isDrawingRef = useRef(false);
-  const currentPointsRef = useRef<[number, number][]>([]);
-  // Keep latest props in refs to avoid stale closures in event handlers
-  const toolRef = useRef(tool);
-  toolRef.current = tool;
-  const penColorRef = useRef(penColor);
-  penColorRef.current = penColor;
-  const penWidthRef = useRef(penWidth);
-  penWidthRef.current = penWidth;
-  const drawingStrokesRef = useRef(drawingStrokes);
-  drawingStrokesRef.current = drawingStrokes;
-  const onNewStrokeRef = useRef(onNewStroke);
-  onNewStrokeRef.current = onNewStroke;
-  const onTextSelectRef = useRef(onTextSelect);
-  onTextSelectRef.current = onTextSelect;
-  const onAnnotationClickRef = useRef(onAnnotationClick);
-  onAnnotationClickRef.current = onAnnotationClick;
-  const pageNumRef = useRef(pageNum);
-  pageNumRef.current = pageNum;
 
-  // ── Render PDF + text layer ──────────────────────────────────────────────────
+  // ── Render page + build DIY text layer ──────────────────────────────────────
   useEffect(() => {
     if (!pdfDoc) return;
     let cancelled = false;
-    let textLayerTask: any = null;
 
     (async () => {
       try {
@@ -158,118 +92,118 @@ const SinglePageView = memo(function SinglePageView({
         const vp = pdfPage.getViewport({ scale: RENDER_SCALE });
         vpRef.current = vp;
 
-        // Size all canvases to match viewport
         const pdfCanvas = pdfCanvasRef.current;
-        const drawCanvas = drawCanvasRef.current;
-        const hlCanvas = highlightCanvasRef.current;
+        const hlCanvas = hlCanvasRef.current;
         const textLayerEl = textLayerRef.current;
-        if (!pdfCanvas || !drawCanvas || !textLayerEl) return;
+        if (!pdfCanvas || !hlCanvas || !textLayerEl) return;
 
+        // Size canvases to viewport
         pdfCanvas.width = vp.width;
         pdfCanvas.height = vp.height;
-        drawCanvas.width = vp.width;
-        drawCanvas.height = vp.height;
-        if (hlCanvas) {
-          hlCanvas.width = vp.width;
-          hlCanvas.height = vp.height;
-        }
+        hlCanvas.width = vp.width;
+        hlCanvas.height = vp.height;
 
-        // Render PDF page to canvas
+        // Render PDF page
         const ctx = pdfCanvas.getContext("2d")!;
         await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
         if (cancelled) return;
 
-        // Render existing drawing strokes
-        const dCtx = drawCanvas.getContext("2d")!;
-        renderStrokesToCtx(dCtx, drawingStrokesRef.current);
-
-        // Render text layer using pdfjs-dist 5.x TextLayer class.
-        // IMPORTANT: pdfjs TextLayer.render() internally calls setLayerDimensions()
-        // which sets container width/height to `calc(var(--total-scale-factor) * pageWidth)`.
-        // Without --total-scale-factor the container collapses to 0×0 and overflow:hidden
-        // clips every span, making selection impossible.
-        textLayerEl.innerHTML = "";
-        // Set --total-scale-factor so pdfjs can size the container and spans correctly.
-        textLayerEl.style.setProperty("--total-scale-factor", String(RENDER_SCALE));
-
-        try {
-          const TL = pdfjsLib.TextLayer;
-          textLayerTask = new TL({
-            textContentSource: pdfPage.streamTextContent(),
-            container: textLayerEl,
-            viewport: vp,
-          });
-          await textLayerTask.render();
-        } catch (err) {
-          console.warn("TextLayer render failed:", err);
-        }
-
+        // Build DIY text layer ──────────────────────────────────────────────
+        // We do NOT use pdfjsLib.TextLayer because it requires --total-scale-factor
+        // CSS variables that collapse the container when not set correctly.
+        // Instead we place spans manually using Util.transform, then CSS-scale
+        // the whole container to match the displayed canvas size.
+        const textContent = await pdfPage.getTextContent();
         if (cancelled) return;
 
-        // Apply CSS scale so text layer spans align with the CSS-scaled canvas
+        textLayerEl.innerHTML = "";
+        // Container is sized in viewport (1.5×) coordinates; a CSS transform
+        // scales it down to match the displayed canvas width.
+        textLayerEl.style.width = `${vp.width}px`;
+        textLayerEl.style.height = `${vp.height}px`;
+
+        const frag = document.createDocumentFragment();
+        for (const raw of textContent.items) {
+          const item = raw as any;
+          if (!("str" in item) || !item.str) continue;
+
+          // Map PDF text matrix → viewport pixel coordinates
+          const tx = pdfjsLib.Util.transform(vp.transform, item.transform);
+          // Font height = magnitude of the x-basis vector of the combined transform
+          const fontHeight = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+          if (fontHeight < 0.5) continue;
+          const angle = Math.atan2(tx[1], tx[0]);
+
+          // tx[4], tx[5] = baseline position in viewport pixels
+          // CSS top = baseline - font ascent (approx = fontHeight for full em)
+          const span = document.createElement("span");
+          span.textContent = item.str;
+          span.style.cssText = [
+            `left:${tx[4]}px`,
+            `top:${tx[5] - fontHeight}px`,
+            `font-size:${fontHeight}px`,
+            "color:transparent",
+            "position:absolute",
+            "white-space:pre",
+            "line-height:1",
+            "cursor:text",
+            "transform-origin:0% 0%",
+            Math.abs(angle) > 0.01 ? `transform:rotate(${angle}rad)` : "",
+          ]
+            .filter(Boolean)
+            .join(";");
+          frag.appendChild(span);
+        }
+        textLayerEl.appendChild(frag);
+
+        // Scale text layer to match the CSS-rendered canvas size
         requestAnimationFrame(() => {
           if (!pdfCanvasRef.current || !textLayerRef.current || !vpRef.current) return;
-          const rect = pdfCanvasRef.current.getBoundingClientRect();
-          if (rect.width > 0 && vpRef.current.width > 0) {
-            const s = rect.width / vpRef.current.width;
+          const r = pdfCanvasRef.current.getBoundingClientRect();
+          if (r.width > 0) {
+            const s = r.width / vpRef.current.width;
             textLayerRef.current.style.transform = `scale(${s})`;
-            textLayerRef.current.style.transformOrigin = "top left";
           }
         });
       } catch {
-        // ignore render errors (cancelled or PDF unloaded)
+        // ignore cancelled or unmounted
       }
     })();
 
     return () => {
       cancelled = true;
-      try { textLayerTask?.cancel(); } catch {}
     };
-  }, [pdfDoc, pageNum]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pdfDoc, pageNum]);
 
-  // ── Re-render drawing layer when strokes change ──────────────────────────────
-  useEffect(() => {
-    const drawCanvas = drawCanvasRef.current;
-    if (!drawCanvas) return;
-    const dCtx = drawCanvas.getContext("2d");
-    if (!dCtx) return;
-    renderStrokesToCtx(dCtx, drawingStrokes);
-  }, [drawingStrokes]);
-
-  // ── Update text layer transform on canvas resize ────────────────────────────
+  // Keep text layer scale in sync when the panel is resized
   useEffect(() => {
     const canvas = pdfCanvasRef.current;
     if (!canvas) return;
-    const observer = new ResizeObserver(() => {
+    const obs = new ResizeObserver(() => {
       if (!vpRef.current || !textLayerRef.current) return;
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width > 0 && vpRef.current.width > 0) {
-        const s = rect.width / vpRef.current.width;
-        textLayerRef.current.style.transform = `scale(${s})`;
-        textLayerRef.current.style.transformOrigin = "top left";
+      const r = canvas.getBoundingClientRect();
+      if (r.width > 0) {
+        textLayerRef.current.style.transform = `scale(${r.width / vpRef.current.width})`;
       }
     });
-    observer.observe(canvas);
-    return () => observer.disconnect();
+    obs.observe(canvas);
+    return () => obs.disconnect();
   }, []);
 
-  // ── Highlight annotation rects ────────────────────────────────────────────────
+  // Draw annotation highlights on the highlight canvas
   useEffect(() => {
-    const canvas = highlightCanvasRef.current;
+    const canvas = hlCanvasRef.current;
     if (!canvas || canvas.width === 0) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const pageAnns = annotations.filter(
-      (a) => a.page_num === pageNum && a.highlight_rects?.length
-    );
-    for (const ann of pageAnns) {
+    for (const ann of annotations) {
+      if (ann.page_num !== pageNum || !ann.highlight_rects?.length) continue;
       ctx.save();
       ctx.fillStyle =
         ann.id === activeNoteId
-          ? "rgba(79, 70, 229, 0.28)"
-          : "rgba(255, 213, 0, 0.38)";
-      for (const r of ann.highlight_rects!) {
+          ? "rgba(79,70,229,0.30)"
+          : "rgba(255,213,0,0.42)";
+      for (const r of ann.highlight_rects) {
         ctx.fillRect(
           r.x * canvas.width,
           r.y * canvas.height,
@@ -282,16 +216,18 @@ const SinglePageView = memo(function SinglePageView({
   }, [annotations, pageNum, activeNoteId]);
 
   // ── Text selection ────────────────────────────────────────────────────────────
-  function onTextLayerMouseUp(e: React.MouseEvent<HTMLDivElement>) {
+  function onMouseUp(e: React.MouseEvent<HTMLDivElement>) {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
+    if (!sel || sel.isCollapsed) return;
     const text = sel.toString().trim();
+    if (!text) return;
+
     const range = sel.getRangeAt(0);
-    const clientRects = Array.from(range.getClientRects());
     const canvasEl = pdfCanvasRef.current;
     if (!canvasEl) return;
     const canvasRect = canvasEl.getBoundingClientRect();
-    const rects: HighlightRect[] = clientRects
+
+    const rects: HighlightRect[] = Array.from(range.getClientRects())
       .filter((r) => r.width > 0 && r.height > 0)
       .map((r) => ({
         x: (r.left - canvasRect.left) / canvasRect.width,
@@ -299,145 +235,65 @@ const SinglePageView = memo(function SinglePageView({
         w: r.width / canvasRect.width,
         h: r.height / canvasRect.height,
       }));
-    onTextSelectRef.current({
-      text,
-      rects,
-      pageNum: pageNumRef.current,
-      popupX: e.clientX,
-      popupY: e.clientY,
-    });
+
+    if (rects.length > 0) {
+      onTextSelect({ text, rects, pageNum, popupX: e.clientX, popupY: e.clientY });
+    }
   }
 
-  function onTextLayerClick(e: React.MouseEvent<HTMLDivElement>) {
+  // Click on an existing highlight → activate that annotation
+  function onClick(e: React.MouseEvent<HTMLDivElement>) {
     const sel = window.getSelection();
-    if (sel && !sel.isCollapsed) return;
+    if (sel && !sel.isCollapsed) return; // ongoing selection, ignore
+
     const canvasEl = pdfCanvasRef.current;
     if (!canvasEl) return;
-    const canvasRect = canvasEl.getBoundingClientRect();
-    const cx = (e.clientX - canvasRect.left) / canvasRect.width;
-    const cy = (e.clientY - canvasRect.top) / canvasRect.height;
-    const pageAnns = annotations.filter(
-      (a) => a.page_num === pageNumRef.current && a.highlight_rects?.length
-    );
-    for (const ann of pageAnns) {
-      for (const r of ann.highlight_rects!) {
-        if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
-          onAnnotationClickRef.current(ann.id, pageNumRef.current);
+    const r = canvasEl.getBoundingClientRect();
+    const cx = (e.clientX - r.left) / r.width;
+    const cy = (e.clientY - r.top) / r.height;
+
+    for (const ann of annotations) {
+      if (ann.page_num !== pageNum || !ann.highlight_rects?.length) continue;
+      for (const hr of ann.highlight_rects) {
+        if (cx >= hr.x && cx <= hr.x + hr.w && cy >= hr.y && cy <= hr.y + hr.h) {
+          onAnnotationClick(ann.id, pageNum);
           return;
         }
       }
     }
   }
 
-  // ── Drawing ───────────────────────────────────────────────────────────────────
-  function getCanvasXY(e: React.MouseEvent<HTMLCanvasElement>): [number, number] {
-    const el = drawCanvasRef.current!;
-    const rect = el.getBoundingClientRect();
-    const scaleX = el.width / rect.width;
-    const scaleY = el.height / rect.height;
-    return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
-  }
-
-  function onDrawMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    isDrawingRef.current = true;
-    currentPointsRef.current = [getCanvasXY(e)];
-  }
-
-  function onDrawMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (!isDrawingRef.current) return;
-    const pt = getCanvasXY(e);
-    currentPointsRef.current.push(pt);
-    const dCtx = drawCanvasRef.current?.getContext("2d");
-    if (!dCtx) return;
-    const pts = currentPointsRef.current;
-    if (pts.length < 2) return;
-    const t = toolRef.current;
-    dCtx.save();
-    if (t === "eraser") {
-      dCtx.globalCompositeOperation = "destination-out";
-      dCtx.strokeStyle = "rgba(0,0,0,1)";
-      dCtx.lineWidth = penWidthRef.current * 5;
-    } else {
-      dCtx.globalCompositeOperation = "source-over";
-      dCtx.strokeStyle = penColorRef.current;
-      dCtx.lineWidth = penWidthRef.current;
-    }
-    dCtx.lineCap = "round";
-    dCtx.lineJoin = "round";
-    dCtx.beginPath();
-    dCtx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
-    dCtx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-    dCtx.stroke();
-    dCtx.restore();
-  }
-
-  function onDrawMouseUp() {
-    if (!isDrawingRef.current) return;
-    isDrawingRef.current = false;
-    const pts = currentPointsRef.current;
-    currentPointsRef.current = [];
-    if (pts.length < 2) return;
-    const t = toolRef.current;
-    const strokeTool = t === "select" ? "pen" : t;
-    const stroke: DrawingStroke = {
-      color: strokeTool === "eraser" ? "#000000" : penColorRef.current,
-      width: strokeTool === "eraser" ? penWidthRef.current * 5 : penWidthRef.current,
-      points: [...pts],
-      tool: strokeTool,
-    };
-    onNewStrokeRef.current(pageNumRef.current, stroke);
-  }
-
   return (
     <div style={{ position: "relative" }}>
-      {/* PDF canvas — CSS-scaled to container width */}
-      <canvas ref={pdfCanvasRef} style={{ display: "block", width: "100%", height: "auto" }} />
-      {/* Annotation highlight overlay */}
+      {/* PDF rendered to canvas */}
       <canvas
-        ref={highlightCanvasRef}
+        ref={pdfCanvasRef}
+        style={{ display: "block", width: "100%", height: "auto" }}
+      />
+      {/* Yellow/purple annotation highlights */}
+      <canvas
+        ref={hlCanvasRef}
         style={{
           position: "absolute",
-          top: 0,
-          left: 0,
+          inset: 0,
           width: "100%",
           height: "100%",
           pointerEvents: "none",
         }}
       />
-      {/* Selectable text layer */}
+      {/* Selectable transparent text layer */}
       <div
         ref={textLayerRef}
-        className="ep-pdf-textlayer"
         style={{
           position: "absolute",
           top: 0,
           left: 0,
           overflow: "hidden",
-          pointerEvents: tool === "select" ? "auto" : "none",
-          userSelect: tool === "select" ? "text" : "none",
+          transformOrigin: "0 0",
+          userSelect: "text",
         }}
-        onMouseUp={tool === "select" ? onTextLayerMouseUp : undefined}
-        onClick={tool === "select" ? onTextLayerClick : undefined}
-      />
-      {/* Drawing canvas */}
-      <canvas
-        ref={drawCanvasRef}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          touchAction: "none",
-          cursor: tool === "select" ? "default" : "crosshair",
-          pointerEvents: tool === "select" ? "none" : "auto",
-        }}
-        onMouseDown={onDrawMouseDown}
-        onMouseMove={onDrawMouseMove}
-        onMouseUp={onDrawMouseUp}
-        onMouseLeave={onDrawMouseUp}
+        onMouseUp={onMouseUp}
+        onClick={onClick}
       />
     </div>
   );
@@ -473,32 +329,34 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     enabled: !!itemKey,
   });
 
-  const [noteDraft, setNoteDraft] = useState("");
-  const [pendingSelection, setPendingSelection] = useState<SelectionInfo | null>(null);
-  const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
 
   const createMut = useMutation({
-    mutationFn: (comment: string) =>
+    mutationFn: (draft: { comment: string; sel: SelectionInfo | null }) =>
       annotationsApi.create(projectId, {
         record_id: item.record_id ?? null,
         cluster_id: item.cluster_id ?? null,
-        selected_text: pendingSelection?.text ?? "",
-        comment,
-        page_num: pendingSelection?.pageNum ?? null,
-        highlight_rects: pendingSelection?.rects ?? null,
+        selected_text: draft.sel?.text ?? "",
+        comment: draft.comment,
+        page_num: draft.sel?.pageNum ?? null,
+        highlight_rects: draft.sel?.rects ?? null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["annotations", itemKey] });
       setNoteDraft("");
-      setPendingSelection(null);
+      setSelectionInfo(null);
+      window.getSelection()?.removeAllRanges();
+      setNotesOpen(true);
     },
   });
 
-  function submitNote() {
+  function saveNote() {
     const comment = noteDraft.trim();
     if (!comment) return;
-    createMut.mutate(comment);
+    createMut.mutate({ comment, sel: selectionInfo });
   }
 
   function deleteAnnotation(annId: string) {
@@ -533,15 +391,19 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
         setPdfError(err?.message || "Failed to load PDF");
         setPdfLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [projectId, meta?.id]);
 
   useEffect(
-    () => () => { if (prevUrl.current) URL.revokeObjectURL(prevUrl.current); },
+    () => () => {
+      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+    },
     []
   );
 
-  // ── PDF.js doc ────────────────────────────────────────────────────────────────
+  // ── PDF.js document ───────────────────────────────────────────────────────────
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [numPages, setNumPages] = useState(0);
   const [pageNum, setPageNum] = useState(1);
@@ -560,87 +422,24 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       .catch((err) => {
         if (!cancelled) setPdfError(err?.message || "Failed to parse PDF");
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [blobUrl]);
-
-  // ── Drawing state ─────────────────────────────────────────────────────────────
-  const [drawingData, setDrawingData] = useState<DrawingData>({});
-  const [tool, setTool] = useState<Tool>("select");
-  const [penColor, setPenColor] = useState("#e53e3e");
-  const [penWidth, setPenWidth] = useState(3);
-  const drawingDataRef = useRef<DrawingData>(drawingData);
-  drawingDataRef.current = drawingData;
-
-  useEffect(() => {
-    if (meta?.drawing_data) {
-      setDrawingData(meta.drawing_data as DrawingData);
-    } else {
-      setDrawingData({});
-    }
-  }, [meta?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const saveMut = useMutation({
-    mutationFn: ({ pdfId, data }: { pdfId: string; data: DrawingData }) =>
-      fulltextApi.saveDrawing(projectId, pdfId, data),
-    onSuccess: (res) => {
-      qc.setQueryData(["fulltext-pdf", projectId, itemKey], res.data);
-    },
-  });
-
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function scheduleSave() {
-    if (!meta?.id) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    const pdfId = meta.id;
-    saveTimerRef.current = setTimeout(() => {
-      saveMut.mutate({ pdfId, data: drawingDataRef.current });
-    }, SAVE_DEBOUNCE_MS);
-  }
-
-  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
-
-  function handleNewStroke(pNum: number, stroke: DrawingStroke) {
-    const key = String(pNum);
-    setDrawingData((prev) => {
-      const updated = { ...prev, [key]: [...(prev[key] ?? []), stroke] };
-      return updated;
-    });
-    scheduleSave();
-  }
-
-  function clearCurrentPage() {
-    const key = String(pageNum);
-    setDrawingData((prev) => ({ ...prev, [key]: [] }));
-    scheduleSave();
-  }
 
   // ── Layout mode ───────────────────────────────────────────────────────────────
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("single");
 
-  // Page step depends on layout
-  function prevPage() {
-    setPageNum((p) => Math.max(1, p - (layoutMode === "two" ? 2 : 1)));
-  }
-  function nextPage() {
-    setPageNum((p) => Math.min(numPages, p + (layoutMode === "two" ? 2 : 1)));
-  }
-  const atStart = pageNum <= 1;
-  const atEnd = layoutMode === "two" ? pageNum + 1 >= numPages : pageNum >= numPages;
-
-  // ── Panel position & size ─────────────────────────────────────────────────────
+  // ── Panel geometry ────────────────────────────────────────────────────────────
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const [width, setWidth] = useState(INIT_WIDTH);
   const [minimized, setMinimized] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
 
-  const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (pos === null) {
-      setPos({ left: window.innerWidth - INIT_WIDTH - INIT_RIGHT, top: INIT_HEIGHT_OFFSET });
-    }
+    if (pos === null)
+      setPos({ left: window.innerWidth - INIT_WIDTH, top: INIT_TOP });
   }, [pos]);
 
-  // Header drag
   const moveStart = useRef<{ mx: number; my: number; left: number; top: number } | null>(null);
   const onHeaderMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -654,11 +453,21 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       moveStart.current = { mx: e.clientX, my: e.clientY, left: pos.left, top: pos.top };
       const onMove = (me: MouseEvent) => {
         if (!moveStart.current) return;
-        const dx = me.clientX - moveStart.current.mx;
-        const dy = me.clientY - moveStart.current.my;
         setPos({
-          left: Math.max(0, Math.min(window.innerWidth - width, moveStart.current.left + dx)),
-          top: Math.max(0, Math.min(window.innerHeight - 60, moveStart.current.top + dy)),
+          left: Math.max(
+            0,
+            Math.min(
+              window.innerWidth - width,
+              moveStart.current.left + me.clientX - moveStart.current.mx
+            )
+          ),
+          top: Math.max(
+            0,
+            Math.min(
+              window.innerHeight - 60,
+              moveStart.current.top + me.clientY - moveStart.current.my
+            )
+          ),
         });
       };
       const onUp = () => {
@@ -672,7 +481,6 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     [pos, width]
   );
 
-  // Left-edge resize
   const resizeStart = useRef<{ mx: number; initW: number; initLeft: number } | null>(null);
   const onResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -681,10 +489,17 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     const onMove = (me: MouseEvent) => {
       if (!resizeStart.current) return;
       const delta = resizeStart.current.mx - me.clientX;
-      const next = Math.min(900, Math.max(320, resizeStart.current.initW + delta));
+      const next = Math.min(1100, Math.max(340, resizeStart.current.initW + delta));
       setWidth(next);
       setPos((p) =>
-        p ? { ...p, left: resizeStart.current!.initLeft - (next - resizeStart.current!.initW) } : p
+        p
+          ? {
+              ...p,
+              left:
+                resizeStart.current!.initLeft -
+                (next - resizeStart.current!.initW),
+            }
+          : p
       );
     };
     const onUp = () => {
@@ -699,19 +514,14 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
   if (pos === null) return null;
 
   const filename = meta?.original_filename ?? "";
-  const displayName = filename.length > 32 ? filename.slice(0, 29) + "…" : filename;
-  const savingLabel = saveMut.isPending ? "Saving…" : saveMut.isError ? "⚠ Save failed" : "";
+  const displayName = filename.length > 36 ? filename.slice(0, 33) + "…" : filename;
 
-  // ── Shared SinglePageView props ───────────────────────────────────────────────
-  const sharedPageProps = {
+  // Shared props for every SinglePageView
+  const sharedPage = {
     pdfDoc,
-    tool,
-    penColor,
-    penWidth,
     annotations,
     activeNoteId,
-    onNewStroke: handleNewStroke,
-    onTextSelect: (info: SelectionInfo) => setSelectionInfo(info),
+    onTextSelect: setSelectionInfo,
     onAnnotationClick: (annId: string, pNum: number) => {
       setActiveNoteId(annId === activeNoteId ? null : annId);
       if (layoutMode === "single") setPageNum(pNum);
@@ -719,411 +529,454 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
     },
   };
 
-  // ── Styles ────────────────────────────────────────────────────────────────────
-  const panelStyle: React.CSSProperties = {
-    position: "fixed",
-    left: pos.left,
-    top: pos.top,
-    width: `${width}px`,
-    height: minimized ? "auto" : `calc(100vh - ${pos.top}px)`,
-    maxHeight: minimized ? undefined : `calc(100vh - ${pos.top}px)`,
-    zIndex: 300,
-    background: "#fff",
-    boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
-    display: "flex",
-    flexDirection: "column",
-    borderRadius: "0.5rem",
-    border: "1px solid #e2e8f0",
-    overflow: "hidden",
-  };
-
-  const headerStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.45rem",
-    padding: "0.4rem 0.65rem",
-    background: "#4f46e5",
-    color: "#fff",
-    fontSize: "0.78rem",
-    fontWeight: 600,
-    flexShrink: 0,
-    cursor: "grab",
-    userSelect: "none",
-  };
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   const iconBtn: React.CSSProperties = {
     background: "none",
     border: "none",
     color: "#fff",
     cursor: "pointer",
-    fontSize: "0.85rem",
     padding: "0.1rem 0.3rem",
     borderRadius: "0.25rem",
     lineHeight: 1,
-  };
-
-  const toolbarStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.4rem",
-    padding: "0.3rem 0.6rem",
-    borderBottom: "1px solid #e2e8f0",
-    background: "#f8fafc",
-    flexShrink: 0,
-    flexWrap: "wrap",
+    fontSize: "0.85rem",
   };
 
   const toolBtn = (active: boolean): React.CSSProperties => ({
-    padding: "0.2rem 0.55rem",
+    padding: "0.18rem 0.5rem",
     borderRadius: "0.25rem",
     border: `1.5px solid ${active ? "#4f46e5" : "#cbd5e1"}`,
     background: active ? "#eef2ff" : "#fff",
     color: active ? "#4f46e5" : "#475569",
     cursor: "pointer",
-    fontSize: "0.75rem",
+    fontSize: "0.73rem",
     fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    gap: "0.22rem",
   });
 
-  const divider: React.CSSProperties = {
-    width: "1px",
-    height: "20px",
-    background: "#e2e8f0",
-    margin: "0 0.15rem",
-  };
-
   return (
-    <div ref={panelRef} style={panelStyle} aria-label="PDF viewer panel">
-      {/* pdfjs 5.x TextLayer CSS — must mirror pdf_viewer.css for spans to be sized/positioned correctly */}
-      <style>{`
-        .ep-pdf-textlayer {
-          position: absolute;
-          top: 0; left: 0;
-          overflow: hidden;
-          line-height: 1;
-          -webkit-text-size-adjust: none;
-          text-size-adjust: none;
-          transform-origin: 0 0;
-          z-index: 0;
-          /* CSS custom-property chain that pdfjs render() depends on */
-          --min-font-size: 1;
-          --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
-          --min-font-size-inv: calc(1 / var(--min-font-size));
-        }
-        /* pdfjs places text as absolutely-positioned transparent spans */
-        .ep-pdf-textlayer :is(span, br) {
-          color: transparent;
-          position: absolute;
-          white-space: pre;
-          cursor: text;
-          transform-origin: 0% 0%;
-        }
-        /* pdfjs 5.x sizes and transforms each span via per-span CSS vars */
-        .ep-pdf-textlayer > :not(.markedContent),
-        .ep-pdf-textlayer .markedContent span:not(.markedContent) {
-          z-index: 1;
-          --font-height: 0;
-          font-size: calc(var(--text-scale-factor) * var(--font-height));
-          --scale-x: 1;
-          --rotate: 0deg;
-          transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
-        }
-        .ep-pdf-textlayer .markedContent { display: contents; }
-        .ep-pdf-textlayer span::selection,
-        .ep-pdf-textlayer ::selection {
-          background: rgba(79, 70, 229, 0.28) !important;
-          color: transparent !important;
-        }
-        .ep-pdf-textlayer .highlight {
-          margin: -1px; padding: 1px;
-          background-color: rgba(79, 70, 229, 0.18);
-          border-radius: 3px;
-        }
-      `}</style>
+    <div
+      style={{
+        position: "fixed",
+        left: pos.left,
+        top: pos.top,
+        width: `${width}px`,
+        height: minimized ? "auto" : `calc(100vh - ${pos.top}px)`,
+        maxHeight: minimized ? undefined : `calc(100vh - ${pos.top}px)`,
+        zIndex: 300,
+        background: "#fff",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+        display: "flex",
+        flexDirection: "column",
+        borderRadius: "0.5rem",
+        border: "1px solid #e2e8f0",
+        overflow: "hidden",
+      }}
+      aria-label="PDF viewer panel"
+    >
+      {/* Left-edge resize handle */}
       {!minimized && (
         <div
-          style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "5px", cursor: "ew-resize", zIndex: 1 }}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 5,
+            cursor: "ew-resize",
+            zIndex: 1,
+          }}
           onMouseDown={onResizeMouseDown}
         />
       )}
 
-      {/* Header */}
-      <div style={headerStyle} onMouseDown={onHeaderMouseDown}>
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.45rem",
+          padding: "0.4rem 0.65rem",
+          background: "#4f46e5",
+          color: "#fff",
+          fontSize: "0.78rem",
+          fontWeight: 600,
+          flexShrink: 0,
+          cursor: "grab",
+          userSelect: "none",
+        }}
+        onMouseDown={onHeaderMouseDown}
+      >
         <span style={{ fontSize: "0.9rem", pointerEvents: "none" }}>📄</span>
         <span
-          style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", pointerEvents: "none" }}
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          }}
           title={filename || "PDF Viewer"}
         >
           {displayName || "PDF Viewer"}
         </span>
-        {savingLabel && (
-          <span style={{ fontSize: "0.7rem", opacity: 0.85, pointerEvents: "none" }}>{savingLabel}</span>
-        )}
-        <button style={iconBtn} title={minimized ? "Expand" : "Minimise"} onClick={() => setMinimized((v) => !v)}>
-          {minimized ? "▲" : "▼"}
-        </button>
         {blobUrl && !minimized && (
-          <a href={blobUrl} download={filename} style={{ ...iconBtn, textDecoration: "none" }} title="Download PDF">
+          <a
+            href={blobUrl}
+            download={filename}
+            style={{ ...iconBtn, textDecoration: "none" }}
+            title="Download PDF"
+          >
             ⬇
           </a>
         )}
-        <button style={iconBtn} title="Close viewer" onClick={onClose}>
+        <button
+          style={iconBtn}
+          title={minimized ? "Expand" : "Minimise"}
+          onClick={() => setMinimized((v) => !v)}
+        >
+          {minimized ? "▲" : "▼"}
+        </button>
+        <button style={iconBtn} title="Close" onClick={onClose}>
           ✕
         </button>
       </div>
 
       {!minimized && (
         <>
-          {/* Toolbar */}
+          {/* ── Toolbar ─────────────────────────────────────────────────────── */}
           {pdfDoc && (
-            <div style={toolbarStyle}>
-              {/* Layout mode */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.35rem",
+                padding: "0.3rem 0.6rem",
+                borderBottom: "1px solid #e2e8f0",
+                background: "#f8fafc",
+                flexShrink: 0,
+                flexWrap: "wrap",
+              }}
+            >
+              {/* Layout toggle */}
               <button
-                style={{ ...toolBtn(layoutMode === "single"), display: "flex", alignItems: "center", gap: "0.2rem" }}
+                style={toolBtn(layoutMode === "single")}
                 onClick={() => setLayoutMode("single")}
                 title="Single page"
               >
-                <BookOpen size={13} />
+                <BookOpen size={13} /> Single
               </button>
               <button
-                style={{ ...toolBtn(layoutMode === "two"), display: "flex", alignItems: "center", gap: "0.2rem" }}
-                onClick={() => setLayoutMode("two")}
-                title="Two pages side by side"
-              >
-                <Columns2 size={13} />
-              </button>
-              <button
-                style={{ ...toolBtn(layoutMode === "continuous"), display: "flex", alignItems: "center", gap: "0.2rem" }}
+                style={toolBtn(layoutMode === "continuous")}
                 onClick={() => setLayoutMode("continuous")}
                 title="Continuous scroll"
               >
-                <AlignJustify size={13} />
+                <AlignJustify size={13} /> Scroll
               </button>
 
-              <div style={divider} />
-
-              {/* Page navigation (hidden in continuous mode) */}
-              {layoutMode !== "continuous" && (
+              {/* Page navigation (single mode only) */}
+              {layoutMode === "single" && (
                 <>
-                  <button style={toolBtn(false)} disabled={atStart} onClick={prevPage} title="Previous page">
+                  <div
+                    style={{
+                      width: 1,
+                      height: 20,
+                      background: "#e2e8f0",
+                      margin: "0 0.1rem",
+                    }}
+                  />
+                  <button
+                    style={{ ...toolBtn(false), padding: "0.18rem 0.4rem" }}
+                    disabled={pageNum <= 1}
+                    onClick={() => setPageNum((p) => p - 1)}
+                    title="Previous page"
+                  >
                     <ChevronLeft size={14} />
                   </button>
-                  <span style={{ fontSize: "0.75rem", color: "#475569", minWidth: "3.5rem", textAlign: "center" }}>
-                    {layoutMode === "two"
-                      ? `${pageNum}–${Math.min(pageNum + 1, numPages)} / ${numPages}`
-                      : `${pageNum} / ${numPages}`}
+                  <span
+                    style={{
+                      fontSize: "0.73rem",
+                      color: "#475569",
+                      minWidth: "4rem",
+                      textAlign: "center",
+                    }}
+                  >
+                    {pageNum} / {numPages}
                   </span>
-                  <button style={toolBtn(false)} disabled={atEnd} onClick={nextPage} title="Next page">
+                  <button
+                    style={{ ...toolBtn(false), padding: "0.18rem 0.4rem" }}
+                    disabled={pageNum >= numPages}
+                    onClick={() => setPageNum((p) => p + 1)}
+                    title="Next page"
+                  >
                     <ChevronRight size={14} />
                   </button>
-                  <div style={divider} />
                 </>
               )}
 
-              {/* Tool selector */}
-              <button
-                style={{ ...toolBtn(tool === "select"), display: "flex", alignItems: "center", gap: "0.25rem" }}
-                onClick={() => setTool("select")}
-                title="Select text"
-              >
-                <MousePointer2 size={13} /> Select
-              </button>
-              <button
-                style={{ ...toolBtn(tool === "pen"), display: "flex", alignItems: "center", gap: "0.25rem" }}
-                onClick={() => setTool("pen")}
-                title="Draw"
-              >
-                <Pen size={13} /> Pen
-              </button>
-              <button
-                style={{ ...toolBtn(tool === "eraser"), display: "flex", alignItems: "center", gap: "0.25rem" }}
-                onClick={() => setTool("eraser")}
-                title="Erase"
-              >
-                <Eraser size={13} /> Eraser
-              </button>
-
-              <div style={divider} />
-
-              {/* Color + width */}
-              <input
-                type="color"
-                value={penColor}
-                onChange={(e) => setPenColor(e.target.value)}
-                title="Pen color"
-                disabled={tool === "eraser"}
+              {/* Hint */}
+              <span
                 style={{
-                  width: "26px", height: "26px",
-                  border: "1px solid #cbd5e1", borderRadius: "0.2rem",
-                  padding: "1px", cursor: tool === "eraser" ? "default" : "pointer",
-                  opacity: tool === "eraser" ? 0.4 : 1,
+                  marginLeft: "auto",
+                  fontSize: "0.68rem",
+                  color: "#94a3b8",
+                  fontStyle: "italic",
                 }}
-              />
-              <select
-                value={penWidth}
-                onChange={(e) => setPenWidth(Number(e.target.value))}
-                title={tool === "eraser" ? "Eraser size" : "Stroke width"}
-                style={{ fontSize: "0.72rem", border: "1px solid #cbd5e1", borderRadius: "0.2rem", padding: "0.15rem 0.25rem", background: "#fff" }}
               >
-                <option value={1}>Thin</option>
-                <option value={3}>Medium</option>
-                <option value={6}>Thick</option>
-              </select>
-
-              {/* Clear page — shown in single/two modes only */}
-              {layoutMode !== "continuous" && (
-                <button
-                  style={{ ...toolBtn(false), marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.25rem", color: "#991b1b", borderColor: "#fca5a5" }}
-                  onClick={clearCurrentPage}
-                  title="Clear drawings on this page"
-                >
-                  <Trash2 size={12} /> Clear
-                </button>
-              )}
+                Drag to select text
+              </span>
             </div>
           )}
 
-          {/* PDF canvas area */}
+          {/* ── PDF canvas area ──────────────────────────────────────────────── */}
           <div
             style={{
               flex: 1,
               overflow: "auto",
               position: "relative",
-              background: "#e2e8f0",
+              background: "#525659",
               minHeight: 0,
             }}
           >
-            {/* Empty / loading / error states */}
             {!meta && !pdfLoading && !metaLoading && (
               <div style={centeredMsg}>
                 <span style={{ fontSize: "2rem" }}>📂</span>
                 No PDF uploaded yet.
                 <br />
-                Use the PDF panel above to upload a file.
+                Use the Upload PDF button to attach a file.
               </div>
             )}
             {pdfLoading && (
               <div style={centeredMsg}>
-                <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⏳</span>
-                Loading PDF…
+                <span>⏳</span> Loading…
               </div>
             )}
             {pdfError && (
-              <div style={{ ...centeredMsg, color: "#991b1b" }}>
-                <span style={{ fontSize: "1.4rem" }}>⚠️</span>
-                {pdfError}
+              <div style={{ ...centeredMsg, color: "#fca5a5" }}>
+                <span>⚠️</span> {pdfError}
               </div>
             )}
 
-            {/* ── Single page ── */}
             {pdfDoc && layoutMode === "single" && (
-              <div style={{ position: "relative" }}>
-                <SinglePageView
-                  {...sharedPageProps}
-                  pageNum={pageNum}
-                  drawingStrokes={drawingData[String(pageNum)] ?? []}
-                />
-              </div>
+              <SinglePageView {...sharedPage} pageNum={pageNum} />
             )}
 
-            {/* ── Two pages side by side ── */}
-            {pdfDoc && layoutMode === "two" && (
-              <div style={{ display: "flex", gap: "4px", alignItems: "flex-start" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <SinglePageView
-                    {...sharedPageProps}
-                    pageNum={pageNum}
-                    drawingStrokes={drawingData[String(pageNum)] ?? []}
-                  />
-                </div>
-                {pageNum + 1 <= numPages && (
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <SinglePageView
-                      {...sharedPageProps}
-                      pageNum={pageNum + 1}
-                      drawingStrokes={drawingData[String(pageNum + 1)] ?? []}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Continuous scroll ── */}
             {pdfDoc && layoutMode === "continuous" && (
-              <div style={{ padding: "4px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
-                  <SinglePageView
-                    key={p}
-                    {...sharedPageProps}
-                    pageNum={p}
-                    drawingStrokes={drawingData[String(p)] ?? []}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Selection popup */}
-            {selectionInfo && (
               <div
                 style={{
-                  position: "fixed",
-                  left: Math.min(selectionInfo.popupX, window.innerWidth - 240),
-                  top: selectionInfo.popupY - 48,
-                  background: "#fff",
-                  border: "1.5px solid #4f46e5",
-                  borderRadius: "0.4rem",
-                  padding: "0.3rem 0.55rem",
                   display: "flex",
-                  gap: "0.45rem",
-                  alignItems: "center",
-                  boxShadow: "0 2px 12px rgba(0,0,0,0.15)",
-                  zIndex: 400,
-                  fontSize: "0.8rem",
+                  flexDirection: "column",
+                  gap: 6,
+                  padding: 4,
                 }}
               >
-                <span style={{ color: "#64748b", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  "{selectionInfo.text.length > 35 ? selectionInfo.text.slice(0, 35) + "…" : selectionInfo.text}"
-                </span>
-                <button
-                  onClick={() => {
-                    setPendingSelection(selectionInfo);
-                    setSelectionInfo(null);
-                    setNotesOpen(true);
-                    window.getSelection()?.removeAllRanges();
-                  }}
-                  style={{ background: "#4f46e5", color: "#fff", border: "none", borderRadius: "0.25rem", padding: "0.2rem 0.55rem", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  + Note
-                </button>
-                <button
-                  onClick={() => { setSelectionInfo(null); window.getSelection()?.removeAllRanges(); }}
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: "0.9rem", lineHeight: 1, padding: "0.1rem" }}
-                >
-                  ×
-                </button>
+                {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+                  <SinglePageView key={p} {...sharedPage} pageNum={p} />
+                ))}
               </div>
             )}
           </div>
 
-          {/* Notes drawer */}
-          <div style={{ flexShrink: 0, borderTop: "1px solid #e2e8f0", background: "#fafafa" }}>
+          {/* ── Text selection popup ─────────────────────────────────────────── */}
+          {selectionInfo && (
             <div
-              style={{ display: "flex", alignItems: "center", padding: "0.3rem 0.65rem", cursor: "pointer", userSelect: "none", gap: "0.4rem" }}
+              style={{
+                position: "fixed",
+                left: Math.min(selectionInfo.popupX, window.innerWidth - 280),
+                top: Math.max(8, selectionInfo.popupY - 130),
+                width: 270,
+                background: "#fff",
+                border: "1.5px solid #4f46e5",
+                borderRadius: "0.5rem",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.18)",
+                zIndex: 500,
+                padding: "0.6rem 0.75rem 0.55rem",
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.4rem",
+              }}
+            >
+              {/* Selected text preview */}
+              <div
+                style={{
+                  fontSize: "0.72rem",
+                  color: "#475569",
+                  background: "#f1f5f9",
+                  borderRadius: "0.25rem",
+                  padding: "0.3rem 0.45rem",
+                  fontStyle: "italic",
+                  lineHeight: 1.4,
+                  maxHeight: 56,
+                  overflow: "hidden",
+                }}
+              >
+                "
+                {selectionInfo.text.length > 100
+                  ? selectionInfo.text.slice(0, 100) + "…"
+                  : selectionInfo.text}
+                "
+              </div>
+              {/* Note textarea */}
+              <textarea
+                autoFocus
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                placeholder="Add a note about this passage… (⌘↵ to save)"
+                rows={2}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  fontSize: "0.8rem",
+                  fontFamily: "inherit",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "0.25rem",
+                  padding: "0.3rem 0.45rem",
+                  resize: "none",
+                  outline: "none",
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    saveNote();
+                  }
+                  if (e.key === "Escape") {
+                    setSelectionInfo(null);
+                    setNoteDraft("");
+                    window.getSelection()?.removeAllRanges();
+                  }
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: "0.4rem",
+                }}
+              >
+                <button
+                  onClick={() => {
+                    setSelectionInfo(null);
+                    setNoteDraft("");
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                  style={{
+                    fontSize: "0.73rem",
+                    padding: "0.22rem 0.6rem",
+                    borderRadius: "0.25rem",
+                    border: "1px solid #e2e8f0",
+                    background: "#fff",
+                    cursor: "pointer",
+                    color: "#64748b",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveNote}
+                  disabled={!noteDraft.trim() || createMut.isPending}
+                  style={{
+                    fontSize: "0.73rem",
+                    fontWeight: 600,
+                    padding: "0.22rem 0.75rem",
+                    borderRadius: "0.25rem",
+                    border: "none",
+                    background: noteDraft.trim() ? "#4f46e5" : "#e2e8f0",
+                    color: noteDraft.trim() ? "#fff" : "#94a3b8",
+                    cursor: noteDraft.trim() ? "pointer" : "default",
+                  }}
+                >
+                  {createMut.isPending ? "Saving…" : "Save note"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Notes drawer ─────────────────────────────────────────────────── */}
+          <div
+            style={{
+              flexShrink: 0,
+              borderTop: "1px solid #e2e8f0",
+              background: "#fafafa",
+            }}
+          >
+            {/* Drawer header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                padding: "0.3rem 0.65rem",
+                cursor: "pointer",
+                userSelect: "none",
+                gap: "0.4rem",
+              }}
               onClick={() => setNotesOpen((v) => !v)}
             >
-              <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                <StickyNote size={12} style={{ flexShrink: 0 }} /> Notes ({annotations.length})
+              <StickyNote size={12} style={{ color: "#64748b", flexShrink: 0 }} />
+              <span
+                style={{
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                }}
+              >
+                Notes ({annotations.length})
               </span>
-              <span style={{ marginLeft: "auto", fontSize: "0.7rem", color: "#94a3b8" }}>
+              {/* Page badges for quick overview */}
+              {annotations.length > 0 && (
+                <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                  {[...new Set(annotations.map((a) => a.page_num).filter(Boolean))]
+                    .sort((a, b) => (a ?? 0) - (b ?? 0))
+                    .slice(0, 6)
+                    .map((p) => (
+                      <span
+                        key={p}
+                        style={{
+                          fontSize: "0.62rem",
+                          background: "#eef2ff",
+                          color: "#4f46e5",
+                          borderRadius: "0.2rem",
+                          padding: "0 0.3rem",
+                          fontWeight: 600,
+                        }}
+                      >
+                        p.{p}
+                      </span>
+                    ))}
+                </span>
+              )}
+              <span
+                style={{ marginLeft: "auto", fontSize: "0.7rem", color: "#94a3b8" }}
+              >
                 {notesOpen ? "▼" : "▲"}
               </span>
             </div>
 
             {notesOpen && (
-              <div style={{ height: NOTES_H, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                <div style={{ flex: 1, overflowY: "auto", padding: "0 0.65rem 0.4rem" }}>
+              <div
+                style={{
+                  height: NOTES_H,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Annotation list */}
+                <div
+                  style={{ flex: 1, overflowY: "auto", padding: "0 0.65rem 0.4rem" }}
+                >
                   {annotations.length === 0 && (
-                    <p style={{ color: "#94a3b8", fontSize: "0.75rem", margin: "0.3rem 0" }}>
-                      No notes yet. Add one below.
+                    <p
+                      style={{
+                        color: "#94a3b8",
+                        fontSize: "0.75rem",
+                        margin: "0.4rem 0",
+                      }}
+                    >
+                      No notes yet. Select text in the PDF and add a note.
                     </p>
                   )}
                   {annotations.map((a) => (
@@ -1131,11 +984,15 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                       key={a.id}
                       onClick={() => {
                         setActiveNoteId(a.id === activeNoteId ? null : a.id);
-                        if (a.page_num != null && layoutMode === "single") setPageNum(a.page_num);
+                        if (a.page_num != null && layoutMode === "single")
+                          setPageNum(a.page_num);
                       }}
                       style={{
-                        background: a.id === activeNoteId ? "#eef2ff" : "#fffde7",
-                        borderLeft: `3px solid ${a.id === activeNoteId ? "#4f46e5" : "#fdd835"}`,
+                        background:
+                          a.id === activeNoteId ? "#eef2ff" : "#fffde7",
+                        borderLeft: `3px solid ${
+                          a.id === activeNoteId ? "#4f46e5" : "#fdd835"
+                        }`,
                         padding: "0.35rem 0.6rem",
                         marginBottom: "0.3rem",
                         fontSize: "0.78rem",
@@ -1144,21 +1001,54 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                         cursor: "pointer",
                       }}
                     >
+                      {/* Page badge */}
                       {a.page_num != null && (
-                        <span style={{ fontSize: "0.68rem", color: "#4f46e5", fontWeight: 600, marginBottom: "0.2rem", display: "inline-block" }}>
+                        <span
+                          style={{
+                            fontSize: "0.65rem",
+                            color: "#4f46e5",
+                            fontWeight: 700,
+                            marginBottom: "0.18rem",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.25rem",
+                          }}
+                        >
                           p.{a.page_num}
                           {layoutMode === "single" && a.page_num !== pageNum && (
-                            <span style={{ marginLeft: "0.3rem", opacity: 0.7 }}>↵ jump</span>
+                            <span style={{ opacity: 0.6, fontWeight: 400 }}>
+                              — click to jump
+                            </span>
                           )}
                         </span>
                       )}
+                      {/* Quoted text */}
                       {a.selected_text && (
-                        <blockquote style={{ margin: "0.1rem 0 0.25rem", fontStyle: "italic", color: "#555", fontSize: "0.74rem", borderLeft: "none", paddingLeft: 0 }}>
-                          "{a.selected_text.length > 120 ? a.selected_text.slice(0, 120) + "…" : a.selected_text}"
+                        <blockquote
+                          style={{
+                            margin: "0.1rem 0 0.25rem",
+                            fontStyle: "italic",
+                            color: "#475569",
+                            fontSize: "0.74rem",
+                            borderLeft: "none",
+                            paddingLeft: 0,
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          "
+                          {a.selected_text.length > 140
+                            ? a.selected_text.slice(0, 140) + "…"
+                            : a.selected_text}
+                          "
                         </blockquote>
                       )}
+                      {/* Note comment */}
                       {a.comment && (
-                        <span style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{a.comment}</span>
+                        <span
+                          style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, display: "block" }}
+                        >
+                          {a.comment}
+                        </span>
                       )}
                       <button
                         onClick={(e) => {
@@ -1166,7 +1056,17 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                           deleteAnnotation(a.id);
                           if (activeNoteId === a.id) setActiveNoteId(null);
                         }}
-                        style={{ position: "absolute", top: "0.25rem", right: "0.25rem", background: "none", border: "none", cursor: "pointer", color: "#c5221f", fontSize: "0.75rem", lineHeight: 1 }}
+                        style={{
+                          position: "absolute",
+                          top: "0.25rem",
+                          right: "0.25rem",
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          color: "#c5221f",
+                          fontSize: "0.75rem",
+                          lineHeight: 1,
+                        }}
                         title="Delete note"
                       >
                         ✕
@@ -1175,19 +1075,20 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                   ))}
                 </div>
 
-                <div style={{ padding: "0.35rem 0.65rem 0.5rem", borderTop: "1px solid #e2e8f0", flexShrink: 0 }}>
-                  {pendingSelection && (
-                    <div style={{ background: "#eef2ff", borderLeft: "3px solid #4f46e5", padding: "0.25rem 0.5rem", marginBottom: "0.4rem", fontSize: "0.74rem", color: "#3730a3", borderRadius: "0 0.25rem 0.25rem 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.4rem" }}>
-                      <em style={{ flex: 1, lineHeight: 1.4 }}>
-                        p.{pendingSelection.pageNum}: "{pendingSelection.text.length > 80 ? pendingSelection.text.slice(0, 80) + "…" : pendingSelection.text}"
-                      </em>
-                      <button onClick={() => setPendingSelection(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#6366f1", fontSize: "0.8rem", lineHeight: 1, flexShrink: 0 }}>×</button>
-                    </div>
-                  )}
+                {/* Quick note without selection */}
+                <div
+                  style={{
+                    padding: "0.35rem 0.65rem 0.5rem",
+                    borderTop: "1px solid #e2e8f0",
+                    flexShrink: 0,
+                  }}
+                >
                   <textarea
-                    value={noteDraft}
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                    placeholder={pendingSelection ? "Add a note about this selection…" : "Add a note about this paper…"}
+                    value={selectionInfo ? "" : noteDraft}
+                    onChange={(e) => {
+                      if (!selectionInfo) setNoteDraft(e.target.value);
+                    }}
+                    placeholder="Add a general note… (⌘↵ to save)"
                     rows={2}
                     style={{
                       width: "100%",
@@ -1199,33 +1100,47 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                       padding: "0.3rem 0.45rem",
                       resize: "none",
                       outline: "none",
+                      background: selectionInfo ? "#f8fafc" : "#fff",
+                      color: selectionInfo ? "#94a3b8" : undefined,
                     }}
+                    disabled={!!selectionInfo}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                         e.preventDefault();
-                        submitNote();
+                        if (!selectionInfo) saveNote();
                       }
                     }}
                   />
-                  {createMut.isError && (
-                    <div style={{ fontSize: "0.73rem", color: "#991b1b", marginTop: "0.2rem" }}>
-                      Failed to save —{" "}
-                      {(createMut.error as any)?.response?.data?.detail ?? "please try again."}
-                    </div>
-                  )}
-                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.3rem" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginTop: "0.3rem",
+                    }}
+                  >
+                    {selectionInfo ? (
+                      <span style={{ fontSize: "0.7rem", color: "#6366f1", fontStyle: "italic" }}>
+                        Text selected — use the popup above to add a note
+                      </span>
+                    ) : (
+                      <span />
+                    )}
                     <button
-                      onClick={submitNote}
-                      disabled={!noteDraft.trim() || createMut.isPending}
+                      onClick={() => { if (!selectionInfo) saveNote(); }}
+                      disabled={!!selectionInfo || !noteDraft.trim() || createMut.isPending}
                       style={{
-                        fontSize: "0.75rem",
+                        fontSize: "0.73rem",
                         fontWeight: 600,
                         padding: "0.22rem 0.75rem",
                         borderRadius: "0.25rem",
                         border: "none",
-                        background: noteDraft.trim() ? "#4f46e5" : "#e2e8f0",
-                        color: noteDraft.trim() ? "#fff" : "#94a3b8",
-                        cursor: noteDraft.trim() ? "pointer" : "default",
+                        background:
+                          !selectionInfo && noteDraft.trim() ? "#4f46e5" : "#e2e8f0",
+                        color:
+                          !selectionInfo && noteDraft.trim() ? "#fff" : "#94a3b8",
+                        cursor:
+                          !selectionInfo && noteDraft.trim() ? "pointer" : "default",
                       }}
                     >
                       {createMut.isPending ? "Saving…" : "Save  ⌘↵"}
@@ -1241,7 +1156,8 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
   );
 }
 
-// ── Centred message style ─────────────────────────────────────────────────────
+// ── Shared style ──────────────────────────────────────────────────────────────
+
 const centeredMsg: React.CSSProperties = {
   position: "absolute",
   inset: 0,
@@ -1249,7 +1165,7 @@ const centeredMsg: React.CSSProperties = {
   flexDirection: "column",
   alignItems: "center",
   justifyContent: "center",
-  color: "#64748b",
+  color: "#94a3b8",
   fontSize: "0.82rem",
   gap: "0.5rem",
   padding: "1.5rem",
