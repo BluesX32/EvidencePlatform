@@ -816,6 +816,11 @@ export const screeningApi = {
     api.get<SaturationStatus>(`/projects/${projectId}/screening/saturation`, {
       params: threshold !== undefined ? { threshold } : undefined,
     }),
+
+  getQueueSlot: (projectId: string, params: { source?: string; stage?: string; position: number }) =>
+    api.get<ScreeningNextItem>(`/projects/${projectId}/screening/queue-slot`, {
+      params: { source: params.source ?? "all", stage: params.stage ?? "screen", position: params.position },
+    }),
 };
 
 // ── Ontology / Taxonomy ───────────────────────────────────────────────────────

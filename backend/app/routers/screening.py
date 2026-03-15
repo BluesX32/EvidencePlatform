@@ -36,6 +36,7 @@ from app.services.direct_screening_service import (
     get_next_item,
     get_or_create_queue,
     get_project_sources_with_stats,
+    get_queue_slot,
     get_saturation,
     list_queues_for_project,
     reset_queue,
@@ -450,6 +451,23 @@ async def get_queue_history(
         }
         for q in queues
     ]
+
+
+@router.get("/queue-slot")
+async def get_queue_slot_endpoint(
+    project_id: uuid.UUID,
+    source: str = Query("all"),
+    stage: str = Query("screen"),
+    position: int = Query(..., ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get paper metadata at a specific queue position (1-indexed). Only positions 1..current_position are accessible."""
+    await _require_project(project_id, current_user, db)
+    item = await get_queue_slot(db, project_id, current_user.id, source, stage, position)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Queue slot not found")
+    return item
 
 
 # ---------------------------------------------------------------------------

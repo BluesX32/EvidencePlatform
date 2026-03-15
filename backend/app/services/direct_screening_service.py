@@ -953,6 +953,60 @@ async def list_queues_for_project(
     return list(rows.scalars().all())
 
 
+async def get_queue_slot(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: uuid.UUID,
+    source_id_str: str,
+    stage: str,
+    position: int,  # 1-indexed
+) -> Optional[dict]:
+    """Return paper metadata for queue slot at 1-indexed position. No claim, no queue advancement."""
+    result = await db.execute(
+        select(ScreeningQueue).where(
+            ScreeningQueue.project_id == project_id,
+            ScreeningQueue.reviewer_id == reviewer_id,
+            ScreeningQueue.source_id == source_id_str,
+            ScreeningQueue.stage == stage,
+        )
+    )
+    queue = result.scalar_one_or_none()
+    if queue is None:
+        return None
+    slots = queue.slots
+    idx = position - 1
+    if idx < 0 or idx >= len(slots):
+        return None
+    slot = slots[idx]
+    found_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
+    found_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
+    if found_record_id is not None:
+        meta = await _fetch_standalone_record(db, found_record_id, project_id)
+    else:
+        meta = await _fetch_cluster_record(db, found_cluster_id, project_id)
+    dec_params = {
+        "project_id": project_id,
+        "reviewer_id": reviewer_id,
+        "record_id": found_record_id,
+        "cluster_id": found_cluster_id,
+    }
+    ta_row = await db.execute(_TA_DEC_SQL, dec_params)
+    ta_decision = ta_row.scalar_one_or_none()
+    ft_row = await db.execute(_FT_DEC_SQL, dec_params)
+    ft_decision = ft_row.scalar_one_or_none()
+    return {
+        "done": False,
+        "record_id": str(found_record_id) if found_record_id else None,
+        "cluster_id": str(found_cluster_id) if found_cluster_id else None,
+        "ta_decision": ta_decision,
+        "ft_decision": ft_decision,
+        "queue_position": position,
+        "queue_total": len(slots),
+        "queue_seed": queue.seed,
+        **meta,
+    }
+
+
 # ---------------------------------------------------------------------------
 # get_next_item
 # ---------------------------------------------------------------------------

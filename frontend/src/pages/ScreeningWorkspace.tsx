@@ -266,19 +266,35 @@ function ProgressBar({
   queuePosition,
   queueTotal,
   queueSeed,
+  sessionMax,
 }: {
   remaining: number | null | undefined;
   queuePosition?: number | null;
   queueTotal?: number | null;
   queueSeed?: number | null;
+  sessionMax?: number | null;
 }) {
   if (queuePosition != null && queueTotal != null) {
     const pct = Math.round((queuePosition / queueTotal) * 100);
     return (
       <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <span style={{ fontWeight: 600, color: "#374151", fontSize: 14 }}>
-            {queuePosition} / {queueTotal}
+          <span style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+            {sessionMax != null ? (
+              <>
+                <span style={{ fontWeight: 600, color: "#374151", fontSize: 14 }}>
+                  {queuePosition} / {sessionMax}
+                </span>
+                <span style={{ color: "#6b7280", fontSize: 12 }}>·</span>
+                <span style={{ fontWeight: 600, color: "#374151", fontSize: 14 }}>
+                  {queuePosition} / {queueTotal}
+                </span>
+              </>
+            ) : (
+              <span style={{ fontWeight: 600, color: "#374151", fontSize: 14 }}>
+                {queuePosition} / {queueTotal}
+              </span>
+            )}
           </span>
           {queueSeed != null && (
             <span style={{ color: "#9ca3af", fontSize: 11 }} title="Randomization seed — share with colleagues to reproduce this paper order">
@@ -900,19 +916,19 @@ function PDFUploadPanel({
 // ---------------------------------------------------------------------------
 
 function HistoryNav({
-  historyIdx,
-  historyTotal,
+  currentPos,
+  maxPos,
   onPrev,
   onNext,
   isFetching,
 }: {
-  historyIdx: number;
-  historyTotal: number;
+  currentPos: number;
+  maxPos: number;
   onPrev: () => void;
   onNext: () => void;
   isFetching: boolean;
 }) {
-  const isAtEnd = historyIdx === historyTotal - 1;
+  const isAtEnd = currentPos === maxPos;
   const btnBase: React.CSSProperties = {
     padding: "0.25rem 0.7rem",
     borderRadius: "0.375rem",
@@ -938,10 +954,10 @@ function HistoryNav({
     >
       <button
         onClick={onPrev}
-        disabled={historyIdx === 0 || isFetching}
+        disabled={currentPos <= 1 || isFetching}
         style={{
           ...btnBase,
-          opacity: historyIdx === 0 ? 0.35 : 1,
+          opacity: currentPos <= 1 ? 0.35 : 1,
         }}
         title="Previous article in this session"
       >
@@ -959,7 +975,7 @@ function HistoryNav({
           border: `1px solid ${isAtEnd ? "#e5e7eb" : "#fde68a"}`,
         }}
       >
-        {historyTotal === 0 ? "—" : `${historyIdx + 1} / ${historyTotal}`}
+        {maxPos === 0 ? "—" : `${currentPos} / ${maxPos}`}
         {!isAtEnd && " (history)"}
       </span>
 
@@ -1224,12 +1240,6 @@ function DecisionBar({
 // ScreeningPanel — sequential TA / FT / browse with history + timing
 // ---------------------------------------------------------------------------
 
-interface HistoryEntry {
-  record_id?: string | null;
-  cluster_id?: string | null;
-  title?: string | null;
-}
-
 function ScreeningPanel({
   projectId,
   bucket,
@@ -1258,11 +1268,11 @@ function ScreeningPanel({
   const [extractPhase, setExtractPhase] = useState(false);
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
 
-  // History stored in a ref so fetchNext never sees a stale closure.
-  // historyIdx and historyLen are plain state so changes trigger re-renders.
-  const historyRef = useRef<HistoryEntry[]>([]);
-  const [historyLen, setHistoryLen] = useState(0);
-  const [historyIdx, setHistoryIdx] = useState(0);
+  // Queue-position-based persistent history navigation.
+  const [displayPos, setDisplayPos] = useState<number | null>(null);
+  const [maxPos, setMaxPos] = useState<number | null>(null);
+  const [queueTotal, setQueueTotal] = useState<number | null>(null);
+  const [queueSeed, setQueueSeed] = useState<number | null>(null);
 
   // When browsing history this holds the fetched article; null = showing live item.
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
@@ -1282,6 +1292,7 @@ function ScreeningPanel({
     extract_done: "extract",
   };
   const mode = bucketToMode[bucket] ?? "screen";
+  const queueStage = mode;
 
   const fetchNext = useCallback(async () => {
     setLoading(true);
@@ -1296,14 +1307,12 @@ function ScreeningPanel({
       } else {
         setItem(res.data);
         itemStartedAt.current = Date.now();
-        if (!res.data.done && (res.data.record_id || res.data.cluster_id)) {
-          // Append to ref first so index is always consistent
-          historyRef.current = [
-            ...historyRef.current,
-            { record_id: res.data.record_id, cluster_id: res.data.cluster_id, title: res.data.title },
-          ];
-          setHistoryLen(historyRef.current.length);
-          setHistoryIdx(historyRef.current.length - 1);
+        const d = res.data;
+        if (d.queue_position != null) {
+          setDisplayPos(d.queue_position);
+          setMaxPos(d.queue_position);
+          setQueueTotal(d.queue_total ?? null);
+          setQueueSeed(d.queue_seed ?? null);
         }
       }
     } catch (err: unknown) {
@@ -1318,28 +1327,22 @@ function ScreeningPanel({
     fetchNext();
   }, [fetchNext]);
 
-  // Navigate to a historical item by index — does NOT set global loading,
+  // Navigate to a queue position — does NOT set global loading,
   // so the nav bar stays visible while the item is being fetched.
-  async function navigateToHistoryIdx(idx: number) {
-    const entry = historyRef.current[idx];
-    if (!entry) return;
-
-    if (idx === historyRef.current.length - 1) {
+  async function navigateToPos(pos: number) {
+    if (pos < 1 || maxPos === null || pos > maxPos) return;
+    if (pos === maxPos) {
       // Back to the live item — no API call needed
       setBrowseItem(null);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
       itemStartedAt.current = Date.now();
       return;
     }
-
     setBrowseLoading(true);
     try {
-      const res = await screeningApi.getItem(projectId, {
-        record_id: entry.record_id ?? undefined,
-        cluster_id: entry.cluster_id ?? undefined,
-      });
+      const res = await screeningApi.getQueueSlot(projectId, { source, stage: queueStage, position: pos });
       setBrowseItem(res.data);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
     } catch {
       // Silently ignore — stay on current position
     } finally {
@@ -1348,12 +1351,12 @@ function ScreeningPanel({
   }
 
   async function goToPrev() {
-    if (historyIdx > 0) await navigateToHistoryIdx(historyIdx - 1);
+    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
   }
 
   async function goToNext() {
-    if (historyIdx < historyRef.current.length - 1) {
-      await navigateToHistoryIdx(historyIdx + 1);
+    if (displayPos !== null && maxPos !== null && displayPos < maxPos) {
+      await navigateToPos(displayPos + 1);
     } else {
       await fetchNext();
     }
@@ -1409,19 +1412,19 @@ function ScreeningPanel({
     setForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
   }
 
-  // The nav bar is always rendered once history has entries — never hidden by loading.
-  const nav = historyLen > 0 ? (
+  // The nav bar is always rendered once we have a position — never hidden by loading.
+  const nav = maxPos !== null ? (
     <HistoryNav
-      historyIdx={historyIdx}
-      historyTotal={historyLen}
+      currentPos={displayPos ?? 1}
+      maxPos={maxPos}
       onPrev={goToPrev}
       onNext={goToNext}
       isFetching={loading || browseLoading}
     />
   ) : null;
 
-  // ── Initial load (no history yet) ──
-  if (loading && historyLen === 0) {
+  // ── Initial load (no position yet) ──
+  if (loading && maxPos === null) {
     return <p style={{ color: "#888" }}>Loading…</p>;
   }
 
@@ -1442,7 +1445,7 @@ function ScreeningPanel({
     return (
       <div>
         {nav}
-        <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
+        <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
         <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "0.6rem", background: "#fff" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
           <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
@@ -1504,13 +1507,13 @@ function ScreeningPanel({
         <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>
       )}
 
-      <ProgressBar remaining={isBrowsingHistory ? undefined : item?.remaining} queuePosition={isBrowsingHistory ? undefined : item?.queue_position} queueTotal={isBrowsingHistory ? undefined : item?.queue_total} queueSeed={isBrowsingHistory ? undefined : item?.queue_seed} />
+      <ProgressBar remaining={isBrowsingHistory ? undefined : item?.remaining} queuePosition={displayPos ?? item?.queue_position} queueTotal={queueTotal ?? item?.queue_total} queueSeed={queueSeed ?? item?.queue_seed} sessionMax={maxPos} />
 
       {/* History mode banner */}
       {isBrowsingHistory && (
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Viewing session history</span>
-          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
+          <button onClick={() => maxPos !== null && navigateToPos(maxPos)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
@@ -1773,10 +1776,11 @@ function MixedPanel({
   const [phase, setPhase] = useState<"ta" | "ft" | "extraction">("ta");
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
 
-  // History — same ref-based pattern as ScreeningPanel
-  const historyRef = useRef<HistoryEntry[]>([]);
-  const [historyLen, setHistoryLen] = useState(0);
-  const [historyIdx, setHistoryIdx] = useState(0);
+  // Queue-position-based persistent history navigation.
+  const [displayPos, setDisplayPos] = useState<number | null>(null);
+  const [maxPos, setMaxPos] = useState<number | null>(null);
+  const [queueTotal, setQueueTotal] = useState<number | null>(null);
+  const [queueSeed, setQueueSeed] = useState<number | null>(null);
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
@@ -1806,13 +1810,11 @@ function MixedPanel({
           setPhase("ft");
           setTaSubmitted(true);
         }
-        if (!d.done && (d.record_id || d.cluster_id)) {
-          historyRef.current = [
-            ...historyRef.current,
-            { record_id: d.record_id, cluster_id: d.cluster_id, title: d.title },
-          ];
-          setHistoryLen(historyRef.current.length);
-          setHistoryIdx(historyRef.current.length - 1);
+        if (d.queue_position != null) {
+          setDisplayPos(d.queue_position);
+          setMaxPos(d.queue_position);
+          setQueueTotal(d.queue_total ?? null);
+          setQueueSeed(d.queue_seed ?? null);
         }
       }
     } catch (err: unknown) {
@@ -1825,33 +1827,29 @@ function MixedPanel({
 
   useEffect(() => { fetchNext(); }, [fetchNext]);
 
-  async function navigateToHistoryIdx(idx: number) {
-    const entry = historyRef.current[idx];
-    if (!entry) return;
-    if (idx === historyRef.current.length - 1) {
+  async function navigateToPos(pos: number) {
+    if (pos < 1 || maxPos === null || pos > maxPos) return;
+    if (pos === maxPos) {
       setBrowseItem(null);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
       itemStartedAt.current = Date.now();
       return;
     }
     setBrowseLoading(true);
     try {
-      const res = await screeningApi.getItem(projectId, {
-        record_id: entry.record_id ?? undefined,
-        cluster_id: entry.cluster_id ?? undefined,
-      });
+      const res = await screeningApi.getQueueSlot(projectId, { source, stage: "mixed", position: pos });
       setBrowseItem(res.data);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
     } catch { /* stay on current */ } finally {
       setBrowseLoading(false);
     }
   }
 
   async function goToPrev() {
-    if (historyIdx > 0) await navigateToHistoryIdx(historyIdx - 1);
+    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
   }
   async function goToNext() {
-    if (historyIdx < historyRef.current.length - 1) await navigateToHistoryIdx(historyIdx + 1);
+    if (displayPos !== null && maxPos !== null && displayPos < maxPos) await navigateToPos(displayPos + 1);
     else await fetchNext();
   }
 
@@ -1875,11 +1873,11 @@ function MixedPanel({
     },
   });
 
-  const nav = historyLen > 0 ? (
-    <HistoryNav historyIdx={historyIdx} historyTotal={historyLen} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+  const nav = maxPos !== null ? (
+    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
   ) : null;
 
-  if (loading && historyLen === 0) return <p style={{ color: "#888" }}>Loading…</p>;
+  if (loading && maxPos === null) return <p style={{ color: "#888" }}>Loading…</p>;
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
 
@@ -1891,7 +1889,7 @@ function MixedPanel({
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Viewing session history</span>
-          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
+          <button onClick={() => maxPos !== null && navigateToPos(maxPos)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
@@ -1968,7 +1966,7 @@ function MixedPanel({
   return (
     <div>
       {nav}
-      <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
+      <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
       <PaperCard item={item} projectId={projectId} showAnnotations />
 
       {!showFT && (
@@ -2065,10 +2063,11 @@ function ExtractionPanel({
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // History — same pattern as ScreeningPanel and MixedPanel
-  const historyRef = useRef<HistoryEntry[]>([]);
-  const [historyLen, setHistoryLen] = useState(0);
-  const [historyIdx, setHistoryIdx] = useState(0);
+  // Queue-position-based persistent history navigation.
+  const [displayPos, setDisplayPos] = useState<number | null>(null);
+  const [maxPos, setMaxPos] = useState<number | null>(null);
+  const [queueTotal, setQueueTotal] = useState<number | null>(null);
+  const [queueSeed, setQueueSeed] = useState<number | null>(null);
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const isBrowsingHistory = browseItem !== null;
@@ -2090,13 +2089,11 @@ function ExtractionPanel({
         setForm(EMPTY_EXTRACTION);
         itemStartedAt.current = Date.now();
         const d = res.data;
-        if (!d.done && (d.record_id || d.cluster_id)) {
-          historyRef.current = [
-            ...historyRef.current,
-            { record_id: d.record_id, cluster_id: d.cluster_id, title: d.title },
-          ];
-          setHistoryLen(historyRef.current.length);
-          setHistoryIdx(historyRef.current.length - 1);
+        if (d.queue_position != null) {
+          setDisplayPos(d.queue_position);
+          setMaxPos(d.queue_position);
+          setQueueTotal(d.queue_total ?? null);
+          setQueueSeed(d.queue_seed ?? null);
         }
       }
     } catch (err: unknown) {
@@ -2109,33 +2106,29 @@ function ExtractionPanel({
 
   useEffect(() => { fetchNext(); }, [fetchNext]);
 
-  async function navigateToHistoryIdx(idx: number) {
-    const entry = historyRef.current[idx];
-    if (!entry) return;
-    if (idx === historyRef.current.length - 1) {
+  async function navigateToPos(pos: number) {
+    if (pos < 1 || maxPos === null || pos > maxPos) return;
+    if (pos === maxPos) {
       setBrowseItem(null);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
       itemStartedAt.current = Date.now();
       return;
     }
     setBrowseLoading(true);
     try {
-      const res = await screeningApi.getItem(projectId, {
-        record_id: entry.record_id ?? undefined,
-        cluster_id: entry.cluster_id ?? undefined,
-      });
+      const res = await screeningApi.getQueueSlot(projectId, { source, stage: "extract", position: pos });
       setBrowseItem(res.data);
-      setHistoryIdx(idx);
+      setDisplayPos(pos);
     } catch { /* stay on current */ } finally {
       setBrowseLoading(false);
     }
   }
 
   async function goToPrev() {
-    if (historyIdx > 0) await navigateToHistoryIdx(historyIdx - 1);
+    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
   }
   async function goToNext() {
-    if (historyIdx < historyRef.current.length - 1) await navigateToHistoryIdx(historyIdx + 1);
+    if (displayPos !== null && maxPos !== null && displayPos < maxPos) await navigateToPos(displayPos + 1);
     else await fetchNext();
   }
 
@@ -2155,11 +2148,11 @@ function ExtractionPanel({
     onSuccess: () => fetchNext(),
   });
 
-  const nav = historyLen > 0 ? (
-    <HistoryNav historyIdx={historyIdx} historyTotal={historyLen} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+  const nav = maxPos !== null ? (
+    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
   ) : null;
 
-  if (loading && historyLen === 0) return <p style={{ color: "#888" }}>Loading…</p>;
+  if (loading && maxPos === null) return <p style={{ color: "#888" }}>Loading…</p>;
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Extract Data" projectId={projectId} /></>;
 
@@ -2171,7 +2164,7 @@ function ExtractionPanel({
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Viewing session history</span>
-          <button onClick={() => navigateToHistoryIdx(historyRef.current.length - 1)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
+          <button onClick={() => maxPos !== null && navigateToPos(maxPos)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
@@ -2200,7 +2193,7 @@ function ExtractionPanel({
   return (
     <div>
       {nav}
-      <ProgressBar remaining={item.remaining} queuePosition={item.queue_position} queueTotal={item.queue_total} queueSeed={item.queue_seed} />
+      <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
       <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
         <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
         <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
