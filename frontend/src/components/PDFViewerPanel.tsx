@@ -77,7 +77,7 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
   const itemKey = item.record_id ?? item.cluster_id;
 
   // ── PDF metadata ────────────────────────────────────────────────────────────
-  const { data: meta } = useQuery<FulltextPdfMeta | null>({
+  const { data: meta, isLoading: metaLoading } = useQuery<FulltextPdfMeta | null>({
     queryKey: ["fulltext-pdf", projectId, itemKey],
     queryFn: () =>
       fulltextApi
@@ -199,6 +199,12 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
   const [penColor, setPenColor] = useState("#e53e3e");
   const [penWidth, setPenWidth] = useState(3);
 
+  // ── Panel position & size (must be before any effect that uses `width`) ──────
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [width, setWidth] = useState(INIT_WIDTH);
+  const [minimized, setMinimized] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+
   // ── Text selection / annotation state ────────────────────────────────────────
   const textLayerRef = useRef<HTMLDivElement>(null);
   const highlightCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -280,31 +286,13 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
               setPageRendering(false);
               const dCtx = drawCanvas.getContext("2d")!;
               renderStrokesToCtx(dCtx, strokes);
-              // Render text layer for selection
+              // Text layer — store viewport for coordinate mapping
               vpRef.current = vp;
               if (textLayerRef.current) {
                 textLayerRef.current.innerHTML = "";
                 textLayerRef.current.style.width = `${vp.width}px`;
                 textLayerRef.current.style.height = `${vp.height}px`;
                 textLayerRef.current.style.transform = "";
-                pdfPage.getTextContent().then((tc: any) => {
-                  if (!textLayerRef.current) return;
-                  pdfjsLib.renderTextLayer({
-                    textContentSource: tc,
-                    container: textLayerRef.current,
-                    viewport: vp,
-                  });
-                  // Scale text layer to match displayed canvas (which is CSS-shrunk via maxWidth:100%)
-                  requestAnimationFrame(() => {
-                    if (!textLayerRef.current || !pdfCanvasRef.current) return;
-                    const r = pdfCanvasRef.current.getBoundingClientRect();
-                    if (r.width > 0 && vp.width > 0) {
-                      const s = r.width / vp.width;
-                      textLayerRef.current.style.transform = `scale(${s})`;
-                      textLayerRef.current.style.transformOrigin = "top left";
-                    }
-                  });
-                });
               }
             })
             .catch(() => setPageRendering(false));
@@ -405,9 +393,11 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
   // ── Mouse drawing events ──────────────────────────────────────────────────────
   function getCanvasXY(e: React.MouseEvent<HTMLCanvasElement>): [number, number] {
-    const rect = drawCanvasRef.current!.getBoundingClientRect();
-    const scaleX = drawCanvasRef.current!.width / rect.width;
-    const scaleY = drawCanvasRef.current!.height / rect.height;
+    const el = drawCanvasRef.current!;
+    const rect = el.getBoundingClientRect();
+    // Map CSS-display coords → canvas internal resolution coords
+    const scaleX = el.width / rect.width;
+    const scaleY = el.height / rect.height;
     return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
   }
 
@@ -455,11 +445,12 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       currentPointsRef.current = [];
       return;
     }
+    const strokeTool = tool === "select" ? "pen" : tool;
     const newStroke: DrawingStroke = {
-      color: tool === "eraser" ? "#000000" : penColor,
-      width: tool === "eraser" ? penWidth * 5 : penWidth,
+      color: strokeTool === "eraser" ? "#000000" : penColor,
+      width: strokeTool === "eraser" ? penWidth * 5 : penWidth,
       points: [...pts],
-      tool,
+      tool: strokeTool,
     };
     currentPointsRef.current = [];
     const key = String(pageNum);
@@ -492,12 +483,6 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       }
     });
   }, [width]);
-
-  // ── Panel position & size ────────────────────────────────────────────────────
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const [width, setWidth] = useState(INIT_WIDTH);
-  const [minimized, setMinimized] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
 
   const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -795,7 +780,7 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
           {/* PDF + drawing area */}
           <div style={{ flex: 1, overflow: "auto", position: "relative", background: "#e2e8f0", minHeight: 0 }}>
-            {!meta && !pdfLoading && (
+            {!meta && !pdfLoading && !metaLoading && (
               <div style={centeredMsg}>
                 <span style={{ fontSize: "2rem" }}>📂</span>
                 No PDF uploaded yet.
@@ -818,13 +803,13 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
             {/* Canvas stack */}
             {meta && (
-              <div style={{ position: "relative", display: "inline-block", minWidth: "100%" }}>
-                {/* PDF canvas */}
-                <canvas ref={pdfCanvasRef} style={{ display: "block", maxWidth: "100%" }} />
+              <div style={{ position: "relative", width: "100%" }}>
+                {/* PDF canvas — width:100%/height:auto scales proportionally */}
+                <canvas ref={pdfCanvasRef} style={{ display: "block", width: "100%", height: "auto" }} />
                 {/* Highlight canvas — yellow annotation highlights */}
                 <canvas
                   ref={highlightCanvasRef}
-                  style={{ display: "block", position: "absolute", top: 0, left: 0, maxWidth: "100%", pointerEvents: "none" }}
+                  style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
                 />
                 {/* Text layer — invisible selectable text for annotation */}
                 <div
@@ -842,8 +827,8 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                 <canvas
                   ref={drawCanvasRef}
                   style={{
-                    position: "absolute", top: 0, left: 0, maxWidth: "100%", touchAction: "none",
-                    cursor: "crosshair",
+                    position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+                    touchAction: "none", cursor: "crosshair",
                     pointerEvents: tool === "select" ? "none" : "auto",
                   }}
                   onMouseDown={onDrawMouseDown}

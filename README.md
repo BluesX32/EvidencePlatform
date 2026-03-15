@@ -182,7 +182,110 @@ source .venv/bin/activate
 python -m pytest tests/ -v --tb=short
 ```
 
-The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, and strategy history (485 backend tests + 23 Vitest frontend tests).
+The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, and strategy history (485+ backend tests + 23 Vitest frontend tests).
+
+---
+
+## PDF Viewer and Annotation
+
+Every article in the full-text screening and data extraction stages has a built-in PDF workspace. Click **View PDF** to open a floating panel that:
+
+- Renders the PDF page-by-page using PDF.js (no browser plugin required)
+- Lets you draw freehand annotations with a **Pen** tool (choose colour and stroke width) and erase them with the **Eraser** tool
+- Saves all drawings automatically to the database — they persist across sessions and reload when you reopen the panel
+- Lets you **clear** all drawings on the current page with one click
+- Provides a **Notes drawer** at the bottom where you can write and save text notes anchored to the paper
+
+The panel is **draggable** (drag the header to move it) and **resizable** (drag the left edge). All drawing data is stored as structured JSON in the database (one entry per PDF, keyed by page number), so your annotations survive backend restarts and are visible to team members with access to the project.
+
+---
+
+## Browser Extension (PDF Capture)
+
+Many publisher sites use institutional SSO authentication. The browser extension lets you capture PDFs from those sites and send them directly to EvidencePlatform — without ever leaving your browser or needing to download and re-upload files manually.
+
+### How it works
+
+1. Navigate to an article's **full-text** screening or extraction stage in EvidencePlatform.
+2. Click **Find PDF → ⬇ Capture** to start a capture session.
+3. The extension watches for any PDF download that occurs in the next few minutes.
+4. Complete authentication on the publisher site (institutional SSO, paywall, etc.) and click the PDF download link as normal.
+5. The extension intercepts the download, validates it is a real PDF (magic-byte check), re-fetches it using your browser's authenticated cookies, and uploads it to the platform automatically.
+6. The PDF appears instantly in the article's viewer panel — no manual file selection needed.
+
+### Installing the extension (Chrome / Edge — unpacked)
+
+The extension is a local Chrome MV3 extension that you load manually (it is not published to the Chrome Web Store).
+
+**Step 1 — Open the Extensions page**
+
+In Chrome or Edge, navigate to:
+
+```
+chrome://extensions
+```
+
+or
+
+```
+edge://extensions
+```
+
+**Step 2 — Enable Developer mode**
+
+Toggle **Developer mode** on (top-right corner of the Extensions page).
+
+**Step 3 — Load the extension**
+
+Click **Load unpacked**, then select the `browser-extension/` folder inside this repository:
+
+```
+EvidencePlatform/
+└── browser-extension/   ← select this folder
+    ├── manifest.json
+    ├── background.js
+    ├── content.js
+    ├── popup.html
+    └── popup.js
+```
+
+The extension named **EvidencePlatform PDF Capture** will appear in your extensions list.
+
+**Step 4 — Configure the backend URL** *(only needed once)*
+
+Click the extension icon in the toolbar and set the **Backend URL** to match your running instance:
+
+| Environment | Backend URL |
+|-------------|------------|
+| Local (default) | `http://localhost:8000` |
+| Custom host/port | `http://your-server:8000` |
+
+Click **Save**. If EvidencePlatform was already open in a tab before you installed the extension, click **Reload EvidencePlatform tab** so the content script is injected.
+
+**Step 5 — Pin the extension** *(optional but convenient)*
+
+Click the puzzle-piece icon in Chrome's toolbar → click the pin icon next to **EvidencePlatform PDF Capture** so it is always visible.
+
+### Extension status indicators
+
+The popup shows a coloured dot indicating the current state:
+
+| Dot colour | Meaning |
+|-----------|---------|
+| Green | Idle — ready to watch for a download |
+| Yellow (pulsing) | Actively watching — open the publisher site and download the PDF now |
+| Red | Error — see the message for details |
+
+### Troubleshooting the extension
+
+**Extension captures a web page instead of a PDF**
+Some publishers use single-use download tokens; after Chrome's native download consumes the token, re-fetching the URL returns an HTML login page. The extension detects this (Content-Type check + PDF magic-byte validation) and shows a clear error. Try clicking the PDF link again from within the active capture session.
+
+**Upload fails with "401 Unauthorised"**
+You are not logged in to EvidencePlatform, or your session expired. Log in and start a new capture session.
+
+**Extension not visible in toolbar**
+Go to `chrome://extensions`, confirm the extension is enabled, and pin it via the puzzle-piece menu.
 
 ---
 
@@ -199,7 +302,7 @@ EvidencePlatform/
 │   │   ├── repositories/    # Database queries
 │   │   ├── parsers/         # RIS / MEDLINE / BibTeX parsers
 │   │   └── utils/           # Dedup, overlap detection, matching
-│   ├── alembic/             # Alembic migrations (020 versions)
+│   ├── migrations/          # Alembic migrations (021 versions)
 │   └── tests/               # pytest test suite
 ├── frontend/
 │   ├── src/
@@ -208,6 +311,12 @@ EvidencePlatform/
 │   │   ├── api/             # API client (TanStack Query)
 │   │   └── utils/           # Pure helpers
 │   └── index.html
+├── browser-extension/       # Chrome MV3 extension for PDF capture
+│   ├── manifest.json
+│   ├── background.js        # Service worker — intercepts & uploads PDFs
+│   ├── content.js           # Content script — bridges page ↔ background
+│   ├── popup.html           # Extension popup UI
+│   └── popup.js
 ├── docker-compose.yml
 ├── Makefile                 # make up / down / reset / migrate / logs
 └── CLAUDE.md                # AI coding guidelines for this project
