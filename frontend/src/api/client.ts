@@ -82,12 +82,29 @@ export interface ProjectCriteria {
   levels?: string[];     // editable levels vocabulary (Sprint 14)
 }
 
+// ── Extraction template (defined in project overview, used during extraction) ──
+
+export type ExtractionCellType = "string" | "single_select" | "multi_select";
+
+export interface ExtractionTemplateRow {
+  id: string;                    // UUID, generated on frontend
+  domain: string;
+  item: string;
+  type: ExtractionCellType;
+  options: string[];             // non-empty for select types
+}
+
+export interface ExtractionTemplate {
+  rows: ExtractionTemplateRow[];
+}
+
 export interface ProjectDetail extends Project {
   record_count: number;        // canonical records (unique after dedup)
   import_count: number;        // completed import jobs
   failed_import_count: number;
   criteria: ProjectCriteria;
   my_role: "owner" | "admin" | "reviewer" | "observer";
+  extraction_template: ExtractionTemplate | null;
 }
 
 export interface ProjectListItem extends Project {
@@ -102,6 +119,8 @@ export const projectsApi = {
     api.post<Project>("/projects", { name, description }),
   updateCriteria: (id: string, body: ProjectCriteria) =>
     api.patch<ProjectDetail>(`/projects/${id}/criteria`, body),
+  updateExtractionTemplate: (id: string, rows: ExtractionTemplateRow[]) =>
+    api.patch<ProjectDetail>(`/projects/${id}/extraction-template`, { rows }),
 };
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -613,18 +632,23 @@ export interface Snippet {
 }
 
 /**
- * Conceptual framework extraction schema (v1).
+ * Extraction data stored per paper.
+ * v2 adds `table` (template-driven structured rows).
+ * Legacy fields (levels, dimensions, snippets) kept for backward compat.
  * framework_updated drives the saturation counter:
  *   true  → reset consecutive_no_novelty to 0
  *   false → increment counter
  */
 export interface ExtractionJson {
+  // v2: template-driven table.  key = ExtractionTemplateRow.id, value = cell content.
+  table: Record<string, string | string[]>;
+  free_note: string;
+  framework_updated: boolean;
+  // legacy fields — preserved for existing extractions
+  framework_update_note: string;
   levels: string[];
   dimensions: string[];
   snippets: Snippet[];
-  free_note: string;
-  framework_updated: boolean;
-  framework_update_note: string;
 }
 
 export interface ExtractionRecord {

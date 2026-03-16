@@ -11,7 +11,7 @@ import {
   overlapsApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem } from "../api/client";
+import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
 
@@ -70,6 +70,35 @@ const PRESETS: PresetDef[] = [
 // ---------------------------------------------------------------------------
 // Live rule summary (mirrors _make_config_summary on the backend)
 // ---------------------------------------------------------------------------
+
+// ── Extraction template paste parser ─────────────────────────────────────────
+// Accepts tab-delimited (from Excel/Sheets) or comma-delimited rows.
+// Columns: Domain, Data Item, [Type], [Options]
+function parseTemplateTable(text: string): ExtractionTemplateRow[] {
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  const rows: ExtractionTemplateRow[] = [];
+  for (const line of lines) {
+    // Prefer tab split (Excel paste), fall back to comma
+    const parts = line.includes("\t")
+      ? line.split("\t")
+      : line.split(",");
+    const clean = (s?: string) => (s ?? "").replace(/^["']|["']$/g, "").trim();
+    const domain = clean(parts[0]);
+    const item   = clean(parts[1]);
+    if (!domain && !item) continue;
+    const rawType = clean(parts[2]).toLowerCase();
+    const validTypes = ["string", "single_select", "multi_select"];
+    const type: ExtractionCellType = validTypes.includes(rawType)
+      ? (rawType as ExtractionCellType)
+      : "string";
+    const optStr = clean(parts[3]);
+    const options = type !== "string" && optStr
+      ? optStr.split(";").map((s) => s.trim()).filter(Boolean)
+      : [];
+    rows.push({ id: crypto.randomUUID(), domain, item, type, options });
+  }
+  return rows;
+}
 
 function buildRuleSummary(
   fields: Set<string>,
@@ -258,6 +287,11 @@ export default function ProjectPage() {
   // Criteria state
   const [localCriteria, setLocalCriteria] = useState<ProjectCriteria>({ inclusion: [], exclusion: [] });
 
+  // Extraction template state
+  const [templateRows, setTemplateRows] = useState<ExtractionTemplateRow[]>([]);
+  const [templatePasteText, setTemplatePasteText] = useState("");
+  const [templatePasteOpen, setTemplatePasteOpen] = useState(false);
+
   // ── Data queries ──────────────────────────────────────────────────────────
 
   const { data: project, isLoading: loadingProject } = useQuery({
@@ -308,6 +342,13 @@ export default function ProjectPage() {
   useEffect(() => {
     if (project?.criteria) setLocalCriteria(project.criteria);
   }, [project?.criteria]);
+
+  // Sync extraction template rows from server data
+  useEffect(() => {
+    if (project?.extraction_template?.rows) {
+      setTemplateRows(project.extraction_template.rows);
+    }
+  }, [project?.extraction_template]);
 
   const activeStrategy = strategies?.find((s) => s.is_active);
   const lastDedupJob = dedupJobs?.[0];
@@ -374,6 +415,18 @@ export default function ProjectPage() {
     },
     onError: () => {
       setToast({ message: "Failed to save criteria.", type: "error" });
+    },
+  });
+
+  const templateMutation = useMutation({
+    mutationFn: (rows: ExtractionTemplateRow[]) =>
+      projectsApi.updateExtractionTemplate(id!, rows),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      setToast({ message: "Extraction template saved.", type: "success" });
+    },
+    onError: () => {
+      setToast({ message: "Failed to save template.", type: "error" });
     },
   });
 
@@ -777,6 +830,277 @@ export default function ProjectPage() {
                 {criteriaMutation.isPending ? "Saving…" : "Save criteria"}
               </button>
             </div>
+          </div>
+        </section>
+
+        {/* ── Extraction Template ──────────────────────────────────────────── */}
+        <section style={{ marginTop: "2rem" }}>
+          <h3>Data Extraction Template</h3>
+          <p className="muted" style={{ marginBottom: "1rem" }}>
+            Define the rows of your extraction table. During data extraction each included paper
+            will show this table with columns: <strong>Domain</strong>, <strong>Data Item</strong>,
+            and <strong>Data Extraction</strong>. Each row's cell type controls how reviewers enter
+            values (free text, single choice, or multiple choices).
+          </p>
+
+          <div
+            style={{
+              border: "1px solid #dadce0",
+              borderRadius: "0.5rem",
+              background: "#fafafa",
+              overflow: "hidden",
+            }}
+          >
+            {/* Table header */}
+            {templateRows.length > 0 && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 130px 1fr 32px",
+                  gap: "0.5rem",
+                  padding: "0.5rem 1rem",
+                  background: "#f1f3f4",
+                  borderBottom: "1px solid #dadce0",
+                  fontSize: "0.75rem",
+                  fontWeight: 700,
+                  color: "#5f6368",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                }}
+              >
+                <span>Domain</span>
+                <span>Data Item</span>
+                <span>Cell Type</span>
+                <span>Options (for selects)</span>
+                <span />
+              </div>
+            )}
+
+            {/* Rows */}
+            <div style={{ padding: templateRows.length > 0 ? "0.5rem 1rem" : "0" }}>
+              {templateRows.map((row, idx) => (
+                <div
+                  key={row.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr 130px 1fr 32px",
+                    gap: "0.5rem",
+                    alignItems: "center",
+                    marginBottom: "0.4rem",
+                  }}
+                >
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Domain…"
+                    value={row.domain}
+                    onChange={(e) =>
+                      setTemplateRows((prev) =>
+                        prev.map((r, i) => (i === idx ? { ...r, domain: e.target.value } : r))
+                      )
+                    }
+                    style={{ fontSize: "0.84rem" }}
+                  />
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Data item…"
+                    value={row.item}
+                    onChange={(e) =>
+                      setTemplateRows((prev) =>
+                        prev.map((r, i) => (i === idx ? { ...r, item: e.target.value } : r))
+                      )
+                    }
+                    style={{ fontSize: "0.84rem" }}
+                  />
+                  <select
+                    value={row.type}
+                    onChange={(e) =>
+                      setTemplateRows((prev) =>
+                        prev.map((r, i) =>
+                          i === idx ? { ...r, type: e.target.value as ExtractionCellType } : r
+                        )
+                      )
+                    }
+                    style={{
+                      fontSize: "0.84rem",
+                      padding: "0.3rem 0.45rem",
+                      border: "1px solid #dadce0",
+                      borderRadius: "0.25rem",
+                      background: "#fff",
+                    }}
+                  >
+                    <option value="string">Free text</option>
+                    <option value="single_select">Single select</option>
+                    <option value="multi_select">Multi select</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder={
+                      row.type === "string"
+                        ? "—"
+                        : "opt1, opt2, opt3…"
+                    }
+                    disabled={row.type === "string"}
+                    value={row.options.join(", ")}
+                    onChange={(e) =>
+                      setTemplateRows((prev) =>
+                        prev.map((r, i) =>
+                          i === idx
+                            ? {
+                                ...r,
+                                options: e.target.value
+                                  .split(",")
+                                  .map((s) => s.trim())
+                                  .filter(Boolean),
+                              }
+                            : r
+                        )
+                      )
+                    }
+                    style={{
+                      fontSize: "0.84rem",
+                      background: row.type === "string" ? "#f3f4f6" : "#fff",
+                      color: row.type === "string" ? "#aaa" : undefined,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTemplateRows((prev) => prev.filter((_, i) => i !== idx))
+                    }
+                    title="Remove row"
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "#c5221f",
+                      fontSize: "1rem",
+                      lineHeight: 1,
+                      padding: "0.2rem",
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer actions */}
+            <div
+              style={{
+                padding: "0.75rem 1rem",
+                borderTop: templateRows.length > 0 ? "1px solid #e8eaed" : undefined,
+                display: "flex",
+                gap: "0.5rem",
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: "0.82rem" }}
+                onClick={() =>
+                  setTemplateRows((prev) => [
+                    ...prev,
+                    {
+                      id: crypto.randomUUID(),
+                      domain: "",
+                      item: "",
+                      type: "string",
+                      options: [],
+                    },
+                  ])
+                }
+              >
+                + Add row
+              </button>
+
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: "0.82rem" }}
+                onClick={() => setTemplatePasteOpen((v) => !v)}
+              >
+                📋 Paste table
+              </button>
+
+              <div style={{ marginLeft: "auto" }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={templateMutation.isPending}
+                  onClick={() => templateMutation.mutate(templateRows)}
+                >
+                  {templateMutation.isPending ? "Saving…" : "Save template"}
+                </button>
+              </div>
+            </div>
+
+            {/* Paste area */}
+            {templatePasteOpen && (
+              <div
+                style={{
+                  padding: "0.75rem 1rem 1rem",
+                  borderTop: "1px solid #e8eaed",
+                  background: "#fff",
+                }}
+              >
+                <p style={{ fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.5rem" }}>
+                  Paste a table copied from Excel, Google Sheets, or CSV. Expected columns:{" "}
+                  <strong>Domain</strong>, <strong>Data Item</strong>,{" "}
+                  <em>Type (optional: "string" | "single_select" | "multi_select")</em>,{" "}
+                  <em>Options (optional, comma-separated)</em>.
+                </p>
+                <textarea
+                  value={templatePasteText}
+                  onChange={(e) => setTemplatePasteText(e.target.value)}
+                  placeholder="Paste here…"
+                  rows={6}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    fontFamily: "monospace",
+                    fontSize: "0.8rem",
+                    border: "1px solid #dadce0",
+                    borderRadius: "0.25rem",
+                    padding: "0.4rem 0.5rem",
+                    resize: "vertical",
+                  }}
+                />
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ fontSize: "0.82rem" }}
+                    onClick={() => {
+                      const parsed = parseTemplateTable(templatePasteText);
+                      if (parsed.length > 0) {
+                        setTemplateRows((prev) => [...prev, ...parsed]);
+                        setTemplatePasteText("");
+                        setTemplatePasteOpen(false);
+                      }
+                    }}
+                    disabled={!templatePasteText.trim()}
+                  >
+                    Import rows
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ fontSize: "0.82rem" }}
+                    onClick={() => {
+                      setTemplatePasteText("");
+                      setTemplatePasteOpen(false);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 

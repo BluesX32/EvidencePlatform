@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { screeningApi, projectsApi, annotationsApi, ontologyApi, fulltextApi } from "../api/client";
-import type { ExtractionJson, Snippet, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta } from "../api/client";
+import { screeningApi, projectsApi, annotationsApi, fulltextApi } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
@@ -1618,19 +1618,25 @@ function SaturationBadge({ projectId }: { projectId: string }) {
 // ---------------------------------------------------------------------------
 
 const EMPTY_EXTRACTION: ExtractionJson = {
-  levels: [],
-  dimensions: [],
-  snippets: [],
+  table: {},
   free_note: "",
   framework_updated: true,
   framework_update_note: "",
+  levels: [],
+  dimensions: [],
+  snippets: [],
 };
+
+// ── ExtractionTable ──────────────────────────────────────────────────────────
+// Template-driven extraction table.  Columns: Domain | Data Item | Data Extraction.
+// Each row's input type is set by ExtractionTemplateRow.type.
+// Falls back to a plain free-text note when no template is configured.
 
 interface ExtractionFormProps {
   projectId: string;
   form: ExtractionJson;
   setForm: React.Dispatch<React.SetStateAction<ExtractionJson>>;
-  levels: string[];
+  levels: string[];          // kept for back-compat; not used in table view
   onSave: () => void;
   onSkip: () => void;
   isPending: boolean;
@@ -1638,108 +1644,216 @@ interface ExtractionFormProps {
   toggleChip: (field: "levels" | "dimensions", value: string) => void;
 }
 
-function ExtractionForm({ projectId, form, setForm, levels, onSave, onSkip, isPending, isError, toggleChip }: ExtractionFormProps) {
-  const queryClient = useQueryClient();
-  const addLevelRef = useRef<HTMLInputElement>(null);
+function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, isError }: ExtractionFormProps) {
+  // Load the project's extraction template
+  const { data: project } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const templateRows: ExtractionTemplateRow[] = project?.extraction_template?.rows ?? [];
 
-  function updateSnippet(idx: number, key: keyof Snippet, value: string) {
-    setForm((f) => ({ ...f, snippets: f.snippets.map((s, i) => (i === idx ? { ...s, [key]: value } : s)) }));
+  function setCellValue(rowId: string, value: string | string[]) {
+    setForm((f) => ({
+      ...f,
+      table: { ...f.table, [rowId]: value },
+      // any non-empty cell → framework_updated = true (drives saturation)
+      framework_updated: true,
+    }));
   }
-  function addSnippet() {
-    setForm((f) => ({ ...f, snippets: [...f.snippets, { snippet: "", note: "", tag: "" }] }));
+
+  function getCellValue(rowId: string): string | string[] {
+    return form.table?.[rowId] ?? "";
   }
-  function removeSnippet(idx: number) {
-    setForm((f) => ({ ...f, snippets: f.snippets.filter((_, i) => i !== idx) }));
-  }
-  function addCustomLevel(newLevel: string) {
-    setForm((f) => ({ ...f, levels: [...f.levels, newLevel] }));
-    projectsApi.updateCriteria(projectId, { inclusion: [], exclusion: [], levels: [...levels, newLevel] }).then(() => {
-      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-    });
-    ontologyApi.create(projectId, { name: newLevel, namespace: "level" }).catch(() => {});
-  }
+
+  const th: React.CSSProperties = {
+    padding: "0.4rem 0.6rem",
+    background: "#f1f3f4",
+    fontWeight: 700,
+    fontSize: "0.73rem",
+    color: "#5f6368",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.06em",
+    borderBottom: "1px solid #dadce0",
+    textAlign: "left",
+  };
+
+  const td: React.CSSProperties = {
+    padding: "0.35rem 0.6rem",
+    borderBottom: "1px solid #f1f3f4",
+    verticalAlign: "top",
+    fontSize: "0.85rem",
+  };
 
   return (
     <div>
-      {/* Levels */}
-      <div style={{ marginBottom: "1rem" }}>
-        <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>Levels of analysis</div>
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", alignItems: "center" }}>
-          {levels.map((lv) => (
-            <button key={lv} type="button" onClick={() => toggleChip("levels", lv)}
-              style={{ padding: "0.25rem 0.7rem", borderRadius: "1rem", border: `2px solid ${form.levels.includes(lv) ? "#1a73e8" : "#dadce0"}`, background: form.levels.includes(lv) ? "#e8f0fe" : "#f8f9fa", color: form.levels.includes(lv) ? "#1a73e8" : "#5f6368", fontWeight: form.levels.includes(lv) ? 600 : 400, fontSize: "0.82rem", cursor: "pointer" }}>
-              {lv}
-            </button>
-          ))}
-          <input ref={addLevelRef} type="text" placeholder="+ level…"
-            style={{ fontSize: "0.8rem", border: "1px dashed #aaa", borderRadius: "1rem", padding: "0.2rem 0.6rem", background: "none", outline: "none", width: 80, color: "#555" }}
-            onKeyDown={(e) => { if (e.key === "Enter") { const val = e.currentTarget.value.trim(); if (val) { addCustomLevel(val); e.currentTarget.value = ""; } } }}
-          />
-        </div>
-      </div>
-
-      {/* Dimensions */}
-      <div style={{ marginBottom: "1rem" }}>
-        <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>Dimensions</div>
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-          {DIMENSIONS.map((dim) => (
-            <button key={dim} type="button" onClick={() => toggleChip("dimensions", dim)}
-              style={{ padding: "0.25rem 0.7rem", borderRadius: "1rem", border: `2px solid ${form.dimensions.includes(dim) ? "#8f3f97" : "#dadce0"}`, background: form.dimensions.includes(dim) ? "#f3e5f5" : "#f8f9fa", color: form.dimensions.includes(dim) ? "#8f3f97" : "#5f6368", fontWeight: form.dimensions.includes(dim) ? 600 : 400, fontSize: "0.82rem", cursor: "pointer" }}>
-              {dim}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Snippets */}
-      <div style={{ marginBottom: "1rem" }}>
-        <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>Evidence snippets</div>
-        {form.snippets.map((snip, idx) => (
-          <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 0.7fr auto", gap: "0.35rem", marginBottom: "0.3rem", alignItems: "center" }}>
-            <input type="text" placeholder="Snippet…" value={snip.snippet} onChange={(e) => updateSnippet(idx, "snippet", e.target.value)} style={inputStyle} />
-            <input type="text" placeholder="Note…" value={snip.note} onChange={(e) => updateSnippet(idx, "note", e.target.value)} style={inputStyle} />
-            <input type="text" placeholder="Tag…" value={snip.tag ?? ""} onChange={(e) => updateSnippet(idx, "tag", e.target.value)} style={inputStyle} />
-            <button onClick={() => removeSnippet(idx)} style={{ background: "none", border: "none", cursor: "pointer", color: "#c00", fontSize: "1rem" }}>✕</button>
+      {/* ── Structured extraction table ── */}
+      {templateRows.length > 0 ? (
+        <div style={{ marginBottom: "1rem" }}>
+          <div
+            style={{
+              fontWeight: 700,
+              fontSize: "0.78rem",
+              color: "#8f3f97",
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              marginBottom: "0.5rem",
+            }}
+          >
+            Extraction Table
           </div>
-        ))}
-        <button onClick={addSnippet} style={{ fontSize: "0.8rem", padding: "0.25rem 0.6rem", border: "1px dashed #aaa", background: "none", cursor: "pointer", borderRadius: 4, color: "#555" }}>
-          + Add snippet
-        </button>
-      </div>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              border: "1px solid #dadce0",
+              borderRadius: "0.375rem",
+              overflow: "hidden",
+              fontSize: "0.85rem",
+            }}
+          >
+            <thead>
+              <tr>
+                <th style={{ ...th, width: "22%" }}>Domain</th>
+                <th style={{ ...th, width: "28%" }}>Data Item</th>
+                <th style={{ ...th }}>Data Extraction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {templateRows.map((row) => {
+                const val = getCellValue(row.id);
+                return (
+                  <tr key={row.id}>
+                    <td style={{ ...td, color: "#5f6368", fontWeight: 500 }}>{row.domain || <em style={{ color: "#bbb" }}>—</em>}</td>
+                    <td style={{ ...td, color: "#3c4043" }}>{row.item || <em style={{ color: "#bbb" }}>—</em>}</td>
+                    <td style={{ ...td }}>
+                      {row.type === "string" && (
+                        <textarea
+                          value={String(val)}
+                          onChange={(e) => setCellValue(row.id, e.target.value)}
+                          rows={2}
+                          placeholder="Enter value…"
+                          style={{
+                            width: "100%",
+                            boxSizing: "border-box",
+                            fontSize: "0.84rem",
+                            fontFamily: "inherit",
+                            border: "1px solid #e0e0e0",
+                            borderRadius: "0.25rem",
+                            padding: "0.25rem 0.4rem",
+                            resize: "vertical",
+                            background: "#fafafa",
+                          }}
+                        />
+                      )}
 
-      {/* Free note */}
+                      {row.type === "single_select" && (
+                        <select
+                          value={String(val)}
+                          onChange={(e) => setCellValue(row.id, e.target.value)}
+                          style={{
+                            fontSize: "0.84rem",
+                            padding: "0.28rem 0.45rem",
+                            border: "1px solid #e0e0e0",
+                            borderRadius: "0.25rem",
+                            background: "#fafafa",
+                            width: "100%",
+                          }}
+                        >
+                          <option value="">— select —</option>
+                          {row.options.map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      )}
+
+                      {row.type === "multi_select" && (
+                        <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                          {row.options.map((opt) => {
+                            const selected = Array.isArray(val) ? val.includes(opt) : false;
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => {
+                                  const current = Array.isArray(val) ? val : [];
+                                  setCellValue(
+                                    row.id,
+                                    selected
+                                      ? current.filter((v) => v !== opt)
+                                      : [...current, opt]
+                                  );
+                                }}
+                                style={{
+                                  padding: "0.2rem 0.6rem",
+                                  borderRadius: "1rem",
+                                  border: `2px solid ${selected ? "#8f3f97" : "#dadce0"}`,
+                                  background: selected ? "#f3e5f5" : "#f8f9fa",
+                                  color: selected ? "#8f3f97" : "#5f6368",
+                                  fontWeight: selected ? 600 : 400,
+                                  fontSize: "0.8rem",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        /* No template yet — show a prompt */
+        <div
+          style={{
+            marginBottom: "1rem",
+            padding: "0.65rem 0.9rem",
+            background: "#fffde7",
+            border: "1px solid #fdd835",
+            borderRadius: "0.375rem",
+            fontSize: "0.82rem",
+            color: "#795548",
+          }}
+        >
+          No extraction template defined.{" "}
+          <Link
+            to={`/projects/${projectId}`}
+            style={{ color: "#1a73e8", fontWeight: 600 }}
+          >
+            Set one up in the project overview →
+          </Link>
+        </div>
+      )}
+
+      {/* ── Free note ── always shown */}
       <div style={{ marginBottom: "1rem" }}>
         <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>Free note</div>
-        <textarea value={form.free_note} onChange={(e) => setForm((f) => ({ ...f, free_note: e.target.value }))} rows={3} placeholder="General notes about this paper…"
-          style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }} />
+        <textarea
+          value={form.free_note}
+          onChange={(e) => setForm((f) => ({ ...f, free_note: e.target.value }))}
+          rows={3}
+          placeholder="General notes about this paper…"
+          style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }}
+        />
       </div>
 
       <SaturationBadge projectId={projectId} />
 
-      {/* Framework updated */}
-      <div style={{ marginBottom: "1.25rem" }}>
-        <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>Did this paper update the conceptual framework?</div>
-        <div style={{ display: "flex", gap: "0.75rem" }}>
-          {[true, false].map((val) => (
-            <label key={String(val)} style={{ display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer", fontSize: "0.88rem" }}>
-              <input type="radio" name="framework_updated" checked={form.framework_updated === val}
-                onChange={() => setForm((f) => ({ ...f, framework_updated: val, framework_update_note: val ? "" : f.framework_update_note }))} />
-              {val ? "Yes — added new concepts" : "No — nothing new"}
-            </label>
-          ))}
-        </div>
-        {!form.framework_updated && (
-          <input type="text" placeholder="Why no new concepts?" value={form.framework_update_note}
-            onChange={(e) => setForm((f) => ({ ...f, framework_update_note: e.target.value }))}
-            style={{ ...inputStyle, marginTop: "0.5rem", width: "100%" }} />
-        )}
-      </div>
-
       {isError && <p style={{ color: "#c5221f", marginBottom: "0.5rem" }}>Failed to save extraction. Try again.</p>}
 
       <div style={{ display: "flex", gap: "0.75rem" }}>
-        <button className="btn-primary" onClick={onSave} disabled={isPending}>{isPending ? "Saving…" : "Save"}</button>
-        <button className="btn-secondary" onClick={onSkip} disabled={isPending} title="Skip — come back later">Skip</button>
+        <button className="btn-primary" onClick={onSave} disabled={isPending}>
+          {isPending ? "Saving…" : "Save"}
+        </button>
+        <button className="btn-secondary" onClick={onSkip} disabled={isPending} title="Skip — come back later">
+          Skip
+        </button>
       </div>
     </div>
   );

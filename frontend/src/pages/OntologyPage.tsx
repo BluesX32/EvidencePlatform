@@ -53,6 +53,20 @@ export default function OntologyPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [nsFilter, setNsFilter] = useState<OntologyNamespace | "all">("all");
   const graphContainerRef = useRef<HTMLDivElement>(null);
+  const [graphDims, setGraphDims] = useState<{ w: number; h: number } | null>(null);
+
+  // Measure the graph container once it's mounted; reset when leaving graph view
+  useEffect(() => {
+    if (viewMode !== "graph3d") { setGraphDims(null); return; }
+    const el = graphContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewMode]);
 
   // Editor form state (for selected node)
   const [editName, setEditName] = useState("");
@@ -127,17 +141,22 @@ export default function OntologyPage() {
     [nodes, selectedId]
   );
 
+  // Only reset the form when the user selects a DIFFERENT node.
+  // Background refetches (after drag/save/create) must NOT wipe editDirty or the user's
+  // in-progress edits — that's what caused "Save needs two clicks".
   useEffect(() => {
-    if (selectedNode) {
-      setEditName(selectedNode.name);
-      setEditDesc(selectedNode.description ?? "");
-      setEditNs(selectedNode.namespace);
-      setEditColor(selectedNode.color ?? "");
-      setEditParentId(selectedNode.parent_id ?? "");
+    if (!selectedId) return;
+    const node = nodes.find((n) => n.id === selectedId);
+    if (node) {
+      setEditName(node.name);
+      setEditDesc(node.description ?? "");
+      setEditNs(node.namespace);
+      setEditColor(node.color ?? "");
+      setEditParentId(node.parent_id ?? "");
       setEditDirty(false);
       setFormError(null);
     }
-  }, [selectedNode]);
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -157,12 +176,25 @@ export default function OntologyPage() {
   const updateMut = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Parameters<typeof ontologyApi.update>[2] }) =>
       ontologyApi.update(projectId!, id, body),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // Sync form to what the server actually saved (avoids stale fields)
+      setEditName(res.data.name);
+      setEditDesc(res.data.description ?? "");
+      setEditNs(res.data.namespace);
+      setEditColor(res.data.color ?? "");
+      setEditParentId(res.data.parent_id ?? "");
       setEditDirty(false);
       setFormError(null);
       invalidate();
     },
     onError: (e: any) => setFormError(e?.response?.data?.detail ?? "Failed to update node"),
+  });
+
+  // Separate mutation for drag-and-drop reparenting — must not touch the edit form state
+  const reparentMut = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Parameters<typeof ontologyApi.update>[2] }) =>
+      ontologyApi.update(projectId!, id, body),
+    onSuccess: () => invalidate(),
   });
 
   const deleteMut = useMutation({
@@ -216,6 +248,15 @@ export default function OntologyPage() {
         parent_id: editParentId ? editParentId : undefined,
         clear_parent: !editParentId,
       },
+    });
+  };
+
+  const handleReparent = (nodeId: string, newParentId: string | null) => {
+    reparentMut.mutate({
+      id: nodeId,
+      body: newParentId
+        ? { parent_id: newParentId }
+        : { clear_parent: true },
     });
   };
 
@@ -274,11 +315,12 @@ export default function OntologyPage() {
   return (
     <div
       style={{
-        minHeight: "100vh",
+        height: "100vh",
         background: "#f9fafb",
         fontFamily: "system-ui, sans-serif",
         display: "flex",
         flexDirection: "column",
+        overflow: "hidden",
       }}
     >
       {/* ── Top bar ── */}
@@ -404,6 +446,10 @@ export default function OntologyPage() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8", fontSize: "0.9rem" }}>
               No nodes yet — add some in Tree view first.
             </div>
+          ) : !graphDims ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
+              Loading 3D graph…
+            </div>
           ) : (
             <Suspense fallback={
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
@@ -420,8 +466,8 @@ export default function OntologyPage() {
                 linkDirectionalArrowLength={4}
                 linkDirectionalArrowRelPos={1}
                 backgroundColor="#0f172a"
-                width={graphContainerRef.current?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth - 220 : 900)}
-                height={graphContainerRef.current?.clientHeight ?? (typeof window !== "undefined" ? window.innerHeight - 130 : 600)}
+                width={graphDims.w}
+                height={graphDims.h}
                 onNodeClick={(node: { id: string }) => {
                   setViewMode("tree");
                   setSelectedId(node.id);
@@ -457,6 +503,7 @@ export default function OntologyPage() {
               onSelect={setSelectedId}
               onAddChild={handleAddChild}
               onDelete={handleDelete}
+              onReparent={handleReparent}
               searchQuery={searchQuery}
             />
           )}

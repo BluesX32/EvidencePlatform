@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -88,6 +88,11 @@ class ProjectDetail(BaseModel):
     failed_import_count: int
     criteria: ProjectCriteria
     my_role: str             # owner | admin | reviewer | observer
+    extraction_template: Optional[Dict[str, Any]] = None
+
+
+class UpdateExtractionTemplateRequest(BaseModel):
+    rows: List[Dict[str, Any]] = []
 
 
 class UpdateCriteriaRequest(BaseModel):
@@ -155,6 +160,7 @@ async def get_project(
         failed_import_count=failed_count,
         criteria=ProjectCriteria(**raw),
         my_role=role,
+        extraction_template=project.extraction_template,
     )
 
 
@@ -195,4 +201,42 @@ async def update_criteria(
         failed_import_count=failed_count,
         criteria=ProjectCriteria(**raw),
         my_role=role,
+        extraction_template=project.extraction_template,
+    )
+
+
+@router.patch("/{project_id}/extraction-template", response_model=ProjectDetail)
+async def update_extraction_template(
+    project_id: uuid.UUID,
+    body: UpdateExtractionTemplateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    project, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required to edit extraction template")
+
+    project.extraction_template = {"rows": body.rows}
+    await db.commit()
+    await db.refresh(project)
+
+    record_count = await ProjectRepo.count_records(db, project_id)
+    import_count = await ImportRepo.count_completed(db, project_id)
+    jobs = await ImportRepo.list_by_project(db, project_id)
+    failed_count = sum(1 for j in jobs if j.status == "failed")
+
+    raw = project.criteria or {"inclusion": [], "exclusion": [], "levels": []}
+    raw.setdefault("levels", [])
+    return ProjectDetail(
+        id=str(project.id),
+        name=project.name,
+        description=project.description,
+        created_by=str(project.created_by),
+        created_at=project.created_at.isoformat(),
+        record_count=record_count,
+        import_count=import_count,
+        failed_import_count=failed_count,
+        criteria=ProjectCriteria(**raw),
+        my_role=role,
+        extraction_template=project.extraction_template,
     )

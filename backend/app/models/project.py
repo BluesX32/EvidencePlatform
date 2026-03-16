@@ -24,3 +24,4 @@ class Project(Base):
         default=lambda: {"inclusion": [], "exclusion": []},
         server_default='{"inclusion": [], "exclusion": []}',
     )
+    extraction_template: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
