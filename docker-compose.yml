@@ -45,8 +45,13 @@ services:
       - "5173:5173"
     volumes:
       - ./frontend:/app
-      - /app/node_modules
-    command: npm run dev -- --host
+      # Named volume keeps node_modules inside the container (Linux binaries,
+      # no host platform mismatch).  On every start the CMD runs `npm install`
+      # to sync any newly added packages from the mounted package.json without
+      # a full image rebuild.  To force a clean reinstall:
+      #   docker compose down -v && docker compose up --build
+      - frontend_nm:/app/node_modules
 
 volumes:
   pgdata:
+  frontend_nm:
