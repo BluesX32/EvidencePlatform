@@ -14,13 +14,9 @@ import type { OntologyNode, OntologyNamespace } from "../api/client";
 // ── Namespace styling ─────────────────────────────────────────────────────────
 
 export const NS_COLORS: Record<OntologyNamespace | string, string> = {
-  level:        "#3b82f6",
-  dimension:    "#10b981",
-  concept:      "#6366f1",
-  population:   "#8b5cf6",
-  intervention: "#f97316",
-  outcome:      "#14b8a6",
-  other:        "#9ca3af",
+  level:         "#3b82f6",   // blue
+  dimension:     "#10b981",   // emerald
+  relationships: "#f97316",   // orange
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────

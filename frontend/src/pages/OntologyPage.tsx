@@ -19,7 +19,7 @@
  *   • Namespace filter → show only nodes of selected namespace
  *   • Parent selector in editor → reparent node (cycle-safe)
  */
-import { useState, useMemo, useEffect, Suspense, lazy, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -31,15 +31,13 @@ import {
 } from "../api/client";
 import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
 
-// Lazy-load ForceGraph3D — react-force-graph is a named export, not a default
+// ── ForceGraph3D direct import (Vite handles chunking) ────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ForceGraph3D = lazy(() =>
-  import("react-force-graph").then((m) => ({ default: (m as any).ForceGraph3D }))
-);
+import { ForceGraph3D } from "react-force-graph";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_NS: OntologyNamespace = "concept";
+const DEFAULT_NS: OntologyNamespace = "level";
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -54,18 +52,32 @@ export default function OntologyPage() {
   const [nsFilter, setNsFilter] = useState<OntologyNamespace | "all">("all");
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const [graphDims, setGraphDims] = useState<{ w: number; h: number } | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fgRef = useRef<any>(null);
 
-  // Measure the graph container once it's mounted; reset when leaving graph view
+  // Measure via RAF + ResizeObserver for reliable sizing
   useEffect(() => {
     if (viewMode !== "graph3d") { setGraphDims(null); return; }
-    const el = graphContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
+    let raf: number;
+    const measure = () => {
+      const el = graphContainerRef.current;
+      if (!el) return;
+      const { width, height } = el.getBoundingClientRect();
+      if (width > 0 && height > 0) {
+        setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
+      } else {
+        raf = requestAnimationFrame(measure);
+      }
+    };
+    raf = requestAnimationFrame(measure);
+    const ro = new ResizeObserver(() => {
+      const el = graphContainerRef.current;
+      if (!el) return;
+      const { width, height } = el.getBoundingClientRect();
       if (width > 0 && height > 0) setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
     });
-    ro.observe(el);
-    return () => ro.disconnect();
+    if (graphContainerRef.current) ro.observe(graphContainerRef.current);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, [viewMode]);
 
   // Editor form state (for selected node)
@@ -260,6 +272,49 @@ export default function OntologyPage() {
     });
   };
 
+  // 3D drag-to-reparent: when drag ends, find the nearest other node;
+  // if within proximity threshold, reparent automatically.
+  const handle3DNodeDragEnd = useCallback(
+    (draggedNode: { id: string; x?: number; y?: number; z?: number }) => {
+      const gNodes: Array<{ id: string; x?: number; y?: number; z?: number }> =
+        graphData.nodes;
+      const dx0 = draggedNode.x ?? 0;
+      const dy0 = draggedNode.y ?? 0;
+      const dz0 = draggedNode.z ?? 0;
+
+      let nearestId: string | null = null;
+      let minDist = Infinity;
+      gNodes.forEach((n) => {
+        if (n.id === draggedNode.id) return;
+        const dx = (n.x ?? 0) - dx0;
+        const dy = (n.y ?? 0) - dy0;
+        const dz = (n.z ?? 0) - dz0;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < minDist) { minDist = dist; nearestId = n.id; }
+      });
+
+      // Only reparent if within a reasonable proximity (heuristic: < 40 units)
+      if (nearestId && minDist < 40) {
+        // Guard: don't reparent onto a descendant
+        const desc = new Set<string>([draggedNode.id]);
+        const allNodes: OntologyNode[] = nodes;
+        let changed = true;
+        while (changed) {
+          changed = false;
+          allNodes.forEach((n) => {
+            if (n.parent_id && desc.has(n.parent_id) && !desc.has(n.id)) {
+              desc.add(n.id); changed = true;
+            }
+          });
+        }
+        if (!desc.has(nearestId)) {
+          handleReparent(draggedNode.id, nearestId);
+        }
+      }
+    },
+    [graphData.nodes, nodes, handleReparent]
+  );
+
   const handleDelete = (node: OntologyNode) => {
     if (
       confirm(
@@ -441,42 +496,76 @@ export default function OntologyPage() {
 
       {/* ── 3D Graph body ── */}
       {viewMode === "graph3d" && (
-        <div ref={graphContainerRef} style={{ flex: 1, overflow: "hidden", background: "#0f172a", position: "relative" }}>
+        <div
+          ref={graphContainerRef}
+          style={{ flex: 1, overflow: "hidden", background: "#0f172a", position: "relative" }}
+        >
           {nodes.length === 0 ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8", fontSize: "0.9rem" }}>
               No nodes yet — add some in Tree view first.
             </div>
           ) : !graphDims ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
-              Loading 3D graph…
+              Initialising 3D engine…
             </div>
           ) : (
-            <Suspense fallback={
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
-                Loading 3D graph…
-              </div>
-            }>
-              <ForceGraph3D
-                graphData={graphData}
-                nodeLabel="name"
-                nodeColor={(n: { nodeColor: string }) => n.nodeColor}
-                nodeVal={(n: { val: number }) => n.val}
-                linkColor={() => "rgba(148,163,184,0.4)"}
-                linkWidth={1.5}
-                linkDirectionalArrowLength={4}
-                linkDirectionalArrowRelPos={1}
-                backgroundColor="#0f172a"
-                width={graphDims.w}
-                height={graphDims.h}
-                onNodeClick={(node: { id: string }) => {
-                  setViewMode("tree");
-                  setSelectedId(node.id);
-                }}
-              />
-            </Suspense>
+            <ForceGraph3D
+              ref={fgRef}
+              graphData={graphData}
+              width={graphDims.w}
+              height={graphDims.h}
+              backgroundColor="#0f172a"
+              // Hierarchical radial layout — distributes nodes in genuine 3D space
+              dagMode="radialout"
+              dagLevelDistance={80}
+              // Nodes
+              nodeLabel={(n: { name: string; namespace: string }) =>
+                `${n.name} [${n.namespace}]`
+              }
+              nodeColor={(n: { nodeColor: string }) => n.nodeColor}
+              nodeVal={(n: { val: number }) => n.val}
+              nodeOpacity={0.92}
+              // Links
+              linkColor={() => "rgba(148,163,184,0.35)"}
+              linkWidth={1.5}
+              linkDirectionalArrowLength={5}
+              linkDirectionalArrowRelPos={1}
+              linkDirectionalParticles={1}
+              linkDirectionalParticleSpeed={0.004}
+              // Drag to reparent: drop node close to another to re-parent
+              onNodeDragEnd={(node: { id: string; x?: number; y?: number; z?: number }) =>
+                handle3DNodeDragEnd(node)
+              }
+              // Click → switch to tree view and select node
+              onNodeClick={(node: { id: string }) => {
+                setViewMode("tree");
+                setSelectedId(node.id);
+              }}
+            />
           )}
+
+          {/* Legend */}
+          <div style={{ position: "absolute", top: 14, left: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {(["level", "dimension", "relationships"] as const).map((ns) => (
+              <span
+                key={ns}
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: (NS_COLORS[ns] ?? "#9ca3af") + "33",
+                  color: NS_COLORS[ns] ?? "#9ca3af",
+                  border: `1px solid ${NS_COLORS[ns] ?? "#9ca3af"}55`,
+                  fontWeight: 600,
+                }}
+              >
+                {ns}
+              </span>
+            ))}
+          </div>
+
           <div style={{ position: "absolute", bottom: 16, right: 20, color: "#475569", fontSize: "0.75rem", textAlign: "right", pointerEvents: "none" }}>
-            Drag to rotate · Scroll to zoom · Click a node to edit
+            Left-drag: rotate · Scroll: zoom · Drag node onto another: reparent · Click: edit
           </div>
         </div>
       )}

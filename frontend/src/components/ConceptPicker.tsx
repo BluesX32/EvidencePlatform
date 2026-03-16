@@ -1,13 +1,13 @@
 /**
- * ConceptPicker — inline ontology concept assignment for ScreeningWorkspace.
+ * ConceptPicker — inline ontology node assignment for ScreeningWorkspace.
  *
- * Shows ontology nodes (namespace = "concept") as toggleable chips.
- * Includes an inline "+" input to create a new concept node and immediately assign it.
+ * Shows all project ontology nodes (level / dimension / relationships) as toggleable chips.
+ * Includes an inline "+" input to create a new node and immediately assign it.
  * Newly created nodes are saved to the project ontology and available in future sessions.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ontologyApi, conceptsApi, type OntologyNode } from "../api/client";
+import { ontologyApi, conceptsApi, type OntologyNode, type OntologyNamespace } from "../api/client";
 
 interface Props {
   projectId: string;
@@ -15,8 +15,12 @@ interface Props {
   clusterId?: string | null;
 }
 
-// Namespace color map (mirrors OntologyTree.tsx NS_COLORS)
-const CONCEPT_COLOR = "#7c3aed";
+// Namespace colors (mirrors OntologyTree.tsx NS_COLORS)
+const NS_COLORS: Record<string, string> = {
+  level:         "#3b82f6",
+  dimension:     "#10b981",
+  relationships: "#f97316",
+};
 
 export default function ConceptPicker({ projectId, recordId, clusterId }: Props) {
   const qc = useQueryClient();
@@ -30,8 +34,8 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
     queryFn: () => ontologyApi.list(projectId).then((r) => r.data),
   });
 
-  // Only concept-namespace nodes shown as selectable chips
-  const conceptNodes = allNodes.filter((n) => n.namespace === "concept");
+  // Show all ontology nodes (level / dimension / relationships)
+  const conceptNodes = allNodes;
 
   // Nodes currently assigned to this item
   const { data: itemNodes = [] } = useQuery<OntologyNode[]>({
@@ -72,11 +76,12 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
     },
   });
 
+  // New inline nodes go in as "level" by default; users can change in OntologyPage
   const createAndAssignMut = useMutation({
     mutationFn: async (name: string) => {
       const created = await ontologyApi.create(projectId, {
         name: name.trim(),
-        namespace: "concept",
+        namespace: "level" as OntologyNamespace,
       });
       await conceptsApi.assign(projectId, {
         record_id: recordId ?? null,
@@ -132,7 +137,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
         {conceptNodes.map((node) => {
           const active = assignedIds.has(node.id);
-          const color = node.color ?? CONCEPT_COLOR;
+          const color = node.color ?? NS_COLORS[node.namespace] ?? "#6366f1";
           return (
             <button
               key={node.id}
@@ -188,7 +193,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
                 padding: "2px 8px",
                 borderRadius: 999,
                 border: "none",
-                background: CONCEPT_COLOR,
+                background: "#3b82f6",
                 color: "#fff",
                 cursor: "pointer",
               }}

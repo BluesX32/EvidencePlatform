@@ -39,10 +39,7 @@ router = APIRouter(prefix="/projects/{project_id}/ontology", tags=["ontology"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-VALID_NAMESPACES = {
-    "level", "dimension", "concept",
-    "population", "intervention", "outcome", "other",
-}
+VALID_NAMESPACES = {"level", "dimension", "relationships"}
 
 
 async def _require_project(project_id: uuid.UUID, current_user: User, db: AsyncSession):
@@ -172,7 +169,7 @@ async def _is_ancestor(candidate_id: uuid.UUID, node_id: uuid.UUID, db: AsyncSes
 class NodeCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     parent_id: Optional[uuid.UUID] = None
-    namespace: str = Field("concept", pattern=r"^[a-z_]+$")
+    namespace: str = Field("level", pattern=r"^[a-z_]+$")
     description: Optional[str] = None
     color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
 
@@ -189,7 +186,7 @@ class NodeUpdate(BaseModel):
 
 
 class SyncLevelsRequest(BaseModel):
-    namespace: str = Field("level", pattern=r"^[a-z_]+$")
+    namespace: str = Field("level", pattern=r"^[a-z_]+$")  # level | dimension | relationships
     under_node_id: Optional[uuid.UUID] = None  # attach under this parent; None = root
 
 

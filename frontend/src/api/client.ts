@@ -852,11 +852,7 @@ export const screeningApi = {
 export const ONTOLOGY_NAMESPACES = [
   "level",
   "dimension",
-  "concept",
-  "population",
-  "intervention",
-  "outcome",
-  "other",
+  "relationships",
 ] as const;
 
 export type OntologyNamespace = (typeof ONTOLOGY_NAMESPACES)[number];
