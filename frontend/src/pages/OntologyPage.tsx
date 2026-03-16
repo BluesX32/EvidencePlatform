@@ -19,7 +19,7 @@
  *   • Namespace filter → show only nodes of selected namespace
  *   • Parent selector in editor → reparent node (cycle-safe)
  */
-import React, { useState, useMemo, useEffect, useRef, useCallback, Suspense, lazy, Component } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback, Component } from "react";
 import type { ReactNode, ErrorInfo } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,25 +31,16 @@ import {
   type OntologyNamespace,
 } from "../api/client";
 import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
+import Graph3DCanvas from "../components/Graph3DCanvas";
+import type { G3DNode } from "../components/Graph3DCanvas";
 
-// ── Lazy-load ForceGraph3D — deferred so the aframe/VR chain is only
-// fetched when the user actually switches to 3D view.
-// vite.config optimizeDeps.exclude ensures the module chain loads in
-// the correct order (aframe must init before aframe-extras).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ForceGraph3DLazy = lazy(() =>
-  import("react-force-graph").then((m) => ({ default: (m as any).ForceGraph3D }))
-);
-
-// ── ErrorBoundary — catches any render/init error inside the 3D canvas
-// so a WebGL failure or library exception never white-screens the page.
+// ── ErrorBoundary — any WebGL/library error shows a recoverable card
+// instead of a white screen.
 interface EBState { error: Error | null }
 class Graph3DErrorBoundary extends Component<{ children: ReactNode }, EBState> {
   state: EBState = { error: null };
   static getDerivedStateFromError(e: Error): EBState { return { error: e }; }
-  componentDidCatch(e: Error, info: ErrorInfo) {
-    console.error("[3D Graph]", e, info);
-  }
+  componentDidCatch(e: Error, info: ErrorInfo) { console.error("[3D Graph]", e, info); }
   render() {
     if (this.state.error) {
       return (
@@ -59,10 +50,8 @@ class Graph3DErrorBoundary extends Component<{ children: ReactNode }, EBState> {
           <p style={{ margin: 0, fontSize: 12, color: "#64748b", maxWidth: 420, textAlign: "center" }}>
             {this.state.error.message}
           </p>
-          <button
-            onClick={() => this.setState({ error: null })}
-            style={{ marginTop: 8, padding: "6px 16px", borderRadius: 6, border: "1px solid #334155", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}
-          >
+          <button onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 8, padding: "6px 16px", borderRadius: 6, border: "1px solid #334155", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>
             Retry
           </button>
         </div>
@@ -548,36 +537,16 @@ export default function OntologyPage() {
             </div>
           ) : (
             <Graph3DErrorBoundary>
-              <Suspense fallback={
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
-                  Loading 3D engine…
-                </div>
-              }>
-                <ForceGraph3DLazy
-                  graphData={graphData}
-                  width={graphDims.w}
-                  height={graphDims.h}
-                  backgroundColor="#0f172a"
-                  nodeLabel={(n: { name: string; namespace: string }) =>
-                    `${n.name} [${n.namespace}]`
-                  }
-                  nodeColor={(n: { nodeColor: string }) => n.nodeColor}
-                  nodeVal={(n: { val: number }) => n.val}
-                  linkColor={() => "rgba(148,163,184,0.5)"}
-                  linkWidth={1.5}
-                  linkDirectionalArrowLength={5}
-                  linkDirectionalArrowRelPos={1}
-                  linkDirectionalParticles={1}
-                  linkDirectionalParticleSpeed={0.004}
-                  onNodeDragEnd={(node: { id: string; x?: number; y?: number; z?: number }) =>
-                    handle3DNodeDragEnd(node)
-                  }
-                  onNodeClick={(node: { id: string }) => {
-                    setViewMode("tree");
-                    setSelectedId(node.id);
-                  }}
-                />
-              </Suspense>
+              <Graph3DCanvas
+                graphData={graphData}
+                width={graphDims.w}
+                height={graphDims.h}
+                onNodeDragEnd={(node: G3DNode) => handle3DNodeDragEnd(node)}
+                onNodeClick={(node: G3DNode) => {
+                  setViewMode("tree");
+                  setSelectedId(node.id);
+                }}
+              />
             </Graph3DErrorBoundary>
           )}
 
