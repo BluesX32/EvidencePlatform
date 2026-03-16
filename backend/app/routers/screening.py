@@ -36,6 +36,7 @@ from app.services.direct_screening_service import (
     get_next_item,
     get_or_create_queue,
     get_project_sources_with_stats,
+    get_queue_list_summary,
     get_queue_slot,
     get_saturation,
     list_queues_for_project,
@@ -451,6 +452,19 @@ async def get_queue_history(
         }
         for q in queues
     ]
+
+
+@router.get("/queue-list")
+async def get_queue_list(
+    project_id: uuid.UUID,
+    source: str = Query("all"),
+    stage: str = Query("screen"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all queue slots seen so far with title, ta_decision, ft_decision (for side nav panel)."""
+    await _require_project(project_id, current_user, db)
+    return await get_queue_list_summary(db, project_id, current_user.id, source, stage)
 
 
 @router.get("/queue-slot")

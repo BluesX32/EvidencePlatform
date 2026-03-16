@@ -625,6 +625,15 @@ export interface ScreeningDecision {
   created_at: string;
 }
 
+export interface QueueListEntry {
+  position: number;
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string | null;
+  ta_decision: string | null;
+  ft_decision: string | null;
+}
+
 export interface Snippet {
   snippet: string;
   note: string;
@@ -844,6 +853,11 @@ export const screeningApi = {
   getQueueSlot: (projectId: string, params: { source?: string; stage?: string; position: number }) =>
     api.get<ScreeningNextItem>(`/projects/${projectId}/screening/queue-slot`, {
       params: { source: params.source ?? "all", stage: params.stage ?? "screen", position: params.position },
+    }),
+
+  getQueueList: (projectId: string, params: { source?: string; stage?: string }) =>
+    api.get<QueueListEntry[]>(`/projects/${projectId}/screening/queue-list`, {
+      params: { source: params.source ?? "all", stage: params.stage ?? "screen" },
     }),
 };
 

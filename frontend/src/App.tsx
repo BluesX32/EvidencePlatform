@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getToken } from "./api/client";
@@ -13,13 +13,16 @@ import OverlapPage from "./pages/OverlapPage";
 import ScreeningWorkspace from "./pages/ScreeningWorkspace";
 import ExtractionLibrary from "./pages/ExtractionLibrary";
 import LabelsPage from "./pages/LabelsPage";
-import OntologyPage from "./pages/OntologyPage";
 import ThematicAnalysis from "./pages/ThematicAnalysis";
-import LLMScreeningPage from "./pages/LLMScreeningPage";
 import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import AppShell from "./components/AppShell";
 import OnboardingTour from "./components/OnboardingTour";
+
+// Lazy-load pages that depend on libraries (react-force-graph / AFRAME) that
+// crash at module-evaluation time when loaded eagerly.
+const OntologyPage    = lazy(() => import("./pages/OntologyPage"));
+const LLMScreeningPage = lazy(() => import("./pages/LLMScreeningPage"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -55,30 +58,32 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
-          {/* Public */}
-          <Route path="/login"    element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/"         element={<Navigate to="/projects" replace />} />
+        <Suspense fallback={null}>
+          <Routes>
+            {/* Public */}
+            <Route path="/login"    element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/"         element={<Navigate to="/projects" replace />} />
 
-          {/* Authenticated — all wrapped in AppShell */}
-          <Route path="/projects"     element={<WithShell><ProjectsWithTour /></WithShell>} />
-          <Route path="/projects/new" element={<WithShell><NewProjectPage /></WithShell>} />
+            {/* Authenticated — all wrapped in AppShell */}
+            <Route path="/projects"     element={<WithShell><ProjectsWithTour /></WithShell>} />
+            <Route path="/projects/new" element={<WithShell><NewProjectPage /></WithShell>} />
 
-          {/* Project-scoped routes */}
-          <Route path="/projects/:id"              element={<WithShell><ProjectPage /></WithShell>} />
-          <Route path="/projects/:id/import"       element={<WithShell><ImportPage /></WithShell>} />
-          <Route path="/projects/:id/records"      element={<WithShell><RecordsPage /></WithShell>} />
-          <Route path="/projects/:id/overlap"      element={<WithShell><OverlapPage /></WithShell>} />
-          <Route path="/projects/:id/screen"       element={<WithShell><ScreeningWorkspace /></WithShell>} />
-          <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
-          <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
-          <Route path="/projects/:id/ontology"     element={<WithShell><OntologyPage /></WithShell>} />
-          <Route path="/projects/:id/thematic"     element={<WithShell><ThematicAnalysis /></WithShell>} />
-          <Route path="/projects/:id/llm-screening" element={<WithShell><LLMScreeningPage /></WithShell>} />
-          <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
-          <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />
-        </Routes>
+            {/* Project-scoped routes */}
+            <Route path="/projects/:id"              element={<WithShell><ProjectPage /></WithShell>} />
+            <Route path="/projects/:id/import"       element={<WithShell><ImportPage /></WithShell>} />
+            <Route path="/projects/:id/records"      element={<WithShell><RecordsPage /></WithShell>} />
+            <Route path="/projects/:id/overlap"      element={<WithShell><OverlapPage /></WithShell>} />
+            <Route path="/projects/:id/screen"       element={<WithShell><ScreeningWorkspace /></WithShell>} />
+            <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
+            <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
+            <Route path="/projects/:id/ontology"     element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><OntologyPage /></Suspense></WithShell>} />
+            <Route path="/projects/:id/thematic"     element={<WithShell><ThematicAnalysis /></WithShell>} />
+            <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><LLMScreeningPage /></Suspense></WithShell>} />
+            <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
+            <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </QueryClientProvider>
   );

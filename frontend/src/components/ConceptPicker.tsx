@@ -1,9 +1,8 @@
 /**
- * ConceptPicker — inline ontology node assignment for ScreeningWorkspace.
+ * ConceptPicker — inline concept assignment widget for ScreeningWorkspace.
  *
- * Shows all project ontology nodes (level / dimension / relationships) as toggleable chips.
- * Includes an inline "+" input to create a new node and immediately assign it.
- * Newly created nodes are saved to the project ontology and available in future sessions.
+ * Concepts = thematic analysis / taxonomy words: ontology nodes used to
+ * categorize papers for qualitative synthesis.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,12 +14,14 @@ interface Props {
   clusterId?: string | null;
 }
 
-// Namespace colors (mirrors OntologyTree.tsx NS_COLORS)
 const NS_COLORS: Record<string, string> = {
   level:         "#3b82f6",
   dimension:     "#10b981",
   relationships: "#f97316",
 };
+
+// Default color for nodes without a namespace match
+const DEFAULT_CONCEPT_COLOR = "#8b5cf6";
 
 export default function ConceptPicker({ projectId, recordId, clusterId }: Props) {
   const qc = useQueryClient();
@@ -28,25 +29,18 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
 
-  // All ontology nodes for this project
   const { data: allNodes = [] } = useQuery<OntologyNode[]>({
     queryKey: ["ontology", projectId],
     queryFn: () => ontologyApi.list(projectId).then((r) => r.data),
   });
 
-  // Show all ontology nodes (level / dimension / relationships)
-  const conceptNodes = allNodes;
-
-  // Nodes currently assigned to this item
   const { data: itemNodes = [] } = useQuery<OntologyNode[]>({
     queryKey: ["item-concepts", projectId, itemKey],
     queryFn: () =>
-      conceptsApi
-        .getItemConcepts(projectId, {
-          record_id: recordId ?? undefined,
-          cluster_id: clusterId ?? undefined,
-        })
-        .then((r) => r.data),
+      conceptsApi.getItemConcepts(projectId, {
+        record_id: recordId ?? undefined,
+        cluster_id: clusterId ?? undefined,
+      }).then((r) => r.data),
     enabled: !!itemKey,
   });
 
@@ -54,11 +48,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
 
   const assignMut = useMutation({
     mutationFn: (nodeId: string) =>
-      conceptsApi.assign(projectId, {
-        record_id: recordId ?? null,
-        cluster_id: clusterId ?? null,
-        node_id: nodeId,
-      }),
+      conceptsApi.assign(projectId, { record_id: recordId ?? null, cluster_id: clusterId ?? null, node_id: nodeId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["item-concepts", projectId, itemKey] });
     },
@@ -66,17 +56,12 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
 
   const unassignMut = useMutation({
     mutationFn: (nodeId: string) =>
-      conceptsApi.unassign(projectId, {
-        record_id: recordId ?? null,
-        cluster_id: clusterId ?? null,
-        node_id: nodeId,
-      }),
+      conceptsApi.unassign(projectId, { record_id: recordId ?? null, cluster_id: clusterId ?? null, node_id: nodeId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["item-concepts", projectId, itemKey] });
     },
   });
 
-  // New inline nodes go in as "level" by default; users can change in OntologyPage
   const createAndAssignMut = useMutation({
     mutationFn: async (name: string) => {
       const created = await ontologyApi.create(projectId, {
@@ -98,19 +83,14 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
   });
 
   const toggle = (nodeId: string) => {
-    if (assignedIds.has(nodeId)) {
-      unassignMut.mutate(nodeId);
-    } else {
-      assignMut.mutate(nodeId);
-    }
+    if (assignedIds.has(nodeId)) unassignMut.mutate(nodeId);
+    else assignMut.mutate(nodeId);
   };
 
   const submitNew = () => {
     const trimmed = newName.trim();
     if (!trimmed) return;
-    const exists = conceptNodes.find(
-      (n) => n.name.toLowerCase() === trimmed.toLowerCase()
-    );
+    const exists = allNodes.find((n) => n.name.toLowerCase() === trimmed.toLowerCase());
     if (exists) {
       if (!assignedIds.has(exists.id)) assignMut.mutate(exists.id);
       setNewName("");
@@ -122,47 +102,56 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
 
   return (
     <div>
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: "#6b7280",
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          marginBottom: 6,
-        }}
-      >
-        Concepts
+      {/* Section header */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Concepts
+        </span>
+        <span style={{ fontSize: 11, color: "#9ca3af" }}>— thematic analysis / taxonomy</span>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-        {conceptNodes.map((node) => {
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+        {allNodes.map((node) => {
           const active = assignedIds.has(node.id);
-          const color = node.color ?? NS_COLORS[node.namespace] ?? "#6366f1";
+          const color = node.color ?? NS_COLORS[node.namespace] ?? DEFAULT_CONCEPT_COLOR;
           return (
             <button
               key={node.id}
               onClick={() => toggle(node.id)}
-              title={active ? `Remove "${node.name}"` : `Tag "${node.name}"`}
+              title={active ? `Remove "${node.name}" (${node.namespace})` : `Tag with "${node.name}" (${node.namespace})`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                padding: "3px 10px",
-                borderRadius: 999,
-                border: `2px solid ${color}`,
+                gap: 4,
+                padding: "2px 9px",
+                borderRadius: 4,
+                border: `1.5px solid ${color}`,
                 background: active ? color : "transparent",
                 color: active ? "#fff" : color,
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: "pointer",
-                transition: "all 0.15s",
+                transition: "all 0.12s",
+                lineHeight: 1.5,
               }}
             >
-              {active && <span style={{ fontSize: 10 }}>✓</span>}
+              {active && <span style={{ fontSize: 9, lineHeight: 1 }}>✓</span>}
               {node.name}
+              <span style={{
+                fontSize: 9,
+                opacity: 0.75,
+                marginLeft: 1,
+                fontWeight: 400,
+              }}>
+                {node.namespace}
+              </span>
             </button>
           );
         })}
+
+        {allNodes.length === 0 && !adding && (
+          <span style={{ fontSize: 11, color: "#d1d5db", fontStyle: "italic" }}>No concepts yet</span>
+        )}
 
         {adding ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -178,7 +167,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
               style={{
                 fontSize: 12,
                 padding: "2px 8px",
-                borderRadius: 999,
+                borderRadius: 4,
                 border: "1px solid #d1d5db",
                 outline: "none",
                 width: 130,
@@ -188,29 +177,13 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
             <button
               onClick={submitNew}
               disabled={!newName.trim() || createAndAssignMut.isPending}
-              style={{
-                fontSize: 11,
-                padding: "2px 8px",
-                borderRadius: 999,
-                border: "none",
-                background: "#3b82f6",
-                color: "#fff",
-                cursor: "pointer",
-              }}
+              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: "none", background: DEFAULT_CONCEPT_COLOR, color: "#fff", cursor: "pointer" }}
             >
               Add
             </button>
             <button
               onClick={() => { setAdding(false); setNewName(""); }}
-              style={{
-                fontSize: 11,
-                padding: "2px 6px",
-                borderRadius: 999,
-                border: "none",
-                background: "transparent",
-                color: "#9ca3af",
-                cursor: "pointer",
-              }}
+              style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "none", background: "transparent", color: "#9ca3af", cursor: "pointer" }}
             >
               ✕
             </button>
@@ -218,18 +191,18 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
         ) : (
           <button
             onClick={() => setAdding(true)}
-            title="Tag with a new concept"
+            title="Create and assign a new concept"
             style={{
               fontSize: 11,
               padding: "2px 8px",
-              borderRadius: 999,
+              borderRadius: 4,
               border: "1px dashed #d1d5db",
               background: "transparent",
               color: "#9ca3af",
               cursor: "pointer",
             }}
           >
-            + new
+            + new concept
           </button>
         )}
       </div>

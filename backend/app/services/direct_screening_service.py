@@ -1572,17 +1572,38 @@ async def submit_decision(
                 record_id, cluster_id,
             )
 
-    dec = ScreeningDecision(
-        project_id=project_id,
-        record_id=record_id,
-        cluster_id=cluster_id,
-        stage=stage,
-        decision=decision,
-        reason_code=reason_code,
-        notes=notes,
-        reviewer_id=reviewer_id,
+    # UPSERT: update existing decision if one already exists (supports overrides)
+    existing_q = select(ScreeningDecision).where(
+        ScreeningDecision.project_id == project_id,
+        ScreeningDecision.stage == stage,
+        ScreeningDecision.reviewer_id == reviewer_id,
     )
-    db.add(dec)
+    if record_id is not None:
+        existing_q = existing_q.where(ScreeningDecision.record_id == record_id)
+    else:
+        existing_q = existing_q.where(ScreeningDecision.cluster_id == cluster_id)
+    existing_result = await db.execute(existing_q)
+    dec = existing_result.scalar_one_or_none()
+    if dec is not None:
+        dec.decision = decision
+        dec.reason_code = reason_code
+        dec.notes = notes
+        logger.info(
+            "submit_decision: updated existing %s decision for record=%s cluster=%s new=%s",
+            stage, record_id, cluster_id, decision,
+        )
+    else:
+        dec = ScreeningDecision(
+            project_id=project_id,
+            record_id=record_id,
+            cluster_id=cluster_id,
+            stage=stage,
+            decision=decision,
+            reason_code=reason_code,
+            notes=notes,
+            reviewer_id=reviewer_id,
+        )
+        db.add(dec)
     await db.flush()
 
     # Release claim
@@ -1710,3 +1731,137 @@ async def get_saturation(
         "saturated": consecutive >= threshold,
         "threshold": threshold,
     }
+
+
+# ---------------------------------------------------------------------------
+# Queue list summary (for side navigation panel)
+# ---------------------------------------------------------------------------
+
+async def get_queue_list_summary(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: uuid.UUID,
+    source_id_str: str,
+    stage: str,
+) -> List[Dict[str, Any]]:
+    """Return lightweight summary (position, title, ta/ft decision) for all seen queue slots."""
+    result = await db.execute(
+        select(ScreeningQueue).where(
+            ScreeningQueue.project_id == project_id,
+            ScreeningQueue.reviewer_id == reviewer_id,
+            ScreeningQueue.source_id == source_id_str,
+            ScreeningQueue.stage == stage,
+        )
+    )
+    queue = result.scalar_one_or_none()
+    if queue is None:
+        return []
+
+    slots = queue.slots
+    # Seen slots: indices 0..queue.position (inclusive; queue.position is next-to-fetch)
+    visible_count = min(queue.position + 1, len(slots))
+    visible = slots[:visible_count]
+    if not visible:
+        return []
+
+    record_ids = [uuid.UUID(s["id"]) for s in visible if s["type"] == "record"]
+    cluster_ids = [uuid.UUID(s["id"]) for s in visible if s["type"] == "cluster"]
+
+    # Batch-fetch record titles
+    record_titles: Dict[uuid.UUID, Optional[str]] = {}
+    if record_ids:
+        rows = await db.execute(select(Record.id, Record.title).where(Record.id.in_(record_ids)))
+        for row in rows.all():
+            record_titles[row.id] = row.title
+
+    # Batch-fetch cluster canonical titles
+    cluster_titles: Dict[uuid.UUID, Optional[str]] = {}
+    if cluster_ids:
+        rows = await db.execute(
+            select(OverlapClusterMember.cluster_id, Record.title)
+            .join(RecordSource, RecordSource.id == OverlapClusterMember.record_source_id)
+            .join(Record, Record.id == RecordSource.record_id)
+            .where(
+                OverlapClusterMember.cluster_id.in_(cluster_ids),
+                OverlapClusterMember.role == "canonical",
+            )
+        )
+        for row in rows.all():
+            cluster_titles[row.cluster_id] = row.title
+
+    # Batch-fetch TA decisions
+    ta_by_record: Dict[uuid.UUID, str] = {}
+    ta_by_cluster: Dict[uuid.UUID, str] = {}
+    if record_ids:
+        rows = await db.execute(
+            select(ScreeningDecision.record_id, ScreeningDecision.decision).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+                ScreeningDecision.stage == "TA",
+                ScreeningDecision.record_id.in_(record_ids),
+            )
+        )
+        for row in rows.all():
+            ta_by_record[row.record_id] = row.decision
+    if cluster_ids:
+        rows = await db.execute(
+            select(ScreeningDecision.cluster_id, ScreeningDecision.decision).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+                ScreeningDecision.stage == "TA",
+                ScreeningDecision.cluster_id.in_(cluster_ids),
+            )
+        )
+        for row in rows.all():
+            ta_by_cluster[row.cluster_id] = row.decision
+
+    # Batch-fetch FT decisions
+    ft_by_record: Dict[uuid.UUID, str] = {}
+    ft_by_cluster: Dict[uuid.UUID, str] = {}
+    if record_ids:
+        rows = await db.execute(
+            select(ScreeningDecision.record_id, ScreeningDecision.decision).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+                ScreeningDecision.stage == "FT",
+                ScreeningDecision.record_id.in_(record_ids),
+            )
+        )
+        for row in rows.all():
+            ft_by_record[row.record_id] = row.decision
+    if cluster_ids:
+        rows = await db.execute(
+            select(ScreeningDecision.cluster_id, ScreeningDecision.decision).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+                ScreeningDecision.stage == "FT",
+                ScreeningDecision.cluster_id.in_(cluster_ids),
+            )
+        )
+        for row in rows.all():
+            ft_by_cluster[row.cluster_id] = row.decision
+
+    out = []
+    for i, slot in enumerate(visible):
+        pos = i + 1  # 1-indexed
+        if slot["type"] == "record":
+            rid = uuid.UUID(slot["id"])
+            out.append({
+                "position": pos,
+                "record_id": str(rid),
+                "cluster_id": None,
+                "title": record_titles.get(rid),
+                "ta_decision": ta_by_record.get(rid),
+                "ft_decision": ft_by_record.get(rid),
+            })
+        else:
+            cid = uuid.UUID(slot["id"])
+            out.append({
+                "position": pos,
+                "record_id": None,
+                "cluster_id": str(cid),
+                "title": cluster_titles.get(cid),
+                "ta_decision": ta_by_cluster.get(cid),
+                "ft_decision": ft_by_cluster.get(cid),
+            })
+    return out

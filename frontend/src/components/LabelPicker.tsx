@@ -1,9 +1,7 @@
 /**
  * LabelPicker — inline label assignment widget for ScreeningWorkspace.
  *
- * Shows all project labels as toggleable chips.
- * Includes an inline "+" input to create and immediately assign a new label.
- * Newly created labels are saved to the project and appear in future sessions.
+ * Labels = anything users want to create: free-form tags for organizing papers.
  */
 import { useState, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,7 +13,6 @@ interface Props {
   clusterId?: string | null;
 }
 
-// Rotating palette for auto-assigned colors on new labels
 const LABEL_COLORS = [
   "#6366f1", "#0ea5e9", "#10b981", "#f59e0b",
   "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6",
@@ -28,22 +25,18 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
   const [newName, setNewName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // All project labels
   const { data: allLabels = [] } = useQuery<ProjectLabel[]>({
     queryKey: ["labels", projectId],
     queryFn: () => labelsApi.list(projectId).then((r) => r.data),
   });
 
-  // Labels currently applied to this item
   const { data: itemLabels = [] } = useQuery<ProjectLabel[]>({
     queryKey: ["item-labels", projectId, itemKey],
     queryFn: () =>
-      labelsApi
-        .getItemLabels(projectId, {
-          record_id: recordId ?? undefined,
-          cluster_id: clusterId ?? undefined,
-        })
-        .then((r) => r.data),
+      labelsApi.getItemLabels(projectId, {
+        record_id: recordId ?? undefined,
+        cluster_id: clusterId ?? undefined,
+      }).then((r) => r.data),
     enabled: !!itemKey,
   });
 
@@ -51,11 +44,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
 
   const assignMut = useMutation({
     mutationFn: (labelId: string) =>
-      labelsApi.assign(projectId, {
-        record_id: recordId ?? null,
-        cluster_id: clusterId ?? null,
-        label_id: labelId,
-      }),
+      labelsApi.assign(projectId, { record_id: recordId ?? null, cluster_id: clusterId ?? null, label_id: labelId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["item-labels", projectId, itemKey] });
       qc.invalidateQueries({ queryKey: ["labeled-articles", projectId] });
@@ -64,11 +53,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
 
   const unassignMut = useMutation({
     mutationFn: (labelId: string) =>
-      labelsApi.unassign(projectId, {
-        record_id: recordId ?? null,
-        cluster_id: clusterId ?? null,
-        label_id: labelId,
-      }),
+      labelsApi.unassign(projectId, { record_id: recordId ?? null, cluster_id: clusterId ?? null, label_id: labelId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["item-labels", projectId, itemKey] });
       qc.invalidateQueries({ queryKey: ["labeled-articles", projectId] });
@@ -95,21 +80,15 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
   });
 
   const toggle = (labelId: string) => {
-    if (assignedIds.has(labelId)) {
-      unassignMut.mutate(labelId);
-    } else {
-      assignMut.mutate(labelId);
-    }
+    if (assignedIds.has(labelId)) unassignMut.mutate(labelId);
+    else assignMut.mutate(labelId);
   };
 
   const submitNew = () => {
     const trimmed = newName.trim();
     if (!trimmed) return;
-    const exists = allLabels.find(
-      (l) => l.name.toLowerCase() === trimmed.toLowerCase()
-    );
+    const exists = allLabels.find((l) => l.name.toLowerCase() === trimmed.toLowerCase());
     if (exists) {
-      // Just assign the existing label
       if (!assignedIds.has(exists.id)) assignMut.mutate(exists.id);
       setNewName("");
       setAdding(false);
@@ -120,19 +99,15 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
 
   return (
     <div>
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: "#6b7280",
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          marginBottom: 6,
-        }}
-      >
-        Labels
+      {/* Section header */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Labels
+        </span>
+        <span style={{ fontSize: 11, color: "#9ca3af" }}>— anything you want to tag this paper with</span>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
         {allLabels.map((lbl) => {
           const active = assignedIds.has(lbl.id);
           return (
@@ -143,23 +118,28 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                padding: "3px 10px",
+                gap: 4,
+                padding: "2px 9px",
                 borderRadius: 999,
-                border: `2px solid ${lbl.color}`,
+                border: `1.5px solid ${lbl.color}`,
                 background: active ? lbl.color : "transparent",
                 color: active ? "#fff" : lbl.color,
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: "pointer",
-                transition: "all 0.15s",
+                transition: "all 0.12s",
+                lineHeight: 1.5,
               }}
             >
-              {active && <span style={{ fontSize: 10 }}>✓</span>}
+              {active && <span style={{ fontSize: 9, lineHeight: 1 }}>✓</span>}
               {lbl.name}
             </button>
           );
         })}
+
+        {allLabels.length === 0 && !adding && (
+          <span style={{ fontSize: 11, color: "#d1d5db", fontStyle: "italic" }}>No labels yet</span>
+        )}
 
         {adding ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -186,37 +166,21 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
             <button
               onClick={submitNew}
               disabled={!newName.trim() || createAndAssignMut.isPending}
-              style={{
-                fontSize: 11,
-                padding: "2px 8px",
-                borderRadius: 999,
-                border: "none",
-                background: "#6366f1",
-                color: "#fff",
-                cursor: "pointer",
-              }}
+              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}
             >
               Add
             </button>
             <button
               onClick={() => { setAdding(false); setNewName(""); }}
-              style={{
-                fontSize: 11,
-                padding: "2px 6px",
-                borderRadius: 999,
-                border: "none",
-                background: "transparent",
-                color: "#9ca3af",
-                cursor: "pointer",
-              }}
+              style={{ fontSize: 11, padding: "2px 6px", borderRadius: 999, border: "none", background: "transparent", color: "#9ca3af", cursor: "pointer" }}
             >
               ✕
             </button>
           </div>
         ) : (
           <button
-            onClick={() => setAdding(true)}
-            title="Add new label"
+            onClick={() => { setAdding(true); setTimeout(() => inputRef.current?.focus(), 0); }}
+            title="Create and assign a new label"
             style={{
               fontSize: 11,
               padding: "2px 8px",
@@ -227,7 +191,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
               cursor: "pointer",
             }}
           >
-            + new
+            + new label
           </button>
         )}
       </div>

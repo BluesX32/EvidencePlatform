@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, fulltextApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow, QueueListEntry } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptPicker from "../components/ConceptPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -26,7 +26,6 @@ const DEFAULT_LEVELS = [
   "patient/clinical", "population", "societal",
 ];
 
-const DIMENSIONS = ["objective", "subjective", "societal"];
 
 const BUCKET_LABELS: Record<string, string> = {
   ta_unscreened: "Screen (TA)",
@@ -917,18 +916,249 @@ function PDFUploadPanel({
 // HistoryNav — prev / next article navigation bar
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// QueueNavigatorPanel — collapsible side panel listing all seen papers
+// ---------------------------------------------------------------------------
+
+function QueueNavigatorPanel({
+  projectId,
+  source,
+  stage,
+  currentPos,
+  onNavigate,
+  onClose,
+}: {
+  projectId: string;
+  source: string;
+  stage: string;
+  currentPos: number | null;
+  onNavigate: (pos: number) => void;
+  onClose: () => void;
+}) {
+  const { data: list, isLoading } = useQuery<QueueListEntry[]>({
+    queryKey: ["queue-list", projectId, source, stage],
+    queryFn: () => screeningApi.getQueueList(projectId, { source, stage }).then((r) => r.data),
+    refetchInterval: 8000,
+  });
+
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!listRef.current || currentPos == null) return;
+    const el = listRef.current.querySelector(`[data-pos="${currentPos}"]`) as HTMLElement | null;
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [currentPos]);
+
+  const decisionDot = (ta: string | null, ft: string | null) => {
+    if (ft === "include") return <span style={{ color: "#188038", fontSize: "0.7rem", fontWeight: 700 }}>✓FT</span>;
+    if (ft === "exclude") return <span style={{ color: "#c5221f", fontSize: "0.7rem", fontWeight: 700 }}>✕FT</span>;
+    if (ta === "include") return <span style={{ color: "#1a73e8", fontSize: "0.7rem", fontWeight: 700 }}>✓TA</span>;
+    if (ta === "exclude") return <span style={{ color: "#c5221f", fontSize: "0.7rem", fontWeight: 700 }}>✕TA</span>;
+    return <span style={{ color: "#9ca3af", fontSize: "0.7rem" }}>—</span>;
+  };
+
+  return (
+    <div
+      style={{
+        border: "1px solid #e0e0e0",
+        borderRadius: "0.5rem",
+        background: "#fff",
+        marginBottom: "0.6rem",
+        overflow: "hidden",
+      }}
+    >
+      {/* Header */}
+      <div style={{ padding: "0.5rem 0.85rem", borderBottom: "1px solid #e0e0e0", display: "flex", alignItems: "center", gap: "0.5rem", background: "#f9fafb" }}>
+        <span style={{ fontWeight: 700, fontSize: "0.82rem", flex: 1, color: "#1f2937" }}>
+          Papers in session ({list?.length ?? 0})
+        </span>
+        <button
+          onClick={onClose}
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: "1rem", lineHeight: 1, padding: "0.1rem 0.3rem" }}
+          title="Close panel"
+        >✕</button>
+      </div>
+
+      {/* List — capped height so it doesn't push the paper card too far down */}
+      <div ref={listRef} style={{ maxHeight: 220, overflowY: "auto", padding: "0.15rem 0" }}>
+        {isLoading && <p style={{ padding: "0.75rem 1rem", color: "#9ca3af", fontSize: "0.82rem" }}>Loading…</p>}
+        {(list ?? []).map((entry) => {
+          const isCurrent = entry.position === currentPos;
+          const isExcluded = entry.ta_decision === "exclude";
+          return (
+            <div
+              key={entry.position}
+              data-pos={entry.position}
+              onClick={() => onNavigate(entry.position)}
+              style={{
+                padding: "0.3rem 0.85rem",
+                cursor: "pointer",
+                background: isCurrent ? "#e8f0fe" : "transparent",
+                borderLeft: `3px solid ${isCurrent ? "#4f46e5" : "transparent"}`,
+                display: "flex",
+                alignItems: "center",
+                gap: "0.45rem",
+              }}
+              onMouseEnter={(e) => { if (!isCurrent) (e.currentTarget as HTMLDivElement).style.background = "#f9fafb"; }}
+              onMouseLeave={(e) => { if (!isCurrent) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+            >
+              <span style={{ color: "#9ca3af", fontSize: "0.72rem", minWidth: 22, textAlign: "right", flexShrink: 0 }}>
+                {entry.position}
+              </span>
+              <span style={{
+                flex: 1,
+                fontSize: "0.79rem",
+                lineHeight: 1.3,
+                color: isExcluded ? "#9ca3af" : isCurrent ? "#1e40af" : "#374151",
+                fontWeight: isCurrent ? 600 : 400,
+                textDecoration: isExcluded ? "line-through" : "none",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}>
+                {entry.title ?? "(No title)"}
+              </span>
+              <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>
+                {decisionDot(entry.ta_decision, entry.ft_decision)}
+              </span>
+            </div>
+          );
+        })}
+        {!isLoading && (!list || list.length === 0) && (
+          <p style={{ padding: "0.65rem 1rem", color: "#9ca3af", fontSize: "0.82rem" }}>
+            No papers screened yet.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HistoryDecisionPanel — inline editable decisions when browsing history
+// ---------------------------------------------------------------------------
+
+function HistoryDecisionPanel({
+  item,
+  onDecide,
+  isPending,
+}: {
+  item: ScreeningNextItem;
+  onDecide: (stage: "TA" | "FT", decision: "include" | "exclude", reason?: string) => void;
+  isPending: boolean;
+}) {
+  const [expandTA, setExpandTA] = useState(false);
+  const [expandFT, setExpandFT] = useState(false);
+
+  const badge = (d: string | null | undefined) => {
+    if (!d) return <em style={{ color: "#bbb", fontSize: "0.8rem" }}>none</em>;
+    return (
+      <strong style={{ color: d === "include" ? "#188038" : "#c5221f", fontSize: "0.82rem" }}>
+        {d}
+      </strong>
+    );
+  };
+
+  const rowStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem", flexWrap: "wrap",
+  };
+
+  const editBtn = (open: boolean, toggle: () => void) => (
+    <button
+      onClick={toggle}
+      style={{
+        fontSize: "0.72rem", padding: "0.1rem 0.45rem", borderRadius: "1rem",
+        border: "1px solid #e0e0e0", background: open ? "#f3f0ff" : "#f9fafb",
+        color: open ? "#4f46e5" : "#6b7280", cursor: "pointer", fontWeight: 500,
+      }}
+    >
+      {open ? "✕ cancel" : "✎ change"}
+    </button>
+  );
+
+  return (
+    <div style={{
+      background: "#f8f9fa", border: "1px solid #e0e0e0",
+      borderRadius: "0.5rem", padding: "0.65rem 1rem", marginTop: "0.5rem",
+    }}>
+      <div style={{ fontSize: "0.75rem", fontWeight: 700, color: "#6b7280", marginBottom: "0.45rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        Current decisions (click ✎ to update)
+      </div>
+
+      {/* TA row */}
+      <div style={rowStyle}>
+        <span style={{ fontSize: "0.8rem", fontWeight: 600, minWidth: 38, color: "#374151" }}>TA</span>
+        {badge(item.ta_decision)}
+        {editBtn(expandTA, () => { setExpandTA((v) => !v); setExpandFT(false); })}
+      </div>
+      {expandTA && (
+        <div style={{ marginBottom: "0.5rem", paddingLeft: "1rem", borderLeft: "2px solid #c7d7fd" }}>
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.35rem" }}>
+            <button
+              disabled={isPending}
+              onClick={() => { onDecide("TA", "include"); setExpandTA(false); }}
+              style={{ padding: "0.2rem 0.7rem", borderRadius: "0.375rem", border: "1px solid #34a853", background: "#e6f4ea", color: "#188038", fontWeight: 600, cursor: "pointer", fontSize: "0.8rem" }}
+            >
+              ✓ Include (TA)
+            </button>
+          </div>
+          <ExcludeControls
+            onExclude={(reason) => { onDecide("TA", "exclude", reason); setExpandTA(false); }}
+            disabled={isPending}
+          />
+        </div>
+      )}
+
+      {/* FT row — always show if there's any FT decision or TA=include */}
+      {(item.ta_decision === "include" || item.ft_decision) && (
+        <>
+          <div style={rowStyle}>
+            <span style={{ fontSize: "0.8rem", fontWeight: 600, minWidth: 38, color: "#374151" }}>FT</span>
+            {badge(item.ft_decision)}
+            {editBtn(expandFT, () => { setExpandFT((v) => !v); setExpandTA(false); })}
+          </div>
+          {expandFT && (
+            <div style={{ paddingLeft: "1rem", borderLeft: "2px solid #c7d7fd" }}>
+              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                <button
+                  disabled={isPending}
+                  onClick={() => { onDecide("FT", "include"); setExpandFT(false); }}
+                  style={{ padding: "0.2rem 0.7rem", borderRadius: "0.375rem", border: "1px solid #34a853", background: "#e6f4ea", color: "#188038", fontWeight: 600, cursor: "pointer", fontSize: "0.8rem" }}
+                >
+                  ✓ Include (FT)
+                </button>
+              </div>
+              <ExcludeControls
+                onExclude={(reason) => { onDecide("FT", "exclude", reason); setExpandFT(false); }}
+                disabled={isPending}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HistoryNav
+// ---------------------------------------------------------------------------
+
 function HistoryNav({
   currentPos,
   maxPos,
   onPrev,
   onNext,
   isFetching,
+  onToggleList,
+  listOpen,
 }: {
   currentPos: number;
   maxPos: number;
   onPrev: () => void;
   onNext: () => void;
   isFetching: boolean;
+  onToggleList?: () => void;
+  listOpen?: boolean;
 }) {
   const isAtEnd = currentPos === maxPos;
   const btnBase: React.CSSProperties = {
@@ -989,6 +1219,22 @@ function HistoryNav({
       >
         {isAtEnd ? "Next item →" : "→ Newer"}
       </button>
+
+      {onToggleList && (
+        <button
+          onClick={onToggleList}
+          style={{
+            ...btnBase,
+            marginLeft: "auto",
+            background: listOpen ? "#ede9fe" : "#f9fafb",
+            color: listOpen ? "#4f46e5" : "#6b7280",
+            border: `1px solid ${listOpen ? "#c4b5fd" : "#e5e7eb"}`,
+          }}
+          title="Toggle paper list panel"
+        >
+          ☰ List
+        </button>
+      )}
     </div>
   );
 }
@@ -1282,6 +1528,8 @@ function ScreeningPanel({
   const isBrowsingHistory = browseItem !== null;
 
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [showQueueNav, setShowQueueNav] = useState(false);
+  const [showOverrideTA, setShowOverrideTA] = useState(false);
 
   const itemStartedAt = useRef<number>(Date.now());
 
@@ -1392,6 +1640,31 @@ function ScreeningPanel({
   const displayItem = browseItem ?? item;
   const bucketLabel = BUCKET_LABELS[bucket] ?? bucket;
 
+  // Mutation for updating decisions on history-browse items (UPSERT on backend)
+  const browseDecideMutation = useMutation({
+    mutationFn: (body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      stage: "TA" | "FT";
+      decision: "include" | "exclude";
+      reason_code?: string;
+      strategy?: string;
+    }) => screeningApi.submitDecision(projectId, body),
+    onSuccess: async () => {
+      // Re-fetch the browse item to reflect updated decisions
+      if (displayPos !== null && displayPos !== maxPos) {
+        setBrowseLoading(true);
+        try {
+          const res = await screeningApi.getQueueSlot(projectId, { source, stage: queueStage, position: displayPos });
+          setBrowseItem(res.data);
+        } finally {
+          setBrowseLoading(false);
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["queue-list", projectId] });
+    },
+  });
+
   function decide(decision: "include" | "exclude", reason_code?: string) {
     if (!item) return;
     const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
@@ -1410,6 +1683,20 @@ function ScreeningPanel({
     );
   }
 
+  // Override TA decision while viewing this paper in FT stage
+  function overrideTA(decision: "include" | "exclude", reason_code?: string) {
+    if (!item) return;
+    decideMutation.mutate(
+      { record_id: item.record_id ?? null, cluster_id: item.cluster_id ?? null, stage: "TA", decision, reason_code, strategy },
+      {
+        onSuccess: () => {
+          setShowOverrideTA(false);
+          fetchNext();
+        },
+      }
+    );
+  }
+
   function toggleChip(field: "levels" | "dimensions", value: string) {
     setForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
   }
@@ -1422,6 +1709,8 @@ function ScreeningPanel({
       onPrev={goToPrev}
       onNext={goToNext}
       isFetching={loading || browseLoading}
+      onToggleList={() => setShowQueueNav((v) => !v)}
+      listOpen={showQueueNav}
     />
   ) : null;
 
@@ -1504,6 +1793,18 @@ function ScreeningPanel({
     <div>
       {nav}
 
+      {/* Session paper list — inline collapsible below nav bar */}
+      {showQueueNav && (
+        <QueueNavigatorPanel
+          projectId={projectId}
+          source={source}
+          stage={queueStage}
+          currentPos={displayPos}
+          onNavigate={(pos) => { navigateToPos(pos); }}
+          onClose={() => setShowQueueNav(false)}
+        />
+      )}
+
       {/* Subtle spinner during history navigation — nav bar stays visible */}
       {browseLoading && (
         <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>
@@ -1538,37 +1839,96 @@ function ScreeningPanel({
       {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
 
       {!isBrowseBucket && !isBrowsingHistory && (
-        <DecisionBar
-          stage={stage as "TA" | "FT"}
-          includeLabel={stage === "FT" && autoAdvanceExtract ? "✓ Include — extract data" : undefined}
-          onInclude={() => decide("include")}
-          onExclude={(reason) => decide("exclude", reason)}
-          onSkip={fetchNext}
-          isPending={decideMutation.isPending}
-          isLoading={loading}
-          isError={decideMutation.isError}
-        />
+        <>
+          <DecisionBar
+            stage={stage as "TA" | "FT"}
+            includeLabel={stage === "FT" && autoAdvanceExtract ? "✓ Include — extract data" : undefined}
+            onInclude={() => decide("include")}
+            onExclude={(reason) => decide("exclude", reason)}
+            onSkip={fetchNext}
+            isPending={decideMutation.isPending}
+            isLoading={loading}
+            isError={decideMutation.isError}
+          />
+
+          {/* Override TA decision while in FT stage */}
+          {stage === "FT" && (
+            <div style={{ marginTop: "0.4rem" }}>
+              <button
+                onClick={() => setShowOverrideTA((v) => !v)}
+                style={{
+                  fontSize: "0.75rem", padding: "0.18rem 0.65rem", borderRadius: "1rem",
+                  border: "1px solid #fde68a", background: showOverrideTA ? "#fef9c3" : "#fff",
+                  color: "#92400e", cursor: "pointer", fontWeight: 500,
+                }}
+              >
+                ↩ Override abstract (TA) decision
+              </button>
+              {showOverrideTA && (
+                <div style={{
+                  marginTop: "0.4rem", padding: "0.6rem 0.85rem",
+                  background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "0.375rem",
+                }}>
+                  <div style={{ fontSize: "0.75rem", color: "#92400e", marginBottom: "0.4rem" }}>
+                    Submit a TA-level decision for this paper (overrides the existing abstract decision):
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                    <button
+                      disabled={decideMutation.isPending}
+                      onClick={() => overrideTA("include")}
+                      style={{ padding: "0.2rem 0.7rem", borderRadius: "0.375rem", border: "1px solid #34a853", background: "#e6f4ea", color: "#188038", fontWeight: 600, cursor: "pointer", fontSize: "0.8rem" }}
+                    >
+                      ✓ TA Include
+                    </button>
+                  </div>
+                  <ExcludeControls
+                    onExclude={(reason) => overrideTA("exclude", reason)}
+                    disabled={decideMutation.isPending}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
 
+      {/* History / browse bucket view — with editable decision override */}
       {(isBrowseBucket || isBrowsingHistory) && (
-        <div style={{ background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0 0 0.5rem 0.5rem", padding: "0.75rem 1.25rem" }}>
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-            {displayItem.ta_decision && (
-              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                TA: <strong style={{ color: displayItem.ta_decision === "include" ? "#188038" : "#c5221f" }}>{displayItem.ta_decision}</strong>
-              </span>
-            )}
-            {displayItem.ft_decision && (
-              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                FT: <strong style={{ color: displayItem.ft_decision === "include" ? "#188038" : "#c5221f" }}>{displayItem.ft_decision}</strong>
-              </span>
-            )}
-            {!isBrowsingHistory && (
+        <div>
+          {!isBrowsingHistory && (
+            <div style={{ background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0.375rem", padding: "0.6rem 1.1rem", display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+              {displayItem.ta_decision && (
+                <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
+                  TA: <strong style={{ color: displayItem.ta_decision === "include" ? "#188038" : "#c5221f" }}>{displayItem.ta_decision}</strong>
+                </span>
+              )}
+              {displayItem.ft_decision && (
+                <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
+                  FT: <strong style={{ color: displayItem.ft_decision === "include" ? "#188038" : "#c5221f" }}>{displayItem.ft_decision}</strong>
+                </span>
+              )}
               <button className="btn-secondary" onClick={fetchNext} disabled={loading} style={{ marginLeft: "auto" }}>Next →</button>
-            )}
-          </div>
+            </div>
+          )}
+          {isBrowsingHistory && (
+            <HistoryDecisionPanel
+              item={displayItem}
+              onDecide={(s, d, reason) =>
+                browseDecideMutation.mutate({
+                  record_id: displayItem.record_id ?? null,
+                  cluster_id: displayItem.cluster_id ?? null,
+                  stage: s,
+                  decision: d,
+                  reason_code: reason,
+                  strategy,
+                })
+              }
+              isPending={browseDecideMutation.isPending}
+            />
+          )}
         </div>
       )}
+
     </div>
   );
 }
@@ -1932,6 +2292,8 @@ function MixedPanel({
   const isBrowsingHistory = browseItem !== null;
 
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [showQueueNav, setShowQueueNav] = useState(false);
+  const [showOverrideTA, setShowOverrideTA] = useState(false);
 
   const itemStartedAt = useRef<number>(Date.now());
 
@@ -2019,19 +2381,48 @@ function MixedPanel({
     },
   });
 
+  const browseDecideMutation = useMutation({
+    mutationFn: (body: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      stage: "TA" | "FT";
+      decision: "include" | "exclude";
+      reason_code?: string;
+      strategy: string;
+    }) => screeningApi.submitDecision(projectId, body),
+    onSuccess: async () => {
+      if (displayPos !== null && displayPos !== maxPos) {
+        setBrowseLoading(true);
+        try {
+          const res = await screeningApi.getQueueSlot(projectId, { source, stage: "mixed", position: displayPos });
+          setBrowseItem(res.data);
+        } finally {
+          setBrowseLoading(false);
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["queue-list", projectId] });
+    },
+  });
+
   const nav = maxPos !== null ? (
-    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading}
+      onToggleList={() => setShowQueueNav((v) => !v)} listOpen={showQueueNav} />
   ) : null;
 
   if (loading && maxPos === null) return <p style={{ color: "#888" }}>Loading…</p>;
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
 
-  // ── History browse view (read-only) ──
+  // ── History browse view (editable) ──
   if (isBrowsingHistory && browseItem) {
     return (
       <div>
         {nav}
+        {showQueueNav && (
+          <QueueNavigatorPanel projectId={projectId} source={source} stage="mixed"
+            currentPos={displayPos} onNavigate={(pos) => { navigateToPos(pos); }}
+            onClose={() => setShowQueueNav(false)} />
+        )}
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Viewing session history</span>
@@ -2040,20 +2431,17 @@ function MixedPanel({
           </button>
         </div>
         <PaperCard item={browseItem} projectId={projectId} showAnnotations />
-        <div style={{ background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0 0 0.5rem 0.5rem", padding: "0.75rem 1.25rem" }}>
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-            {browseItem.ta_decision && (
-              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                TA: <strong style={{ color: browseItem.ta_decision === "include" ? "#188038" : "#c5221f" }}>{browseItem.ta_decision}</strong>
-              </span>
-            )}
-            {browseItem.ft_decision && (
-              <span style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                FT: <strong style={{ color: browseItem.ft_decision === "include" ? "#188038" : "#c5221f" }}>{browseItem.ft_decision}</strong>
-              </span>
-            )}
-          </div>
-        </div>
+        <HistoryDecisionPanel
+          item={browseItem}
+          onDecide={(s, d, reason) =>
+            browseDecideMutation.mutate({
+              record_id: browseItem.record_id ?? null,
+              cluster_id: browseItem.cluster_id ?? null,
+              stage: s, decision: d, reason_code: reason, strategy: "mixed",
+            })
+          }
+          isPending={browseDecideMutation.isPending}
+        />
       </div>
     );
   }
@@ -2112,6 +2500,14 @@ function MixedPanel({
   return (
     <div>
       {nav}
+
+      {/* Session paper list — inline collapsible below nav bar */}
+      {showQueueNav && (
+        <QueueNavigatorPanel projectId={projectId} source={source} stage="mixed"
+          currentPos={displayPos} onNavigate={(pos) => { navigateToPos(pos); }}
+          onClose={() => setShowQueueNav(false)} />
+      )}
+
       <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
       <PaperCard item={item} projectId={projectId} showAnnotations />
 
@@ -2136,6 +2532,46 @@ function MixedPanel({
           <DecisionBar stage="FT" includeLabel={autoAdvanceExtract ? "✓ Include — extract data" : "✓ Include"}
             onInclude={() => handleFT("include")} onExclude={(reason) => handleFT("exclude", reason)} onSkip={fetchNext}
             isPending={decideMutation.isPending} isLoading={loading} isError={decideMutation.isError} />
+
+          {/* Override TA decision while at FT stage */}
+          <div style={{ marginTop: "0.4rem" }}>
+            <button
+              onClick={() => setShowOverrideTA((v) => !v)}
+              style={{ fontSize: "0.75rem", padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #fde68a", background: showOverrideTA ? "#fef9c3" : "#fff", color: "#92400e", cursor: "pointer", fontWeight: 500 }}
+            >
+              ↩ Override abstract (TA) decision
+            </button>
+            {showOverrideTA && (
+              <div style={{ marginTop: "0.4rem", padding: "0.6rem 0.85rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "0.375rem" }}>
+                <div style={{ fontSize: "0.75rem", color: "#92400e", marginBottom: "0.4rem" }}>
+                  Submit a TA-level decision for this paper (overrides the existing abstract decision):
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                  <button
+                    disabled={decideMutation.isPending}
+                    onClick={() => {
+                      decideMutation.mutate(
+                        { record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null, stage: "TA", decision: "include", strategy: "mixed" },
+                        { onSuccess: () => { setShowOverrideTA(false); fetchNext(); } }
+                      );
+                    }}
+                    style={{ padding: "0.2rem 0.7rem", borderRadius: "0.375rem", border: "1px solid #34a853", background: "#e6f4ea", color: "#188038", fontWeight: 600, cursor: "pointer", fontSize: "0.8rem" }}
+                  >
+                    ✓ TA Include
+                  </button>
+                </div>
+                <ExcludeControls
+                  onExclude={(reason) => {
+                    decideMutation.mutate(
+                      { record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null, stage: "TA", decision: "exclude", reason_code: reason, strategy: "mixed" },
+                      { onSuccess: () => { setShowOverrideTA(false); fetchNext(); } }
+                    );
+                  }}
+                  disabled={decideMutation.isPending}
+                />
+              </div>
+            )}
+          </div>
         </>
       )}
 
