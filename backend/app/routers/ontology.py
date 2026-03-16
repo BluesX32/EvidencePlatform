@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.models.ontology_edge import OntologyEdge
 from app.models.ontology_node import OntologyNode
 from app.models.record_concept import RecordConcept
 from app.models.user import User
@@ -193,6 +194,20 @@ class SyncLevelsRequest(BaseModel):
 class ImportRequest(BaseModel):
     nodes: List[Dict[str, Any]]  # JSON tree (same format as export)
     merge: bool = True  # if True, skip nodes whose name+parent already exist
+
+
+class EdgeCreate(BaseModel):
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    label: Optional[str] = Field(None, max_length=200)
+    color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+
+class EdgeUpdate(BaseModel):
+    label: Optional[str] = Field(None, max_length=200)
+    clear_label: bool = False
+    color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    clear_color: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +541,151 @@ async def import_tree(
     await _import_nodes(body.nodes, parent_id=None)
     await db.commit()
     return {"created": created, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Edge helpers
+# ---------------------------------------------------------------------------
+
+
+def _edge_out(e: OntologyEdge) -> Dict[str, Any]:
+    return {
+        "id": str(e.id),
+        "project_id": str(e.project_id),
+        "source_id": str(e.source_id),
+        "target_id": str(e.target_id),
+        "label": e.label,
+        "color": e.color,
+        "created_at": e.created_at,
+        "updated_at": e.updated_at,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Edge CRUD  (/projects/{project_id}/ontology/edges)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/edges")
+async def list_edges(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return all directed relationship edges for this project."""
+    await _require_project(project_id, current_user, db)
+    rows = (
+        await db.execute(
+            select(OntologyEdge)
+            .where(OntologyEdge.project_id == project_id)
+            .order_by(OntologyEdge.created_at)
+        )
+    ).scalars().all()
+    return [_edge_out(e) for e in rows]
+
+
+@router.post("/edges", status_code=201)
+async def create_edge(
+    project_id: uuid.UUID,
+    body: EdgeCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Create a directed relationship edge between two nodes."""
+    await _require_project(project_id, current_user, db)
+
+    if body.source_id == body.target_id:
+        raise HTTPException(status_code=422, detail="Self-loops are not allowed")
+
+    # Verify both nodes exist in this project
+    for nid, label in [(body.source_id, "Source"), (body.target_id, "Target")]:
+        n = (
+            await db.execute(
+                select(OntologyNode).where(
+                    OntologyNode.id == nid,
+                    OntologyNode.project_id == project_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if n is None:
+            raise HTTPException(status_code=404, detail=f"{label} node not found")
+
+    edge = OntologyEdge(
+        project_id=project_id,
+        source_id=body.source_id,
+        target_id=body.target_id,
+        label=body.label,
+        color=body.color,
+    )
+    db.add(edge)
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="An edge already exists between these nodes")
+    return _edge_out(edge)
+
+
+@router.patch("/edges/{edge_id}")
+async def update_edge(
+    project_id: uuid.UUID,
+    edge_id: uuid.UUID,
+    body: EdgeUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Update the label or color of a relationship edge."""
+    await _require_project(project_id, current_user, db)
+
+    edge = (
+        await db.execute(
+            select(OntologyEdge).where(
+                OntologyEdge.id == edge_id,
+                OntologyEdge.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if edge is None:
+        raise HTTPException(status_code=404, detail="Edge not found")
+
+    if body.clear_label:
+        edge.label = None
+    elif body.label is not None:
+        edge.label = body.label
+    if body.clear_color:
+        edge.color = None
+    elif body.color is not None:
+        edge.color = body.color
+
+    await db.flush()
+    await db.commit()
+    return _edge_out(edge)
+
+
+@router.delete("/edges/{edge_id}", status_code=204)
+async def delete_edge(
+    project_id: uuid.UUID,
+    edge_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a relationship edge."""
+    await _require_project(project_id, current_user, db)
+
+    edge = (
+        await db.execute(
+            select(OntologyEdge).where(
+                OntologyEdge.id == edge_id,
+                OntologyEdge.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if edge is None:
+        raise HTTPException(status_code=404, detail="Edge not found")
+
+    await db.delete(edge)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------

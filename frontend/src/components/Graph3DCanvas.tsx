@@ -8,6 +8,10 @@
  *
  * API: imperative (kapsule pattern).  We create the graph once on mount,
  * then call `.graphData()`, `.width()`, `.height()` reactively via effects.
+ *
+ * Link types:
+ *   "hierarchy"    — parent-child tree edge (gray, thin)
+ *   "relationship" — explicit ontology edge (orange, thicker, labeled)
  */
 import { useEffect, useRef, memo } from "react";
 
@@ -29,6 +33,9 @@ export interface G3DNode {
 export interface G3DLink {
   source: string;
   target: string;
+  linkType?: "hierarchy" | "relationship";
+  label?: string;
+  edgeId?: string; // OntologyEdge.id — only set for relationship links
 }
 
 export interface G3DData {
@@ -42,9 +49,20 @@ interface Props {
   height: number;
   onNodeClick?: (node: G3DNode) => void;
   onNodeDragEnd?: (node: G3DNode) => void;
+  onLinkClick?: (link: G3DLink) => void;
+  /** When truthy, the node with this id is highlighted as the connect-mode source. */
+  connectSourceId?: string | null;
 }
 
-function Graph3DCanvas({ graphData, width, height, onNodeClick, onNodeDragEnd }: Props) {
+function Graph3DCanvas({
+  graphData,
+  width,
+  height,
+  onNodeClick,
+  onNodeDragEnd,
+  onLinkClick,
+  connectSourceId,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<ForceGraph3DInstance>(null);
 
@@ -64,18 +82,34 @@ function Graph3DCanvas({ graphData, width, height, onNodeClick, onNodeDragEnd }:
         .nodeLabel((n: G3DNode) => `${n.name} [${n.namespace}]`)
         .nodeColor((n: G3DNode) => n.nodeColor)
         .nodeVal((n: G3DNode) => n.val)
-        .linkColor(() => "rgba(148,163,184,0.5)")
-        .linkWidth(1.5)
-        .linkDirectionalArrowLength(5)
+        // Link styling by type
+        .linkColor((l: G3DLink) =>
+          l.linkType === "relationship" ? "#f97316" : "rgba(148,163,184,0.35)"
+        )
+        .linkWidth((l: G3DLink) =>
+          l.linkType === "relationship" ? 2.5 : 1.2
+        )
+        .linkLabel((l: G3DLink) => l.label ?? "")
+        .linkDirectionalArrowLength((l: G3DLink) =>
+          l.linkType === "relationship" ? 7 : 4
+        )
         .linkDirectionalArrowRelPos(1)
-        .linkDirectionalParticles(1)
-        .linkDirectionalParticleSpeed(0.004)
+        .linkDirectionalParticles((l: G3DLink) =>
+          l.linkType === "relationship" ? 2 : 1
+        )
+        .linkDirectionalParticleSpeed((l: G3DLink) =>
+          l.linkType === "relationship" ? 0.006 : 0.004
+        )
+        .linkDirectionalParticleColor((l: G3DLink) =>
+          l.linkType === "relationship" ? "#f97316" : "rgba(148,163,184,0.7)"
+        )
         .width(width)
         .height(height)
         .graphData(graphData);
 
       if (onNodeClick)   g.onNodeClick(onNodeClick);
       if (onNodeDragEnd) g.onNodeDragEnd(onNodeDragEnd);
+      if (onLinkClick)   g.onLinkClick(onLinkClick);
 
       graphRef.current = g;
     }).catch((err) => {
@@ -99,6 +133,16 @@ function Graph3DCanvas({ graphData, width, height, onNodeClick, onNodeDragEnd }:
   useEffect(() => {
     if (width > 0 && height > 0) graphRef.current?.width(width).height(height);
   }, [width, height]);
+
+  // Highlight the connect-mode source node with a distinct color
+  useEffect(() => {
+    const g = graphRef.current;
+    if (!g) return;
+    g.nodeColor((n: G3DNode) => {
+      if (connectSourceId && n.id === connectSourceId) return "#facc15"; // yellow
+      return n.nodeColor;
+    });
+  }, [connectSourceId]);
 
   return (
     <div

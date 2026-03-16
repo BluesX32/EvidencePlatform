@@ -956,6 +956,43 @@ export const ontologyApi = {
     ),
 };
 
+// ── Ontology Edges ────────────────────────────────────────────────────────────
+
+export interface OntologyEdge {
+  id: string;
+  project_id: string;
+  source_id: string;
+  target_id: string;
+  label: string | null;
+  color: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const ontologyEdgesApi = {
+  list: (projectId: string) =>
+    api.get<OntologyEdge[]>(`/projects/${projectId}/ontology/edges`),
+
+  create: (
+    projectId: string,
+    body: { source_id: string; target_id: string; label?: string | null; color?: string | null }
+  ) => api.post<OntologyEdge>(`/projects/${projectId}/ontology/edges`, body),
+
+  update: (
+    projectId: string,
+    edgeId: string,
+    body: {
+      label?: string | null;
+      clear_label?: boolean;
+      color?: string | null;
+      clear_color?: boolean;
+    }
+  ) => api.patch<OntologyEdge>(`/projects/${projectId}/ontology/edges/${edgeId}`, body),
+
+  delete: (projectId: string, edgeId: string) =>
+    api.delete(`/projects/${projectId}/ontology/edges/${edgeId}`),
+};
+
 // ── Concept assignments (record_concepts) ─────────────────────────────────────
 
 export const conceptsApi = {

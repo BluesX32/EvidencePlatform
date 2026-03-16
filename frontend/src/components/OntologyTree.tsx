@@ -2,14 +2,15 @@
  * OntologyTree — interactive hierarchical taxonomy visualizer.
  *
  * Renders a collapsible tree from a flat depth-first node list.
- * Emits callbacks for selection, add, edit, and delete so the parent page
- * owns mutation state.
+ * Each node row can be expanded to reveal:
+ *   1. Child nodes (tree hierarchy via parent_id)
+ *   2. Outgoing relationship edges (namespace="relationships" semantics, stored
+ *      in the separate ontology_edges table) — shown as orange "→" sub-rows.
  *
- * Each row:
- *   [▶/▼] [color dot] name  [namespace badge]  [+ child] [✎] [✕]
+ * Emits callbacks for selection, add, edit, delete (nodes) and select/delete (edges).
  */
 import { useState, useMemo, useCallback, useRef } from "react";
-import type { OntologyNode, OntologyNamespace } from "../api/client";
+import type { OntologyNode, OntologyEdge, OntologyNamespace } from "../api/client";
 
 // ── Namespace styling ─────────────────────────────────────────────────────────
 
@@ -27,10 +28,14 @@ export interface TreeNode extends OntologyNode {
 
 interface Props {
   nodes: OntologyNode[];           // flat list from server (depth-first order)
+  edges: OntologyEdge[];           // all relationship edges for this project
   selectedId: string | null;
+  selectedEdgeId: string | null;
   onSelect: (id: string | null) => void;
+  onSelectEdge: (edgeId: string | null) => void;
   onAddChild: (parentId: string | null) => void;
   onDelete: (node: OntologyNode) => void;
+  onDeleteEdge: (edge: OntologyEdge) => void;
   onReparent: (nodeId: string, newParentId: string | null) => void;
   searchQuery: string;
 }
@@ -65,10 +70,14 @@ function collectIds(node: TreeNode): Set<string> {
 
 export default function OntologyTree({
   nodes,
+  edges,
   selectedId,
+  selectedEdgeId,
   onSelect,
+  onSelectEdge,
   onAddChild,
   onDelete,
+  onDeleteEdge,
   onReparent,
   searchQuery,
 }: Props) {
@@ -85,6 +94,12 @@ export default function OntologyTree({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const tree = useMemo(() => buildTree(nodes), [nodes]);
+
+  // Name map for edge target lookup
+  const nodeNameMap = useMemo(
+    () => new Map(nodes.map((n) => [n.id, n.name])),
+    [nodes]
+  );
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -104,7 +119,6 @@ export default function OntologyTree({
 
   // ── Drag handlers ──────────────────────────────────────────────────────────
 
-  // Build descendant set for cycle prevention
   const descendantMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
     function getDescendants(id: string): Set<string> {
@@ -127,7 +141,6 @@ export default function OntologyTree({
     (id: string) => {
       const dId = draggedIdRef.current;
       if (!dId) return;
-      // Don't allow dropping onto self or own descendants
       const descendants = descendantMap.get(dId);
       if (descendants?.has(id)) return;
       setDragOverId(id);
@@ -161,9 +174,7 @@ export default function OntologyTree({
     (e: React.DragEvent) => {
       e.preventDefault();
       const dId = draggedIdRef.current;
-      if (dId) {
-        onReparent(dId, null);
-      }
+      if (dId) onReparent(dId, null);
       draggedIdRef.current = null;
       setDraggedId(null);
       setDragOverId(null);
@@ -212,12 +223,17 @@ export default function OntologyTree({
         <TreeNodeRow
           key={root.id}
           node={root}
+          edges={edges}
+          nodeNameMap={nodeNameMap}
           expanded={expanded}
           onToggle={toggle}
           selectedId={selectedId}
+          selectedEdgeId={selectedEdgeId}
           onSelect={onSelect}
+          onSelectEdge={onSelectEdge}
           onAddChild={onAddChild}
           onDelete={onDelete}
+          onDeleteEdge={onDeleteEdge}
           matchIds={matchIds}
           searchQuery={searchQuery}
           draggedId={draggedId}
@@ -236,12 +252,17 @@ export default function OntologyTree({
 
 interface RowProps {
   node: TreeNode;
+  edges: OntologyEdge[];
+  nodeNameMap: Map<string, string>;
   expanded: Set<string>;
   onToggle: (id: string) => void;
   selectedId: string | null;
+  selectedEdgeId: string | null;
   onSelect: (id: string | null) => void;
+  onSelectEdge: (edgeId: string | null) => void;
   onAddChild: (parentId: string | null) => void;
   onDelete: (node: OntologyNode) => void;
+  onDeleteEdge: (edge: OntologyEdge) => void;
   matchIds: Set<string> | null;
   searchQuery: string;
   draggedId: string | null;
@@ -254,12 +275,17 @@ interface RowProps {
 
 function TreeNodeRow({
   node,
+  edges,
+  nodeNameMap,
   expanded,
   onToggle,
   selectedId,
+  selectedEdgeId,
   onSelect,
+  onSelectEdge,
   onAddChild,
   onDelete,
+  onDeleteEdge,
   matchIds,
   searchQuery,
   draggedId,
@@ -271,16 +297,17 @@ function TreeNodeRow({
 }: RowProps) {
   const isExpanded = expanded.has(node.id);
   const isSelected = selectedId === node.id;
-  const hasChildren = node.children.length > 0;
-  const nsColor = NS_COLORS[node.namespace] ?? NS_COLORS.other;
+  const nsColor = NS_COLORS[node.namespace] ?? NS_COLORS.level;
   const isDragging = draggedId === node.id;
   const isDragOver = dragOverId === node.id;
 
-  // Highlight search match
   const isMatch = matchIds ? matchIds.has(node.id) : false;
   const isVisible = matchIds === null || isMatch || node.children.some((c) => matchIds.has(c.id));
-
   if (!isVisible && matchIds !== null) return null;
+
+  // Outgoing relationship edges from this node
+  const outgoingEdges = edges.filter((e) => e.source_id === node.id);
+  const hasExpandable = node.children.length > 0 || outgoingEdges.length > 0;
 
   let rowBackground = "transparent";
   if (isDragOver) rowBackground = "#dbeafe";
@@ -331,21 +358,21 @@ function TreeNodeRow({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            if (hasChildren) onToggle(node.id);
+            if (hasExpandable) onToggle(node.id);
           }}
           style={{
             background: "none",
             border: "none",
-            cursor: hasChildren ? "pointer" : "default",
+            cursor: hasExpandable ? "pointer" : "default",
             width: 16,
             fontSize: 10,
-            color: hasChildren ? "#6b7280" : "transparent",
+            color: hasExpandable ? "#6b7280" : "transparent",
             padding: 0,
             flexShrink: 0,
           }}
-          title={hasChildren ? (isExpanded ? "Collapse" : "Expand") : undefined}
+          title={hasExpandable ? (isExpanded ? "Collapse" : "Expand") : undefined}
         >
-          {hasChildren ? (isExpanded ? "▼" : "▶") : "○"}
+          {hasExpandable ? (isExpanded ? "▼" : "▶") : "○"}
         </button>
 
         {/* Color dot */}
@@ -375,7 +402,7 @@ function TreeNodeRow({
         </span>
 
         {/* Children count badge */}
-        {hasChildren && (
+        {node.children.length > 0 && (
           <span
             style={{
               fontSize: 10,
@@ -387,6 +414,24 @@ function TreeNodeRow({
             }}
           >
             {collectIds(node).size - 1}
+          </span>
+        )}
+
+        {/* Relationship edge count badge */}
+        {outgoingEdges.length > 0 && (
+          <span
+            style={{
+              fontSize: 10,
+              color: "#f97316",
+              background: "#fff7ed",
+              borderRadius: 999,
+              padding: "1px 5px",
+              flexShrink: 0,
+              border: "1px solid #fed7aa",
+            }}
+            title={`${outgoingEdges.length} outgoing relationship${outgoingEdges.length > 1 ? "s" : ""}`}
+          >
+            →{outgoingEdges.length}
           </span>
         )}
 
@@ -405,42 +450,39 @@ function TreeNodeRow({
           {node.namespace}
         </span>
 
-        {/* Action buttons — visible on row hover / when selected */}
+        {/* Action buttons */}
         <div
           className="tree-row-actions"
           style={{ display: "flex", gap: 2, flexShrink: 0 }}
           onClick={(e) => e.stopPropagation()}
         >
-          <ActionBtn
-            title="Add child node"
-            onClick={() => onAddChild(node.id)}
-            color="#6366f1"
-          >
+          <ActionBtn title="Add child node" onClick={() => onAddChild(node.id)} color="#6366f1">
             +
           </ActionBtn>
-          <ActionBtn
-            title="Delete node (children promoted)"
-            onClick={() => onDelete(node)}
-            color="#ef4444"
-          >
+          <ActionBtn title="Delete node (children promoted)" onClick={() => onDelete(node)} color="#ef4444">
             ✕
           </ActionBtn>
         </div>
       </div>
 
       {/* Children */}
-      {isExpanded && hasChildren && (
+      {isExpanded && node.children.length > 0 && (
         <div>
           {node.children.map((child) => (
             <TreeNodeRow
               key={child.id}
               node={child}
+              edges={edges}
+              nodeNameMap={nodeNameMap}
               expanded={expanded}
               onToggle={onToggle}
               selectedId={selectedId}
+              selectedEdgeId={selectedEdgeId}
               onSelect={onSelect}
+              onSelectEdge={onSelectEdge}
               onAddChild={onAddChild}
               onDelete={onDelete}
+              onDeleteEdge={onDeleteEdge}
               matchIds={matchIds}
               searchQuery={searchQuery}
               draggedId={draggedId}
@@ -453,6 +495,107 @@ function TreeNodeRow({
           ))}
         </div>
       )}
+
+      {/* Outgoing relationship edges */}
+      {isExpanded && outgoingEdges.length > 0 && (
+        <div>
+          {outgoingEdges.map((edge) => (
+            <EdgeSubRow
+              key={edge.id}
+              edge={edge}
+              targetName={nodeNameMap.get(edge.target_id) ?? edge.target_id}
+              depth={node.depth + 1}
+              isSelected={selectedEdgeId === edge.id}
+              onSelect={() => onSelectEdge(edge.id)}
+              onDelete={() => onDeleteEdge(edge)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── EdgeSubRow ────────────────────────────────────────────────────────────────
+
+function EdgeSubRow({
+  edge,
+  targetName,
+  depth,
+  isSelected,
+  onSelect,
+  onDelete,
+}: {
+  edge: OntologyEdge;
+  targetName: string;
+  depth: number;
+  isSelected: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      onClick={onSelect}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 8px",
+        paddingLeft: 8 + depth * 20 + 20, // extra indent
+        borderRadius: 6,
+        background: isSelected ? "#fff7ed" : "transparent",
+        borderLeft: isSelected ? "3px solid #f97316" : "3px solid transparent",
+        cursor: "pointer",
+        transition: "background 0.1s",
+        userSelect: "none",
+      }}
+    >
+      {/* Arrow icon */}
+      <span style={{ fontSize: 12, color: "#f97316", flexShrink: 0 }}>→</span>
+
+      {/* Label */}
+      {edge.label && (
+        <span style={{ fontSize: 11, color: "#9a3412", fontStyle: "italic", flexShrink: 0 }}>
+          {edge.label}
+        </span>
+      )}
+
+      {/* Target name */}
+      <span
+        style={{
+          fontSize: 12,
+          color: "#374151",
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {targetName}
+      </span>
+
+      {/* Namespace badge */}
+      <span
+        style={{
+          fontSize: 10,
+          padding: "1px 6px",
+          borderRadius: 999,
+          background: "#fff7ed",
+          color: "#f97316",
+          fontWeight: 600,
+          border: "1px solid #fed7aa",
+          flexShrink: 0,
+        }}
+      >
+        rel
+      </span>
+
+      {/* Delete button */}
+      <div onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ flexShrink: 0 }}>
+        <ActionBtn title="Delete this relationship" onClick={onDelete} color="#ef4444">
+          ✕
+        </ActionBtn>
+      </div>
     </div>
   );
 }
