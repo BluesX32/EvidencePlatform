@@ -1,20 +1,14 @@
 /**
- * OntologyPage — lightweight taxonomy/ontology editor.
+ * OntologyPage — ontology / taxonomy editor.
  *
- * Layout:
- *   ┌─ Top bar: breadcrumb · search · actions ───────────────────────────────┐
- *   ├─ Stats strip ──────────────────────────────────────────────────────────┤
- *   ├─ Left: collapsible tree ──────────┬─ Right: node/edge editor panel ────┤
- *   │  (OntologyTree)                   │                                    │
- *   └───────────────────────────────────┴────────────────────────────────────┘
+ * Views:
+ *   "2D"  — React Flow canvas (dagre tree layout + relationship edges)
+ *           Left: OntologyCanvas2D  Right: node / edge editor panel
+ *   "3D"  — three.js force-directed graph (Graph3DCanvas)
+ *           Full width with editor panel toggled by node/edge click
  *
- * Relationships (edges):
- *   • Stored in ontology_edges table (source_id → target_id, optional label)
- *   • Shown in tree as orange "→" sub-rows under each node
- *   • Shown in 3D graph as orange thicker links
- *   • Right panel switches between node editor and edge editor
- *   • "Connect" mode in 3D: click source node, click target → creates edge
- *   • "Add relationship" button in node editor: same connect mode flow
+ * Single source of truth: TanStack Query cache for nodes + edges.
+ * All selection state lives here and is passed down as props.
  */
 import React, { useState, useMemo, useEffect, useRef, useCallback, Component } from "react";
 import type { ReactNode, ErrorInfo } from "react";
@@ -29,7 +23,8 @@ import {
   type OntologyNode,
   type OntologyNamespace,
 } from "../api/client";
-import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
+import { NS_COLORS } from "../components/OntologyTree";
+import OntologyCanvas2D from "../components/OntologyCanvas2D";
 import Graph3DCanvas from "../components/Graph3DCanvas";
 import type { G3DNode, G3DLink } from "../components/Graph3DCanvas";
 
@@ -69,23 +64,21 @@ export default function OntologyPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
 
-  // ── View state ──────────────────────────────────────────────────────────
-  const [viewMode, setViewMode] = useState<"tree" | "graph3d">("tree");
+  // ── View + search state ──────────────────────────────────────────────────
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
   const [searchQuery, setSearchQuery] = useState("");
   const [nsFilter, setNsFilter] = useState<OntologyNamespace | "all">("all");
+
+  // 3D graph container sizing
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const [graphDims, setGraphDims] = useState<{ w: number; h: number } | null>(null);
 
-  // Measure container on switch to 3D — retry until ref is attached + sized
   useEffect(() => {
-    if (viewMode !== "graph3d") { setGraphDims(null); return; }
+    if (viewMode !== "3d") { setGraphDims(null); return; }
     let raf: number;
     const measure = () => {
       const el = graphContainerRef.current;
-      if (!el || el.getBoundingClientRect().width === 0) {
-        raf = requestAnimationFrame(measure);
-        return;
-      }
+      if (!el || el.getBoundingClientRect().width === 0) { raf = requestAnimationFrame(measure); return; }
       const { width, height } = el.getBoundingClientRect();
       setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
     };
@@ -116,7 +109,7 @@ export default function OntologyPage() {
   const [editEdgeColor, setEditEdgeColor] = useState("");
   const [editEdgeDirty, setEditEdgeDirty] = useState(false);
 
-  // ── Connect mode (create a new edge by clicking two nodes in 3D) ────────
+  // ── Connect mode (3D view: click source then target) ────────────────────
   const [connectMode, setConnectMode] = useState(false);
   const [connectSourceId, setConnectSourceId] = useState<string | null>(null);
 
@@ -127,7 +120,7 @@ export default function OntologyPage() {
   const [addNs, setAddNs] = useState<OntologyNamespace>(DEFAULT_NS);
   const [addColor, setAddColor] = useState("");
 
-  // ── Add edge inline form state (inside right panel) ─────────────────────
+  // ── Add edge inline form state (inside node editor) ────────────────────
   const [addEdgeMode, setAddEdgeMode] = useState(false);
   const [addEdgeTargetId, setAddEdgeTargetId] = useState("");
   const [addEdgeLabel, setAddEdgeLabel] = useState("");
@@ -178,21 +171,21 @@ export default function OntologyPage() {
 
   const selectedNode = useMemo(() => nodes.find((n) => n.id === selectedId) ?? null, [nodes, selectedId]);
   const selectedEdge = useMemo(() => edges.find((e) => e.id === selectedEdgeId) ?? null, [edges, selectedEdgeId]);
-
   const nodeNameMap = useMemo(() => new Map(nodes.map((n) => [n.id, n.name])), [nodes]);
+
+  const selectedNodeEdgesOut = useMemo(() => edges.filter((e) => e.source_id === selectedId), [edges, selectedId]);
+  const selectedNodeEdgesIn = useMemo(() => edges.filter((e) => e.target_id === selectedId), [edges, selectedId]);
+
+  const rightPanelOpen = addMode || !!selectedNode || !!selectedEdge;
 
   // Populate node editor when selection changes
   useEffect(() => {
     if (!selectedId) return;
     const node = nodes.find((n) => n.id === selectedId);
     if (node) {
-      setEditName(node.name);
-      setEditDesc(node.description ?? "");
-      setEditNs(node.namespace);
-      setEditColor(node.color ?? "");
-      setEditParentId(node.parent_id ?? "");
-      setEditDirty(false);
-      setFormError(null);
+      setEditName(node.name); setEditDesc(node.description ?? ""); setEditNs(node.namespace);
+      setEditColor(node.color ?? ""); setEditParentId(node.parent_id ?? "");
+      setEditDirty(false); setFormError(null);
     }
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -200,36 +193,23 @@ export default function OntologyPage() {
   useEffect(() => {
     if (!selectedEdgeId) return;
     const edge = edges.find((e) => e.id === selectedEdgeId);
-    if (edge) {
-      setEditEdgeLabel(edge.label ?? "");
-      setEditEdgeColor(edge.color ?? "");
-      setEditEdgeDirty(false);
-    }
+    if (edge) { setEditEdgeLabel(edge.label ?? ""); setEditEdgeColor(edge.color ?? ""); setEditEdgeDirty(false); }
   }, [selectedEdgeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 3D graph data — both hierarchy links and relationship edges ──────────
+  // ── 3D graph data ─────────────────────────────────────────────────────────
 
   const graphData = useMemo(() => {
     const graphNodes = nodes.map((n) => ({
-      id: n.id,
-      name: n.name,
-      namespace: n.namespace,
+      id: n.id, name: n.name, namespace: n.namespace,
       nodeColor: n.color ?? NS_COLORS[n.namespace] ?? "#9ca3af",
       val: n.parent_id ? 1 : 2.5,
     }));
-
-    const hierarchyLinks: G3DLink[] = nodes
-      .filter((n) => n.parent_id !== null)
+    const hierarchyLinks: G3DLink[] = nodes.filter((n) => n.parent_id !== null)
       .map((n) => ({ source: n.parent_id!, target: n.id, linkType: "hierarchy" as const }));
-
     const edgeLinks: G3DLink[] = edges.map((e) => ({
-      source: e.source_id,
-      target: e.target_id,
-      linkType: "relationship" as const,
-      label: e.label ?? undefined,
-      edgeId: e.id,
+      source: e.source_id, target: e.target_id, linkType: "relationship" as const,
+      label: e.label ?? undefined, edgeId: e.id,
     }));
-
     return { nodes: graphNodes, links: [...hierarchyLinks, ...edgeLinks] };
   }, [nodes, edges]);
 
@@ -274,16 +254,9 @@ export default function OntologyPage() {
     mutationFn: (body: Parameters<typeof ontologyEdgesApi.create>[1]) =>
       ontologyEdgesApi.create(projectId!, body),
     onSuccess: (res) => {
-      invalidateEdges();
-      setConnectMode(false);
-      setConnectSourceId(null);
-      setAddEdgeMode(false);
-      setAddEdgeTargetId("");
-      setAddEdgeLabel("");
-      setAddEdgeColor("");
-      // Select the new edge
-      setSelectedEdgeId(res.data.id);
-      setSelectedId(null);
+      invalidateEdges(); setConnectMode(false); setConnectSourceId(null);
+      setAddEdgeMode(false); setAddEdgeTargetId(""); setAddEdgeLabel(""); setAddEdgeColor("");
+      setSelectedEdgeId(res.data.id); setSelectedId(null);
     },
     onError: (e: any) => setFormError(e?.response?.data?.detail ?? "Failed to create relationship"),
   });
@@ -292,10 +265,8 @@ export default function OntologyPage() {
     mutationFn: ({ id, body }: { id: string; body: Parameters<typeof ontologyEdgesApi.update>[2] }) =>
       ontologyEdgesApi.update(projectId!, id, body),
     onSuccess: (res) => {
-      setEditEdgeLabel(res.data.label ?? "");
-      setEditEdgeColor(res.data.color ?? "");
-      setEditEdgeDirty(false);
-      invalidateEdges();
+      setEditEdgeLabel(res.data.label ?? ""); setEditEdgeColor(res.data.color ?? "");
+      setEditEdgeDirty(false); invalidateEdges();
     },
     onError: (e: any) => setFormError(e?.response?.data?.detail ?? "Failed to update relationship"),
   });
@@ -309,6 +280,7 @@ export default function OntologyPage() {
 
   const handleAddChild = (parentId: string | null) => {
     setAddParentId(parentId); setAddMode(true); setAddName(""); setAddNs(DEFAULT_NS); setAddColor(""); setFormError(null);
+    setSelectedId(null); setSelectedEdgeId(null);
   };
 
   const handleAddSubmit = (e: React.FormEvent) => {
@@ -322,21 +294,13 @@ export default function OntologyPage() {
     updateMut.mutate({ id: selectedId, body: { name: editName.trim(), description: editDesc || null, namespace: editNs, color: editColor || null, clear_color: !editColor, parent_id: editParentId ? editParentId : undefined, clear_parent: !editParentId } });
   };
 
-  const handleReparent = (nodeId: string, newParentId: string | null) => {
+  const handleReparent = useCallback((nodeId: string, newParentId: string | null) => {
     reparentMut.mutate({ id: nodeId, body: newParentId ? { parent_id: newParentId } : { clear_parent: true } });
-  };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveEdge = () => {
     if (!selectedEdgeId) return;
-    updateEdgeMut.mutate({
-      id: selectedEdgeId,
-      body: {
-        label: editEdgeLabel || null,
-        clear_label: !editEdgeLabel,
-        color: editEdgeColor || null,
-        clear_color: !editEdgeColor,
-      },
-    });
+    updateEdgeMut.mutate({ id: selectedEdgeId, body: { label: editEdgeLabel || null, clear_label: !editEdgeLabel, color: editEdgeColor || null, clear_color: !editEdgeColor } });
   };
 
   const handleDeleteEdge = (edge: OntologyEdge) => {
@@ -347,85 +311,54 @@ export default function OntologyPage() {
 
   const handleAddEdgeSubmit = () => {
     if (!selectedId || !addEdgeTargetId) return;
-    createEdgeMut.mutate({
-      source_id: selectedId,
-      target_id: addEdgeTargetId,
-      label: addEdgeLabel || null,
-      color: addEdgeColor || null,
-    });
+    createEdgeMut.mutate({ source_id: selectedId, target_id: addEdgeTargetId, label: addEdgeLabel || null, color: addEdgeColor || null });
   };
 
-  // Start connect mode from the node editor "Add relationship" button
-  const startConnectMode = () => {
-    if (!selectedId) return;
-    setConnectSourceId(selectedId);
-    setConnectMode(true);
-    setViewMode("graph3d");
-  };
-
-  const cancelConnectMode = () => {
-    setConnectMode(false);
-    setConnectSourceId(null);
-  };
-
-  // Select a node (clears edge selection, cancels connect mode second click)
   const handleSelectNode = useCallback((nodeId: string | null) => {
     if (connectMode && connectSourceId && nodeId && nodeId !== connectSourceId) {
-      // Second click in connect mode → create edge
       createEdgeMut.mutate({ source_id: connectSourceId, target_id: nodeId });
       return;
     }
-    if (connectMode && nodeId) {
-      setConnectSourceId(nodeId);
-      return;
-    }
+    if (connectMode && nodeId) { setConnectSourceId(nodeId); return; }
     setSelectedId(nodeId);
     setSelectedEdgeId(null);
     setAddEdgeMode(false);
+    if (nodeId) setAddMode(false);
   }, [connectMode, connectSourceId, createEdgeMut]);
 
-  // Select an edge (clears node selection)
-  const handleSelectEdge = (edgeId: string | null) => {
+  const handleSelectEdge = useCallback((edgeId: string | null) => {
     setSelectedEdgeId(edgeId);
     setSelectedId(null);
     setAddMode(false);
     setAddEdgeMode(false);
-  };
+  }, []);
 
-  // 3D link click → select the edge for editing
   const handle3DLinkClick = useCallback((link: G3DLink) => {
     if (link.linkType === "relationship" && link.edgeId) {
       handleSelectEdge(link.edgeId);
-      setViewMode("tree"); // switch to tree view to show the editor
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [handleSelectEdge]);
 
-  // 3D node drag-to-reparent
-  const handle3DNodeDragEnd = useCallback(
-    (draggedNode: { id: string; x?: number; y?: number; z?: number }) => {
-      const gNodes = graphData.nodes;
-      const dx0 = draggedNode.x ?? 0, dy0 = draggedNode.y ?? 0, dz0 = draggedNode.z ?? 0;
-      let nearestId: string | null = null, minDist = Infinity;
-      gNodes.forEach((n) => {
-        if (n.id === draggedNode.id) return;
-        const dx = (n.x ?? 0) - dx0, dy = (n.y ?? 0) - dy0, dz = (n.z ?? 0) - dz0;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist < minDist) { minDist = dist; nearestId = n.id; }
-      });
-      if (nearestId && minDist < 40) {
-        const desc = new Set<string>([draggedNode.id]);
-        let changed = true;
-        while (changed) {
-          changed = false;
-          nodes.forEach((n) => {
-            if (n.parent_id && desc.has(n.parent_id) && !desc.has(n.id)) { desc.add(n.id); changed = true; }
-          });
-        }
-        if (!desc.has(nearestId)) handleReparent(draggedNode.id, nearestId);
+  const handle3DNodeDragEnd = useCallback((draggedNode: { id: string; x?: number; y?: number; z?: number }) => {
+    const gNodes = graphData.nodes;
+    const dx0 = draggedNode.x ?? 0, dy0 = draggedNode.y ?? 0, dz0 = draggedNode.z ?? 0;
+    let nearestId: string | null = null, minDist = Infinity;
+    gNodes.forEach((n) => {
+      if (n.id === draggedNode.id) return;
+      const dx = (n.x ?? 0) - dx0, dy = (n.y ?? 0) - dy0, dz = (n.z ?? 0) - dz0;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < minDist) { minDist = dist; nearestId = n.id; }
+    });
+    if (nearestId && minDist < 40) {
+      const desc = new Set<string>([draggedNode.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        nodes.forEach((n) => { if (n.parent_id && desc.has(n.parent_id) && !desc.has(n.id)) { desc.add(n.id); changed = true; } });
       }
-    },
-    [graphData.nodes, nodes] // eslint-disable-line react-hooks/exhaustive-deps
-  );
+      if (!desc.has(nearestId)) handleReparent(draggedNode.id, nearestId);
+    }
+  }, [graphData.nodes, nodes, handleReparent]);
 
   const handleDelete = (node: OntologyNode) => {
     if (confirm(`Delete "${node.name}"? Its children will be promoted to the parent level.`)) {
@@ -437,29 +370,27 @@ export default function OntologyPage() {
     const res = await ontologyApi.export(projectId!);
     const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `ontology-${projectId}.json`; a.click();
+    const a = document.createElement("a"); a.href = url; a.download = `ontology-${projectId}.json`; a.click();
     URL.revokeObjectURL(url);
   };
+
+  const startConnectMode = () => {
+    if (!selectedId) return;
+    setConnectSourceId(selectedId); setConnectMode(true); setViewMode("3d");
+  };
+
+  const cancelConnectMode = () => { setConnectMode(false); setConnectSourceId(null); };
 
   const parentOptions = useMemo(() => {
     if (!selectedId) return nodes;
     const descendants = new Set<string>();
     const stack = [selectedId];
     while (stack.length) {
-      const cur = stack.pop()!;
-      descendants.add(cur);
+      const cur = stack.pop()!; descendants.add(cur);
       nodes.filter((n) => n.parent_id === cur).forEach((n) => stack.push(n.id));
     }
     return nodes.filter((n) => !descendants.has(n.id));
   }, [nodes, selectedId]);
-
-  // Edges for the currently selected node (outgoing + incoming)
-  const selectedNodeEdgesOut = useMemo(() => edges.filter((e) => e.source_id === selectedId), [edges, selectedId]);
-  const selectedNodeEdgesIn = useMemo(() => edges.filter((e) => e.target_id === selectedId), [edges, selectedId]);
-
-  // Right panel is open when: addMode OR a node is selected OR an edge is selected
-  const rightPanelOpen = addMode || !!selectedNode || !!selectedEdge;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -467,7 +398,7 @@ export default function OntologyPage() {
     <div style={{ height: "100vh", background: "#f9fafb", fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
       {/* ── Top bar ── */}
-      <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "12px 20px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "12px 20px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
         <Link to={`/projects/${projectId}`} style={{ color: "#6366f1", textDecoration: "none", fontWeight: 500, fontSize: 14 }}>
           {project?.name ?? "Project"}
         </Link>
@@ -476,8 +407,8 @@ export default function OntologyPage() {
 
         {/* View toggle */}
         <div className="view-toggle" style={{ marginLeft: 8 }}>
-          <button className={`view-toggle-btn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode("tree")}>Tree</button>
-          <button className={`view-toggle-btn${viewMode === "graph3d" ? " active" : ""}`} onClick={() => setViewMode("graph3d")}>3D Graph</button>
+          <button className={`view-toggle-btn${viewMode === "2d" ? " active" : ""}`} onClick={() => setViewMode("2d")}>2D Canvas</button>
+          <button className={`view-toggle-btn${viewMode === "3d" ? " active" : ""}`} onClick={() => setViewMode("3d")}>3D Graph</button>
         </div>
 
         {/* Namespace filter */}
@@ -503,7 +434,7 @@ export default function OntologyPage() {
 
       {/* ── Stats strip ── */}
       {nodes.length > 0 && (
-        <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "8px 20px", display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: "#6b7280" }}>
+        <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", padding: "8px 20px", display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: "#6b7280", flexShrink: 0 }}>
           <span><strong style={{ color: "#111827" }}>{stats.total}</strong> nodes</span>
           <span><strong style={{ color: "#111827" }}>{edges.length}</strong> relationships</span>
           <span><strong style={{ color: "#111827" }}>{stats.maxDepth + 1}</strong> levels deep</span>
@@ -516,284 +447,251 @@ export default function OntologyPage() {
         </div>
       )}
 
-      {/* ── 3D Graph body ── */}
-      {viewMode === "graph3d" && (
-        <div ref={graphContainerRef} style={{ flex: 1, overflow: "hidden", background: "#0f172a", position: "relative" }}>
-          {nodes.length === 0 ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
-              No nodes yet — add some in Tree view first.
-            </div>
-          ) : !graphDims ? (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
-              Initialising 3D engine…
-            </div>
-          ) : (
-            <Graph3DErrorBoundary>
-              <Graph3DCanvas
-                graphData={graphData}
-                width={graphDims.w}
-                height={graphDims.h}
-                connectSourceId={connectSourceId}
-                onNodeDragEnd={(node: G3DNode) => handle3DNodeDragEnd(node)}
-                onNodeClick={(node: G3DNode) => {
-                  if (connectMode) {
-                    handleSelectNode(node.id);
-                  } else {
-                    setViewMode("tree");
-                    handleSelectNode(node.id);
-                  }
-                }}
-                onLinkClick={(link: G3DLink) => handle3DLinkClick(link)}
-              />
-            </Graph3DErrorBoundary>
-          )}
+      {/* ── Body ── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
 
-          {/* Connect mode status overlay */}
-          {connectMode && (
-            <div style={{ position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)", background: "#f97316", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, zIndex: 10 }}>
-              {connectSourceId
-                ? <>Source: <strong>{nodeNameMap.get(connectSourceId)}</strong> — now click the target node</>
-                : "Click a node to select as relationship source"
-              }
-              <button onClick={cancelConnectMode} style={{ background: "rgba(255,255,255,0.3)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", padding: "2px 8px", fontSize: 12 }}>
-                Cancel
-              </button>
-            </div>
-          )}
-
-          {/* Legend */}
-          <div style={{ position: "absolute", top: 14, left: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {(["level", "dimension"] as const).map((ns) => (
-              <span key={ns} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: (NS_COLORS[ns]) + "33", color: NS_COLORS[ns], border: `1px solid ${NS_COLORS[ns]}55`, fontWeight: 600 }}>
-                {ns}
-              </span>
-            ))}
-            <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#f9731622", color: "#f97316", border: "1px solid #f9731655", fontWeight: 600 }}>
-              → relationship
-            </span>
-          </div>
-
-          <div style={{ position: "absolute", bottom: 16, right: 20, color: "#475569", fontSize: "0.75rem", textAlign: "right", pointerEvents: "none" }}>
-            Drag: rotate · Scroll: zoom · Drag node onto another: reparent · Click node: edit · Click orange link: edit relationship
-          </div>
-        </div>
-      )}
-
-      {/* ── Tree body ── */}
-      <div style={{ display: viewMode === "tree" ? "flex" : "none", flex: 1, overflow: "hidden" }}>
-
-        {/* ── Tree panel ── */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 12px", maxWidth: rightPanelOpen ? "60%" : "100%" }}>
-          {isLoading ? (
-            <p style={{ color: "#9ca3af", padding: 20 }}>Loading…</p>
-          ) : isError ? (
-            <p style={{ color: "#ef4444", padding: 20 }}>Failed to load ontology.</p>
-          ) : (
-            <OntologyTree
-              nodes={visibleNodes}
-              edges={edges}
-              selectedId={selectedId}
-              selectedEdgeId={selectedEdgeId}
-              onSelect={(id) => { handleSelectNode(id); setAddMode(false); }}
-              onSelectEdge={handleSelectEdge}
-              onAddChild={handleAddChild}
-              onDelete={handleDelete}
-              onDeleteEdge={handleDeleteEdge}
-              onReparent={handleReparent}
-              searchQuery={searchQuery}
-            />
-          )}
-        </div>
-
-        {/* ── Right panel ── */}
-        {rightPanelOpen && (
-          <div style={{ width: 360, flexShrink: 0, background: "#fff", borderLeft: "1px solid #e5e7eb", padding: 20, overflowY: "auto" }}>
-
-            {/* ── Add node form ── */}
-            {addMode ? (
-              <form onSubmit={handleAddSubmit}>
-                <PanelHeader title={addParentId ? `Add child under "${nodes.find((n) => n.id === addParentId)?.name ?? "…"}"` : "Add root node"} onClose={() => setAddMode(false)} />
-                <Field label="Name *">
-                  <input required autoFocus value={addName} onChange={(e) => setAddName(e.target.value)} style={inputSx} placeholder="Concept name…" />
-                </Field>
-                <Field label="Namespace"><NsSelect value={addNs} onChange={setAddNs} /></Field>
-                <Field label="Color (optional)"><ColorRow value={addColor} onChange={setAddColor} ns={addNs} /></Field>
-                {formError && <ErrorBanner>{formError}</ErrorBanner>}
-                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                  <button type="submit" disabled={createMut.isPending} style={primaryBtn}>{createMut.isPending ? "Adding…" : "Add node"}</button>
-                  <button type="button" onClick={() => setAddMode(false)} style={secondaryBtn}>Cancel</button>
-                </div>
-              </form>
-
-            ) : selectedEdge ? (
-              /* ── Edge editor ── */
-              <div>
-                <PanelHeader title="Edit relationship" onClose={() => setSelectedEdgeId(null)} />
-
-                {/* Source → Target display */}
-                <div style={{ marginBottom: 16, padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa", fontSize: 13 }}>
-                  <span style={{ color: "#6b7280" }}>
-                    <strong style={{ color: "#111827" }}>{nodeNameMap.get(selectedEdge.source_id) ?? "?"}</strong>
-                    <span style={{ color: "#f97316", margin: "0 8px" }}>→</span>
-                    <strong style={{ color: "#111827" }}>{nodeNameMap.get(selectedEdge.target_id) ?? "?"}</strong>
-                  </span>
-                </div>
-
-                <Field label="Label (relationship type)">
-                  <input
-                    value={editEdgeLabel}
-                    onChange={(e) => { setEditEdgeLabel(e.target.value); setEditEdgeDirty(true); }}
-                    style={inputSx}
-                    placeholder="e.g. is-a, part-of, causes…"
-                  />
-                </Field>
-
-                <Field label="Color">
-                  <ColorRow value={editEdgeColor} onChange={(v) => { setEditEdgeColor(v); setEditEdgeDirty(true); }} ns="relationships" clearable />
-                </Field>
-
-                {formError && <ErrorBanner>{formError}</ErrorBanner>}
-
-                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                  <button onClick={handleSaveEdge} disabled={!editEdgeDirty || updateEdgeMut.isPending} style={primaryBtn}>
-                    {updateEdgeMut.isPending ? "Saving…" : "Save changes"}
-                  </button>
-                  <button onClick={() => handleDeleteEdge(selectedEdge)} style={{ ...secondaryBtn, color: "#ef4444", borderColor: "#fca5a5" }}>
-                    Delete
-                  </button>
-                </div>
-
-                <div style={{ marginTop: 20, fontSize: 11, color: "#9ca3af", borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
-                  <div>ID: {selectedEdge.id}</div>
-                  <div>Created: {new Date(selectedEdge.created_at).toLocaleString()}</div>
-                </div>
+        {/* ── 3D view ── */}
+        {viewMode === "3d" && (
+          <div ref={graphContainerRef} style={{ flex: 1, overflow: "hidden", background: "#0f172a", position: "relative" }}>
+            {nodes.length === 0 ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
+                No nodes yet — add some first.
               </div>
+            ) : !graphDims ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
+                Initialising 3D engine…
+              </div>
+            ) : (
+              <Graph3DErrorBoundary>
+                <Graph3DCanvas
+                  graphData={graphData}
+                  width={graphDims.w}
+                  height={graphDims.h}
+                  connectSourceId={connectSourceId}
+                  onNodeDragEnd={(node: G3DNode) => handle3DNodeDragEnd(node)}
+                  onNodeClick={(node: G3DNode) => {
+                    if (connectMode) { handleSelectNode(node.id); }
+                    else { handleSelectNode(node.id); setViewMode("2d"); }
+                  }}
+                  onLinkClick={(link: G3DLink) => handle3DLinkClick(link)}
+                />
+              </Graph3DErrorBoundary>
+            )}
 
-            ) : selectedNode ? (
-              /* ── Node editor ── */
-              <div>
-                <PanelHeader title="Edit node" onClose={() => setSelectedId(null)} />
-                <AncestorsBreadcrumb node={selectedNode} allNodes={nodes} />
+            {/* Connect mode overlay */}
+            {connectMode && (
+              <div style={{ position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)", background: "#f97316", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, zIndex: 10 }}>
+                {connectSourceId
+                  ? <><span>Source: <strong>{nodeNameMap.get(connectSourceId)}</strong> — click target node</span></>
+                  : "Click a node to select as source"
+                }
+                <button onClick={cancelConnectMode} style={{ background: "rgba(255,255,255,0.3)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", padding: "2px 8px", fontSize: 12 }}>Cancel</button>
+              </div>
+            )}
 
-                <Field label="Name *">
-                  <input value={editName} onChange={(e) => { setEditName(e.target.value); setEditDirty(true); }} style={inputSx} />
-                </Field>
-                <Field label="Description">
-                  <textarea value={editDesc} onChange={(e) => { setEditDesc(e.target.value); setEditDirty(true); }}
-                    rows={3} style={{ ...inputSx, resize: "vertical", fontFamily: "inherit" }} placeholder="Optional description…" />
-                </Field>
-                <Field label="Namespace">
-                  <NsSelect value={editNs} onChange={(v) => { setEditNs(v); setEditDirty(true); }} />
-                </Field>
-                <Field label="Color">
-                  <ColorRow value={editColor} onChange={(v) => { setEditColor(v); setEditDirty(true); }} ns={editNs} clearable />
-                </Field>
-                <Field label="Parent">
-                  <select value={editParentId} onChange={(e) => { setEditParentId(e.target.value); setEditDirty(true); }} style={inputSx}>
-                    <option value="">(root — no parent)</option>
-                    {parentOptions.map((n) => (
-                      <option key={n.id} value={n.id}>{"  ".repeat(n.depth)}{n.depth > 0 ? "└ " : ""}{n.name}</option>
-                    ))}
-                  </select>
-                </Field>
+            {/* 3D legend */}
+            <div style={{ position: "absolute", top: 14, left: 16, display: "flex", gap: 8, zIndex: 5, pointerEvents: "none" }}>
+              {(["level", "dimension"] as const).map((ns) => (
+                <span key={ns} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: NS_COLORS[ns] + "33", color: NS_COLORS[ns], border: `1px solid ${NS_COLORS[ns]}55`, fontWeight: 600 }}>{ns}</span>
+              ))}
+              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#f9731622", color: "#f97316", border: "1px solid #f9731655", fontWeight: 600 }}>→ relationship</span>
+            </div>
 
-                {formError && <ErrorBanner>{formError}</ErrorBanner>}
+            <div style={{ position: "absolute", bottom: 16, right: 20, color: "#475569", fontSize: "0.75rem", textAlign: "right", pointerEvents: "none" }}>
+              Drag: rotate · Scroll: zoom · Drag node: reparent · Click orange link: edit
+            </div>
+          </div>
+        )}
 
-                <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                  <button onClick={handleSaveEdit} disabled={!editDirty || updateMut.isPending} style={primaryBtn}>
-                    {updateMut.isPending ? "Saving…" : "Save changes"}
-                  </button>
-                  <button onClick={() => handleDelete(selectedNode)} style={{ ...secondaryBtn, color: "#ef4444", borderColor: "#fca5a5" }}>
-                    Delete
-                  </button>
+        {/* ── 2D Canvas view ── */}
+        {viewMode === "2d" && (
+          <>
+            {/* Canvas takes remaining space */}
+            <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
+              {isLoading ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#9ca3af" }}>Loading…</div>
+              ) : isError ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#ef4444" }}>Failed to load ontology.</div>
+              ) : nodes.length === 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12, color: "#9ca3af" }}>
+                  <p style={{ margin: 0 }}>No nodes yet.</p>
+                  <button onClick={() => handleAddChild(null)} style={{ background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>+ Add root node</button>
                 </div>
+              ) : (
+                <OntologyCanvas2D
+                  nodes={visibleNodes}
+                  edges={edges}
+                  selectedId={selectedId}
+                  selectedEdgeId={selectedEdgeId}
+                  searchQuery={searchQuery}
+                  onSelectNode={handleSelectNode}
+                  onSelectEdge={handleSelectEdge}
+                  onAddChild={handleAddChild}
+                  onDelete={handleDelete}
+                  onDeleteEdge={handleDeleteEdge}
+                  onCreateEdge={(sourceId, targetId) =>
+                    createEdgeMut.mutate({ source_id: sourceId, target_id: targetId })
+                  }
+                  onReparent={handleReparent}
+                />
+              )}
+            </div>
 
-                {/* ── Relationships section ── */}
-                <div style={{ marginTop: 20, borderTop: "1px solid #f3f4f6", paddingTop: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                      Relationships
-                    </span>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button
-                        onClick={() => setAddEdgeMode((v) => !v)}
-                        style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px dashed ${EDGE_COLOR}`, background: "transparent", color: EDGE_COLOR, cursor: "pointer" }}
-                      >
-                        + inline
+            {/* Right panel — overlaid on the right side of the canvas */}
+            {rightPanelOpen && (
+              <div style={{ width: 360, flexShrink: 0, background: "#fff", borderLeft: "1px solid #e5e7eb", overflowY: "auto", padding: 20, zIndex: 10 }}>
+
+                {/* ── Add node form ── */}
+                {addMode ? (
+                  <form onSubmit={handleAddSubmit}>
+                    <PanelHeader title={addParentId ? `Add child under "${nodes.find((n) => n.id === addParentId)?.name ?? "…"}"` : "Add root node"} onClose={() => setAddMode(false)} />
+                    <Field label="Name *">
+                      <input required autoFocus value={addName} onChange={(e) => setAddName(e.target.value)} style={inputSx} placeholder="Concept name…" />
+                    </Field>
+                    <Field label="Namespace"><NsSelect value={addNs} onChange={setAddNs} /></Field>
+                    <Field label="Color (optional)"><ColorRow value={addColor} onChange={setAddColor} ns={addNs} /></Field>
+                    {formError && <ErrorBanner>{formError}</ErrorBanner>}
+                    <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                      <button type="submit" disabled={createMut.isPending} style={primaryBtn}>{createMut.isPending ? "Adding…" : "Add node"}</button>
+                      <button type="button" onClick={() => setAddMode(false)} style={secondaryBtn}>Cancel</button>
+                    </div>
+                  </form>
+
+                ) : selectedEdge ? (
+                  /* ── Edge editor ── */
+                  <div>
+                    <PanelHeader title="Edit relationship" onClose={() => setSelectedEdgeId(null)} />
+                    <div style={{ marginBottom: 16, padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa", fontSize: 13 }}>
+                      <strong style={{ color: "#111827" }}>{nodeNameMap.get(selectedEdge.source_id) ?? "?"}</strong>
+                      <span style={{ color: "#f97316", margin: "0 8px" }}>→</span>
+                      <strong style={{ color: "#111827" }}>{nodeNameMap.get(selectedEdge.target_id) ?? "?"}</strong>
+                    </div>
+                    <Field label="Label (relationship type)">
+                      <input value={editEdgeLabel} onChange={(e) => { setEditEdgeLabel(e.target.value); setEditEdgeDirty(true); }} style={inputSx} placeholder="e.g. is-a, part-of, causes…" />
+                    </Field>
+                    <Field label="Color">
+                      <ColorRow value={editEdgeColor} onChange={(v) => { setEditEdgeColor(v); setEditEdgeDirty(true); }} ns="relationships" clearable />
+                    </Field>
+                    {formError && <ErrorBanner>{formError}</ErrorBanner>}
+                    <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                      <button onClick={handleSaveEdge} disabled={!editEdgeDirty || updateEdgeMut.isPending} style={primaryBtn}>
+                        {updateEdgeMut.isPending ? "Saving…" : "Save changes"}
                       </button>
-                      <button
-                        onClick={startConnectMode}
-                        title="Switch to 3D graph and click target node"
-                        style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px dashed ${EDGE_COLOR}`, background: "transparent", color: EDGE_COLOR, cursor: "pointer" }}
-                      >
-                        + in 3D
-                      </button>
+                      <button onClick={() => handleDeleteEdge(selectedEdge)} style={{ ...secondaryBtn, color: "#ef4444", borderColor: "#fca5a5" }}>Delete</button>
+                    </div>
+                    <div style={{ marginTop: 20, fontSize: 11, color: "#9ca3af", borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
+                      <div>ID: {selectedEdge.id}</div>
+                      <div>Created: {new Date(selectedEdge.created_at).toLocaleString()}</div>
                     </div>
                   </div>
 
-                  {/* Inline add edge form */}
-                  {addEdgeMode && (
-                    <div style={{ marginBottom: 10, padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa" }}>
-                      <Field label="Target node">
-                        <select value={addEdgeTargetId} onChange={(e) => setAddEdgeTargetId(e.target.value)} style={inputSx}>
-                          <option value="">Select target…</option>
-                          {nodes.filter((n) => n.id !== selectedId).map((n) => (
-                            <option key={n.id} value={n.id}>{"  ".repeat(n.depth)}{n.name}</option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label="Label (optional)">
-                        <input value={addEdgeLabel} onChange={(e) => setAddEdgeLabel(e.target.value)} style={inputSx} placeholder="e.g. is-a, causes…" />
-                      </Field>
-                      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                        <button
-                          onClick={handleAddEdgeSubmit}
-                          disabled={!addEdgeTargetId || createEdgeMut.isPending}
-                          style={{ ...primaryBtn, background: EDGE_COLOR, fontSize: 12, padding: "4px 12px" }}
-                        >
-                          {createEdgeMut.isPending ? "Creating…" : "Create"}
-                        </button>
-                        <button onClick={() => setAddEdgeMode(false)} style={{ ...secondaryBtn, fontSize: 12, padding: "4px 10px" }}>Cancel</button>
+                ) : selectedNode ? (
+                  /* ── Node editor ── */
+                  <div>
+                    <PanelHeader title="Edit node" onClose={() => setSelectedId(null)} />
+                    <AncestorsBreadcrumb node={selectedNode} allNodes={nodes} />
+                    <Field label="Name *">
+                      <input value={editName} onChange={(e) => { setEditName(e.target.value); setEditDirty(true); }} style={inputSx} />
+                    </Field>
+                    <Field label="Description">
+                      <textarea value={editDesc} onChange={(e) => { setEditDesc(e.target.value); setEditDirty(true); }}
+                        rows={3} style={{ ...inputSx, resize: "vertical", fontFamily: "inherit" }} placeholder="Optional description…" />
+                    </Field>
+                    <Field label="Namespace"><NsSelect value={editNs} onChange={(v) => { setEditNs(v); setEditDirty(true); }} /></Field>
+                    <Field label="Color">
+                      <ColorRow value={editColor} onChange={(v) => { setEditColor(v); setEditDirty(true); }} ns={editNs} clearable />
+                    </Field>
+                    <Field label="Parent">
+                      <select value={editParentId} onChange={(e) => { setEditParentId(e.target.value); setEditDirty(true); }} style={inputSx}>
+                        <option value="">(root — no parent)</option>
+                        {parentOptions.map((n) => (
+                          <option key={n.id} value={n.id}>{"  ".repeat(n.depth)}{n.depth > 0 ? "└ " : ""}{n.name}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    {formError && <ErrorBanner>{formError}</ErrorBanner>}
+                    <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                      <button onClick={handleSaveEdit} disabled={!editDirty || updateMut.isPending} style={primaryBtn}>
+                        {updateMut.isPending ? "Saving…" : "Save changes"}
+                      </button>
+                      <button onClick={() => handleDelete(selectedNode)} style={{ ...secondaryBtn, color: "#ef4444", borderColor: "#fca5a5" }}>Delete</button>
+                    </div>
+
+                    {/* ── Relationships section ── */}
+                    <div style={{ marginTop: 20, borderTop: "1px solid #f3f4f6", paddingTop: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>Relationships</span>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => setAddEdgeMode((v) => !v)}
+                            style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px dashed ${EDGE_COLOR}`, background: "transparent", color: EDGE_COLOR, cursor: "pointer" }}>
+                            + inline
+                          </button>
+                          <button onClick={startConnectMode} title="Switch to 3D and click target node"
+                            style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: `1px dashed ${EDGE_COLOR}`, background: "transparent", color: EDGE_COLOR, cursor: "pointer" }}>
+                            + in 3D
+                          </button>
+                        </div>
                       </div>
+
+                      {addEdgeMode && (
+                        <div style={{ marginBottom: 10, padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa" }}>
+                          <Field label="Target node">
+                            <select value={addEdgeTargetId} onChange={(e) => setAddEdgeTargetId(e.target.value)} style={inputSx}>
+                              <option value="">Select target…</option>
+                              {nodes.filter((n) => n.id !== selectedId).map((n) => (
+                                <option key={n.id} value={n.id}>{"  ".repeat(n.depth)}{n.name}</option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="Label (optional)">
+                            <input value={addEdgeLabel} onChange={(e) => setAddEdgeLabel(e.target.value)} style={inputSx} placeholder="e.g. is-a, causes…" />
+                          </Field>
+                          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                            <button onClick={handleAddEdgeSubmit} disabled={!addEdgeTargetId || createEdgeMut.isPending}
+                              style={{ ...primaryBtn, background: EDGE_COLOR, fontSize: 12, padding: "4px 12px" }}>
+                              {createEdgeMut.isPending ? "Creating…" : "Create"}
+                            </button>
+                            <button onClick={() => setAddEdgeMode(false)} style={{ ...secondaryBtn, fontSize: 12, padding: "4px 10px" }}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedNodeEdgesOut.length > 0 && (
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginBottom: 4 }}>OUTGOING</div>
+                          {selectedNodeEdgesOut.map((edge) => (
+                            <EdgeChip key={edge.id} edge={edge} label={nodeNameMap.get(edge.target_id) ?? "?"} direction="out"
+                              onSelect={() => handleSelectEdge(edge.id)} onDelete={() => handleDeleteEdge(edge)} />
+                          ))}
+                        </div>
+                      )}
+
+                      {selectedNodeEdgesIn.length > 0 && (
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginBottom: 4 }}>INCOMING</div>
+                          {selectedNodeEdgesIn.map((edge) => (
+                            <EdgeChip key={edge.id} edge={edge} label={nodeNameMap.get(edge.source_id) ?? "?"} direction="in"
+                              onSelect={() => handleSelectEdge(edge.id)} onDelete={() => handleDeleteEdge(edge)} />
+                          ))}
+                        </div>
+                      )}
+
+                      {selectedNodeEdgesOut.length === 0 && selectedNodeEdgesIn.length === 0 && !addEdgeMode && (
+                        <p style={{ fontSize: 11, color: "#d1d5db", fontStyle: "italic", margin: 0 }}>No relationships yet.</p>
+                      )}
                     </div>
-                  )}
 
-                  {/* Outgoing edges */}
-                  {selectedNodeEdgesOut.length > 0 && (
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginBottom: 4 }}>OUTGOING</div>
-                      {selectedNodeEdgesOut.map((edge) => (
-                        <EdgeChip key={edge.id} edge={edge} label={nodeNameMap.get(edge.target_id) ?? "?"} direction="out"
-                          onSelect={() => handleSelectEdge(edge.id)} onDelete={() => handleDeleteEdge(edge)} />
-                      ))}
+                    {/* Node metadata */}
+                    <div style={{ marginTop: 16, fontSize: 11, color: "#9ca3af", borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
+                      <div>ID: {selectedNode.id}</div>
+                      <div>Created: {new Date(selectedNode.created_at).toLocaleString()}</div>
+                      <div>Updated: {new Date(selectedNode.updated_at).toLocaleString()}</div>
                     </div>
-                  )}
-
-                  {/* Incoming edges */}
-                  {selectedNodeEdgesIn.length > 0 && (
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, marginBottom: 4 }}>INCOMING</div>
-                      {selectedNodeEdgesIn.map((edge) => (
-                        <EdgeChip key={edge.id} edge={edge} label={nodeNameMap.get(edge.source_id) ?? "?"} direction="in"
-                          onSelect={() => handleSelectEdge(edge.id)} onDelete={() => handleDeleteEdge(edge)} />
-                      ))}
-                    </div>
-                  )}
-
-                  {selectedNodeEdgesOut.length === 0 && selectedNodeEdgesIn.length === 0 && !addEdgeMode && (
-                    <p style={{ fontSize: 11, color: "#d1d5db", fontStyle: "italic", margin: 0 }}>No relationships yet.</p>
-                  )}
-                </div>
-
-                {/* Node metadata */}
-                <div style={{ marginTop: 16, fontSize: 11, color: "#9ca3af", borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
-                  <div>ID: {selectedNode.id}</div>
-                  <div>Created: {new Date(selectedNode.created_at).toLocaleString()}</div>
-                  <div>Updated: {new Date(selectedNode.updated_at).toLocaleString()}</div>
-                </div>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -811,19 +709,7 @@ function PanelHeader({ title, onClose }: { title: string; onClose: () => void })
   );
 }
 
-function EdgeChip({
-  edge,
-  label,
-  direction,
-  onSelect,
-  onDelete,
-}: {
-  edge: OntologyEdge;
-  label: string;
-  direction: "in" | "out";
-  onSelect: () => void;
-  onDelete: () => void;
-}) {
+function EdgeChip({ edge, label, direction, onSelect, onDelete }: { edge: OntologyEdge; label: string; direction: "in" | "out"; onSelect: () => void; onDelete: () => void }) {
   return (
     <div onClick={onSelect} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 6, background: "#fff7ed", border: "1px solid #fed7aa", marginBottom: 4, cursor: "pointer" }}>
       <span style={{ fontSize: 12, color: "#f97316" }}>{direction === "out" ? "→" : "←"}</span>
@@ -843,17 +729,11 @@ function AncestorsBreadcrumb({ node, allNodes }: { node: OntologyNode; allNodes:
   const ancestors: OntologyNode[] = [];
   const idMap = new Map(allNodes.map((n) => [n.id, n]));
   let cur: OntologyNode | undefined = node;
-  while (cur?.parent_id) {
-    const p = idMap.get(cur.parent_id);
-    if (p) ancestors.unshift(p);
-    cur = p;
-  }
+  while (cur?.parent_id) { const p = idMap.get(cur.parent_id); if (p) ancestors.unshift(p); cur = p; }
   if (ancestors.length === 0) return null;
   return (
     <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 2 }}>
-      {ancestors.map((a, i) => (
-        <span key={a.id}>{i > 0 && " › "}<span style={{ color: NS_COLORS[a.namespace] ?? "#6366f1" }}>{a.name}</span></span>
-      ))}
+      {ancestors.map((a, i) => <span key={a.id}>{i > 0 && " › "}<span style={{ color: NS_COLORS[a.namespace] ?? "#6366f1" }}>{a.name}</span></span>)}
       <span> › <strong style={{ color: "#111827" }}>{node.name}</strong></span>
     </div>
   );
@@ -886,11 +766,7 @@ function ColorRow({ value, onChange, ns, clearable = false }: { value: string; o
         <button key={c} type="button" onClick={() => onChange(c)}
           style={{ width: 20, height: 20, borderRadius: "50%", background: c, border: value === c ? "2px solid #1f2937" : "2px solid transparent", cursor: "pointer", padding: 0 }} />
       ))}
-      {clearable && (
-        <button type="button" onClick={() => onChange("")}
-          style={{ fontSize: 10, color: "#9ca3af", background: "none", border: "1px solid #e5e7eb", borderRadius: 4, padding: "1px 5px", cursor: "pointer" }}
-          title="Use namespace default color">auto</button>
-      )}
+      {clearable && <button type="button" onClick={() => onChange("")} style={{ fontSize: 10, color: "#9ca3af", background: "none", border: "1px solid #e5e7eb", borderRadius: 4, padding: "1px 5px", cursor: "pointer" }} title="Use namespace default">auto</button>}
       <span style={{ fontSize: 11, color: "#9ca3af" }}>→ {value || defaultColor}</span>
     </div>
   );
@@ -908,8 +784,6 @@ function Btn({ children, onClick, color, disabled, title }: { children: React.Re
     </button>
   );
 }
-
-// ── Shared styles ─────────────────────────────────────────────────────────────
 
 const inputSx: React.CSSProperties = { width: "100%", border: "1px solid #d1d5db", borderRadius: 6, padding: "6px 8px", fontSize: 13, outline: "none", boxSizing: "border-box" };
 const primaryBtn: React.CSSProperties = { background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontWeight: 600 };

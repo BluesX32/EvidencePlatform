@@ -3198,6 +3198,14 @@ export default function ScreeningWorkspace() {
   const seedParam = searchParams.get("seed");
   const seedNum = seedParam ? parseInt(seedParam, 10) : undefined;
 
+  // Persist current screening params so the sidebar link can restore them
+  useEffect(() => {
+    if (!projectId) return;
+    const key = `ep_screening_last_${projectId}`;
+    const params = searchParams.toString();
+    if (params) localStorage.setItem(key, params);
+  }, [projectId, searchParams]);
+
   const [autoAdvanceFT, setAutoAdvanceFT] = useLocalStorage("autoAdvanceFT", true);
   const [autoAdvanceExtract, setAutoAdvanceExtract] = useLocalStorage("autoAdvanceExtract", true);
   const urlRandomize = searchParams.get("randomize") === "true";

@@ -9,6 +9,6 @@ export default defineConfig({
     // like ngraph.forcelayout and ngraph.graph.  Explicitly including it
     // here ensures Vite pre-bundles those CJS deps into proper ESM so the
     // browser can load them.  We no longer use react-force-graph directly.
-    include: ['3d-force-graph'],
+    include: ['3d-force-graph', '@dagrejs/dagre'],
   },
 })

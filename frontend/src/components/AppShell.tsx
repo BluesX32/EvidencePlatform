@@ -372,11 +372,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
             <nav className="sidebar-nav">
               {PROJECT_NAV.map(({ path, icon: Icon, label }) => {
-                const fullPath = `/projects/${projectId}${path}`;
+                const basePath = `/projects/${projectId}${path}`;
+                // For Screening, restore the last-used params from localStorage
+                let fullPath = basePath;
+                if (path === "/screen" && projectId) {
+                  const saved = localStorage.getItem(`ep_screening_last_${projectId}`);
+                  if (saved) fullPath = `${basePath}?${saved}`;
+                }
                 const isActive =
                   path === ""
                     ? location.pathname === `/projects/${projectId}`
-                    : location.pathname.startsWith(fullPath);
+                    : location.pathname.startsWith(basePath);
                 return (
                   <Link
                     key={path}
