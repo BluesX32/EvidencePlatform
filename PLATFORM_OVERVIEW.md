@@ -62,6 +62,8 @@ A full **PRISMA-aligned** title-abstract (TA) and full-text (FT) screening pipel
 - **Full-text link resolution** — automatic links to Unpaywall, PMC, PubMed, and Google Scholar per record
 - **Custom exclusion reasons** — reviewers can type and save their own exclusion reasons as persistent chips alongside the built-in reason set; custom reasons are stored locally and reusable across sessions
 - **Anchored annotations** — select any passage in the metadata or notes pane, add a comment, and it is stored as a structured annotation linked to the record; annotations are shown in a collapsible drawer during review
+- **Inline label tagging** — assign project labels directly during screening; new labels can be created inline and are saved for future use
+- **Inline concept tagging** — tag papers with ontology concepts during screening; new concepts can be created inline and are saved to the project ontology
 
 ### 5. LLM-Assisted Screening
 AI-powered screening runs that process the entire corpus against project inclusion/exclusion criteria. Supports **15+ large language models** across providers:
@@ -95,8 +97,8 @@ Reviewers extract structured evidence from included full-text records using a fl
 - Search and filter — by source, label, or free text
 - Full metadata enrichment — title, authors, year, DOI, source names per item
 
-### 8. Thematic Analysis
-A code-based thematic synthesis module for building and managing an evolving codebook:
+### 8. Thematic Analysis (Taxonomy)
+A code-based thematic synthesis module for building and managing an evolving **taxonomy of themes**. Concepts extracted from papers are gathered and organized into themes and sub-codes — answering the question *what patterns emerge across the literature?*:
 - Create and organize themes and sub-codes
 - Assign codes to extracted evidence segments
 - View all evidence assigned to a given code
@@ -104,9 +106,28 @@ A code-based thematic synthesis module for building and managing an evolving cod
 - Saturation tracking — consecutive records without new code assignments surfaced as a progress indicator
 
 ### 9. Label System
-Project-scoped labels with custom names and colors. Labels can be assigned to any article at any screening stage. A dedicated **Labels page** shows per-label article counts, filtered article lists, and progress stats — useful for tracking sub-populations, study designs, or methodological categories across a review.
+Project-scoped **personal tags** with custom names and colors. Labels are entirely user-defined and carry no predefined structure — researchers use them to organize and retrieve papers however suits their workflow (sub-populations, study designs, methodological flags, reading status, etc.). Labels can be:
+- Assigned to any article at any screening stage
+- Created inline during screening (new labels are saved immediately to the project)
+- Browsed on the dedicated **Labels page** — per-label article counts, filtered article lists, and progress stats
 
-### 10. PDF Viewer and Annotation
+Labels are independent of taxonomy and ontology: they are not required to be linked to themes or structured dimensions.
+
+### 10. Ontology
+A **hierarchical concept graph** for organizing the structural dimensions of an evidence base — levels of analysis, intervention types, outcome categories, populations, and other domain-specific dimensions. Unlike labels (personal/flexible) and thematic codes (bottom-up from evidence), the ontology is **partially pre-defined** and provides shared vocabulary across a project.
+
+- Hierarchical node tree with arbitrary depth (forest structure)
+- Node namespaces: `level`, `dimension`, `concept`, `population`, `intervention`, `outcome`, `other`
+- Drag-and-drop reparenting with cycle detection
+- Sync levels from project criteria
+- Export / import full ontology as JSON
+- **Concept tagging during screening** — tag papers with ontology concepts inline; new concepts created during screening are saved to the project ontology for future use
+- 3D graph view for exploring large taxonomies
+- Color-coding per node or namespace
+
+Researchers are not required to use all three organization systems (labels, taxonomy, ontology) in a single study — each is independently optional.
+
+### 11. PDF Viewer and Annotation
 Full-text PDFs are uploaded per record or per cluster and stored server-side (one per record/cluster). A floating, draggable PDF viewer opens inline during the FT screening stage and provides:
 
 - **Page navigation** — previous/next page with current-page indicator
@@ -116,6 +137,18 @@ Full-text PDFs are uploaded per record or per cluster and stored server-side (on
 - **Notes drawer** — collapsible panel at the bottom of the viewer listing all annotations for the document with page badges, quoted text previews, and delete controls
 - **Drag to reposition / drag left edge to resize** — the panel floats at a configurable position within the viewport
 - **Download** — direct download of the uploaded PDF from the viewer header
+
+---
+
+## Three Orthogonal Organization Systems
+
+EvidencePlatform provides three distinct, independently optional systems for organizing literature. They serve different purposes and can be used together or separately:
+
+| System | Purpose | Structure | Defined by |
+|---|---|---|---|
+| **Labels** | Personal retrieval tags | Flat list, no hierarchy | Entirely user-defined; created freely |
+| **Taxonomy** (Thematic Analysis) | Bottom-up concept synthesis | Themes → sub-codes | Researcher builds from evidence |
+| **Ontology** | Structural dimensions of the field | Hierarchical tree (forest) | Partially pre-defined + extensible |
 
 ---
 
@@ -131,7 +164,7 @@ Full-text PDFs are uploaded per record or per cluster and stored server-side (on
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (20 versioned migrations) |
+| Schema migrations | Alembic (23 versioned migrations) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |
 
@@ -156,12 +189,15 @@ Auto-deduplication within each source
 Cross-source overlap detection + visualization
         ↓
 Title-abstract screening (manual or LLM-assisted)
+  → tag with labels and ontology concepts inline
         ↓
 Full-text screening
+  → tag with labels and ontology concepts inline
         ↓
 Structured data extraction
+  → tag with labels and ontology concepts inline
         ↓
-Thematic coding + saturation analysis
+Thematic coding + saturation analysis (taxonomy)
         ↓
 Evidence synthesis output
 ```
@@ -184,7 +220,7 @@ Every stage generates a complete audit trail. At any point, a project owner can 
 
 ## Current Status
 
-EvidencePlatform is under active development as open-source research infrastructure, emerging from evidence synthesis methodology research at Johns Hopkins University. The core screening, deduplication, extraction, thematic analysis, and team collaboration modules are fully implemented and covered by a comprehensive automated test suite.
+EvidencePlatform is under active development as open-source research infrastructure, emerging from evidence synthesis methodology research at Johns Hopkins University. The core screening, deduplication, extraction, thematic analysis, ontology, and team collaboration modules are fully implemented and covered by a comprehensive automated test suite.
 
 ---
 

@@ -1,13 +1,13 @@
 /**
- * LabelPicker — inline label assignment widget for ScreeningWorkspace.
+ * ConceptPicker — inline ontology concept assignment for ScreeningWorkspace.
  *
- * Shows all project labels as toggleable chips.
- * Includes an inline "+" input to create and immediately assign a new label.
- * Newly created labels are saved to the project and appear in future sessions.
+ * Shows ontology nodes (namespace = "concept") as toggleable chips.
+ * Includes an inline "+" input to create a new concept node and immediately assign it.
+ * Newly created nodes are saved to the project ontology and available in future sessions.
  */
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { labelsApi, type ProjectLabel } from "../api/client";
+import { ontologyApi, conceptsApi, type OntologyNode } from "../api/client";
 
 interface Props {
   projectId: string;
@@ -15,31 +15,30 @@ interface Props {
   clusterId?: string | null;
 }
 
-// Rotating palette for auto-assigned colors on new labels
-const LABEL_COLORS = [
-  "#6366f1", "#0ea5e9", "#10b981", "#f59e0b",
-  "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6",
-];
+// Namespace color map (mirrors OntologyTree.tsx NS_COLORS)
+const CONCEPT_COLOR = "#7c3aed";
 
-export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
+export default function ConceptPicker({ projectId, recordId, clusterId }: Props) {
   const qc = useQueryClient();
   const itemKey = recordId ?? clusterId;
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  // All project labels
-  const { data: allLabels = [] } = useQuery<ProjectLabel[]>({
-    queryKey: ["labels", projectId],
-    queryFn: () => labelsApi.list(projectId).then((r) => r.data),
+  // All ontology nodes for this project
+  const { data: allNodes = [] } = useQuery<OntologyNode[]>({
+    queryKey: ["ontology", projectId],
+    queryFn: () => ontologyApi.list(projectId).then((r) => r.data),
   });
 
-  // Labels currently applied to this item
-  const { data: itemLabels = [] } = useQuery<ProjectLabel[]>({
-    queryKey: ["item-labels", projectId, itemKey],
+  // Only concept-namespace nodes shown as selectable chips
+  const conceptNodes = allNodes.filter((n) => n.namespace === "concept");
+
+  // Nodes currently assigned to this item
+  const { data: itemNodes = [] } = useQuery<OntologyNode[]>({
+    queryKey: ["item-concepts", projectId, itemKey],
     queryFn: () =>
-      labelsApi
-        .getItemLabels(projectId, {
+      conceptsApi
+        .getItemConcepts(projectId, {
           record_id: recordId ?? undefined,
           cluster_id: clusterId ?? undefined,
         })
@@ -47,69 +46,67 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
     enabled: !!itemKey,
   });
 
-  const assignedIds = new Set(itemLabels.map((l) => l.id));
+  const assignedIds = new Set(itemNodes.map((n) => n.id));
 
   const assignMut = useMutation({
-    mutationFn: (labelId: string) =>
-      labelsApi.assign(projectId, {
+    mutationFn: (nodeId: string) =>
+      conceptsApi.assign(projectId, {
         record_id: recordId ?? null,
         cluster_id: clusterId ?? null,
-        label_id: labelId,
+        node_id: nodeId,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["item-labels", projectId, itemKey] });
-      qc.invalidateQueries({ queryKey: ["labeled-articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["item-concepts", projectId, itemKey] });
     },
   });
 
   const unassignMut = useMutation({
-    mutationFn: (labelId: string) =>
-      labelsApi.unassign(projectId, {
+    mutationFn: (nodeId: string) =>
+      conceptsApi.unassign(projectId, {
         record_id: recordId ?? null,
         cluster_id: clusterId ?? null,
-        label_id: labelId,
+        node_id: nodeId,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["item-labels", projectId, itemKey] });
-      qc.invalidateQueries({ queryKey: ["labeled-articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["item-concepts", projectId, itemKey] });
     },
   });
 
   const createAndAssignMut = useMutation({
     mutationFn: async (name: string) => {
-      const color = LABEL_COLORS[allLabels.length % LABEL_COLORS.length];
-      const created = await labelsApi.create(projectId, { name: name.trim(), color });
-      await labelsApi.assign(projectId, {
+      const created = await ontologyApi.create(projectId, {
+        name: name.trim(),
+        namespace: "concept",
+      });
+      await conceptsApi.assign(projectId, {
         record_id: recordId ?? null,
         cluster_id: clusterId ?? null,
-        label_id: created.data.id,
+        node_id: created.data.id,
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["labels", projectId] });
-      qc.invalidateQueries({ queryKey: ["item-labels", projectId, itemKey] });
-      qc.invalidateQueries({ queryKey: ["labeled-articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
+      qc.invalidateQueries({ queryKey: ["item-concepts", projectId, itemKey] });
       setNewName("");
       setAdding(false);
     },
   });
 
-  const toggle = (labelId: string) => {
-    if (assignedIds.has(labelId)) {
-      unassignMut.mutate(labelId);
+  const toggle = (nodeId: string) => {
+    if (assignedIds.has(nodeId)) {
+      unassignMut.mutate(nodeId);
     } else {
-      assignMut.mutate(labelId);
+      assignMut.mutate(nodeId);
     }
   };
 
   const submitNew = () => {
     const trimmed = newName.trim();
     if (!trimmed) return;
-    const exists = allLabels.find(
-      (l) => l.name.toLowerCase() === trimmed.toLowerCase()
+    const exists = conceptNodes.find(
+      (n) => n.name.toLowerCase() === trimmed.toLowerCase()
     );
     if (exists) {
-      // Just assign the existing label
       if (!assignedIds.has(exists.id)) assignMut.mutate(exists.id);
       setNewName("");
       setAdding(false);
@@ -130,25 +127,26 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
           marginBottom: 6,
         }}
       >
-        Labels
+        Concepts
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-        {allLabels.map((lbl) => {
-          const active = assignedIds.has(lbl.id);
+        {conceptNodes.map((node) => {
+          const active = assignedIds.has(node.id);
+          const color = node.color ?? CONCEPT_COLOR;
           return (
             <button
-              key={lbl.id}
-              onClick={() => toggle(lbl.id)}
-              title={active ? `Remove "${lbl.name}"` : `Add "${lbl.name}"`}
+              key={node.id}
+              onClick={() => toggle(node.id)}
+              title={active ? `Remove "${node.name}"` : `Tag "${node.name}"`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 5,
                 padding: "3px 10px",
                 borderRadius: 999,
-                border: `2px solid ${lbl.color}`,
-                background: active ? lbl.color : "transparent",
-                color: active ? "#fff" : lbl.color,
+                border: `2px solid ${color}`,
+                background: active ? color : "transparent",
+                color: active ? "#fff" : color,
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: "pointer",
@@ -156,7 +154,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
               }}
             >
               {active && <span style={{ fontSize: 10 }}>✓</span>}
-              {lbl.name}
+              {node.name}
             </button>
           );
         })}
@@ -164,7 +162,6 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
         {adding ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <input
-              ref={inputRef}
               autoFocus
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -172,14 +169,14 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
                 if (e.key === "Enter") submitNew();
                 if (e.key === "Escape") { setAdding(false); setNewName(""); }
               }}
-              placeholder="Label name…"
+              placeholder="Concept name…"
               style={{
                 fontSize: 12,
                 padding: "2px 8px",
                 borderRadius: 999,
                 border: "1px solid #d1d5db",
                 outline: "none",
-                width: 110,
+                width: 130,
               }}
               disabled={createAndAssignMut.isPending}
             />
@@ -191,7 +188,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
                 padding: "2px 8px",
                 borderRadius: 999,
                 border: "none",
-                background: "#6366f1",
+                background: CONCEPT_COLOR,
                 color: "#fff",
                 cursor: "pointer",
               }}
@@ -216,7 +213,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
         ) : (
           <button
             onClick={() => setAdding(true)}
-            title="Add new label"
+            title="Tag with a new concept"
             style={{
               fontSize: 11,
               padding: "2px 8px",

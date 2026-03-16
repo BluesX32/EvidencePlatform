@@ -25,6 +25,7 @@ from app.models.thematic_history import ThematicHistory
 from app.models.fulltext_pdf import FulltextPdf
 from app.models.llm_screening import LlmScreeningRun, LlmScreeningResult
 from app.models.screening_queue import ScreeningQueue
+from app.models.record_concept import RecordConcept
 
 __all__ = [
     "User",
@@ -56,4 +57,5 @@ __all__ = [
     "LlmScreeningRun",
     "LlmScreeningResult",
     "ScreeningQueue",
+    "RecordConcept",
 ]

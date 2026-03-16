@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, fulltextApi } from "../api/client";
 import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
+import ConceptPicker from "../components/ConceptPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 
@@ -756,8 +757,9 @@ function PaperCard({
 
       {showAnnotations && <AnnotationsPanel projectId={projectId} item={item} />}
       {showAnnotations && (
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
+          <ConceptPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       )}
     </div>
@@ -1720,91 +1722,121 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
               </tr>
             </thead>
             <tbody>
-              {templateRows.map((row) => {
-                const val = getCellValue(row.id);
-                return (
-                  <tr key={row.id}>
-                    <td style={{ ...td, color: "#5f6368", fontWeight: 500 }}>{row.domain || <em style={{ color: "#bbb" }}>—</em>}</td>
-                    <td style={{ ...td, color: "#3c4043" }}>{row.item || <em style={{ color: "#bbb" }}>—</em>}</td>
-                    <td style={{ ...td }}>
-                      {row.type === "string" && (
-                        <textarea
-                          value={String(val)}
-                          onChange={(e) => setCellValue(row.id, e.target.value)}
-                          rows={2}
-                          placeholder="Enter value…"
-                          style={{
-                            width: "100%",
-                            boxSizing: "border-box",
-                            fontSize: "0.84rem",
-                            fontFamily: "inherit",
-                            border: "1px solid #e0e0e0",
-                            borderRadius: "0.25rem",
-                            padding: "0.25rem 0.4rem",
-                            resize: "vertical",
-                            background: "#fafafa",
-                          }}
-                        />
-                      )}
+              {(() => {
+                // Pre-compute rowSpan for each row: >0 = first in group (span count), 0 = continuation
+                const domainSpans = templateRows.map((row, i) => {
+                  if (i > 0 && templateRows[i - 1].domain === row.domain) return 0;
+                  let span = 1;
+                  while (i + span < templateRows.length && templateRows[i + span].domain === row.domain) span++;
+                  return span;
+                });
 
-                      {row.type === "single_select" && (
-                        <select
-                          value={String(val)}
-                          onChange={(e) => setCellValue(row.id, e.target.value)}
+                return templateRows.map((row, i) => {
+                  const val = getCellValue(row.id);
+                  const span = domainSpans[i];
+                  const isGroupStart = span > 0;
+                  const isLastInGroup = i === templateRows.length - 1 || domainSpans[i + 1] > 0;
+                  const rowBorder = isLastInGroup ? "1px solid #dadce0" : "1px solid #f1f3f4";
+
+                  return (
+                    <tr key={row.id}>
+                      {isGroupStart && (
+                        <td
+                          rowSpan={span}
                           style={{
-                            fontSize: "0.84rem",
-                            padding: "0.28rem 0.45rem",
-                            border: "1px solid #e0e0e0",
-                            borderRadius: "0.25rem",
-                            background: "#fafafa",
-                            width: "100%",
+                            ...td,
+                            color: "#5f6368",
+                            fontWeight: 600,
+                            verticalAlign: "middle",
+                            background: "#f9fafb",
+                            borderRight: "1px solid #e0e0e0",
+                            borderBottom: "1px solid #dadce0",
                           }}
                         >
-                          <option value="">— select —</option>
-                          {row.options.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
+                          {row.domain || <em style={{ color: "#bbb" }}>—</em>}
+                        </td>
                       )}
+                      <td style={{ ...td, color: "#3c4043", borderBottom: rowBorder }}>{row.item || <em style={{ color: "#bbb" }}>—</em>}</td>
+                      <td style={{ ...td, borderBottom: rowBorder }}>
+                        {row.type === "string" && (
+                          <textarea
+                            value={String(val)}
+                            onChange={(e) => setCellValue(row.id, e.target.value)}
+                            rows={2}
+                            placeholder="Enter value…"
+                            style={{
+                              width: "100%",
+                              boxSizing: "border-box",
+                              fontSize: "0.84rem",
+                              fontFamily: "inherit",
+                              border: "1px solid #e0e0e0",
+                              borderRadius: "0.25rem",
+                              padding: "0.25rem 0.4rem",
+                              resize: "vertical",
+                              background: "#fafafa",
+                            }}
+                          />
+                        )}
 
-                      {row.type === "multi_select" && (
-                        <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
-                          {row.options.map((opt) => {
-                            const selected = Array.isArray(val) ? val.includes(opt) : false;
-                            return (
-                              <button
-                                key={opt}
-                                type="button"
-                                onClick={() => {
-                                  const current = Array.isArray(val) ? val : [];
-                                  setCellValue(
-                                    row.id,
-                                    selected
-                                      ? current.filter((v) => v !== opt)
-                                      : [...current, opt]
-                                  );
-                                }}
-                                style={{
-                                  padding: "0.2rem 0.6rem",
-                                  borderRadius: "1rem",
-                                  border: `2px solid ${selected ? "#8f3f97" : "#dadce0"}`,
-                                  background: selected ? "#f3e5f5" : "#f8f9fa",
-                                  color: selected ? "#8f3f97" : "#5f6368",
-                                  fontWeight: selected ? 600 : 400,
-                                  fontSize: "0.8rem",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                {opt}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+                        {row.type === "single_select" && (
+                          <select
+                            value={String(val)}
+                            onChange={(e) => setCellValue(row.id, e.target.value)}
+                            style={{
+                              fontSize: "0.84rem",
+                              padding: "0.28rem 0.45rem",
+                              border: "1px solid #e0e0e0",
+                              borderRadius: "0.25rem",
+                              background: "#fafafa",
+                              width: "100%",
+                            }}
+                          >
+                            <option value="">— select —</option>
+                            {row.options.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        )}
+
+                        {row.type === "multi_select" && (
+                          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                            {row.options.map((opt) => {
+                              const selected = Array.isArray(val) ? val.includes(opt) : false;
+                              return (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  onClick={() => {
+                                    const current = Array.isArray(val) ? val : [];
+                                    setCellValue(
+                                      row.id,
+                                      selected
+                                        ? current.filter((v) => v !== opt)
+                                        : [...current, opt]
+                                    );
+                                  }}
+                                  style={{
+                                    padding: "0.2rem 0.6rem",
+                                    borderRadius: "1rem",
+                                    border: `2px solid ${selected ? "#8f3f97" : "#dadce0"}`,
+                                    background: selected ? "#f3e5f5" : "#f8f9fa",
+                                    color: selected ? "#8f3f97" : "#5f6368",
+                                    fontWeight: selected ? 600 : 400,
+                                    fontSize: "0.8rem",
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         </div>
@@ -2317,8 +2349,9 @@ function ExtractionPanel({
           ))}
         </div>
         <AnnotationsPanel projectId={projectId} item={item} />
-        <div style={{ marginTop: 12 }}>
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
+          <ConceptPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       </div>
       {/* PDF access in extraction stage */}

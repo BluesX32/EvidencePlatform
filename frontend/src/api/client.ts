@@ -942,6 +942,29 @@ export const ontologyApi = {
     ),
 };
 
+// ── Concept assignments (record_concepts) ─────────────────────────────────────
+
+export const conceptsApi = {
+  assign: (
+    projectId: string,
+    body: { record_id?: string | null; cluster_id?: string | null; node_id: string }
+  ) => api.post(`/projects/${projectId}/ontology/concepts/assign`, body),
+
+  unassign: (
+    projectId: string,
+    body: { record_id?: string | null; cluster_id?: string | null; node_id: string }
+  ) =>
+    api.delete(`/projects/${projectId}/ontology/concepts/assign`, { data: body }),
+
+  getItemConcepts: (
+    projectId: string,
+    params: { record_id?: string; cluster_id?: string }
+  ) =>
+    api.get<OntologyNode[]>(`/projects/${projectId}/ontology/concepts/item`, {
+      params,
+    }),
+};
+
 // ── Thematic Analysis ─────────────────────────────────────────────────────────
 
 export interface ThemeCode {

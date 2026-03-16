@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
 from app.models.ontology_node import OntologyNode
+from app.models.record_concept import RecordConcept
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 
@@ -528,3 +529,116 @@ async def import_tree(
     await _import_nodes(body.nodes, parent_id=None)
     await db.commit()
     return {"created": created, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Concept assignments (record_concepts)
+# ---------------------------------------------------------------------------
+
+
+class ConceptAssignBody(BaseModel):
+    record_id: Optional[uuid.UUID] = None
+    cluster_id: Optional[uuid.UUID] = None
+    node_id: uuid.UUID
+
+
+@router.post("/concepts/assign", status_code=201)
+async def assign_concept(
+    project_id: uuid.UUID,
+    body: ConceptAssignBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Assign an ontology node to a record or cluster."""
+    await _require_project(project_id, current_user, db)
+
+    if (body.record_id is None) == (body.cluster_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Provide exactly one of record_id or cluster_id",
+        )
+
+    # Verify node belongs to this project
+    node = (
+        await db.execute(
+            select(OntologyNode).where(
+                OntologyNode.id == body.node_id,
+                OntologyNode.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Ontology node not found")
+
+    rc = RecordConcept(
+        project_id=project_id,
+        record_id=body.record_id,
+        cluster_id=body.cluster_id,
+        node_id=body.node_id,
+        assigned_by=current_user.id,
+    )
+    db.add(rc)
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Concept already assigned to this item")
+
+    return {"id": str(rc.id), "node_id": str(rc.node_id)}
+
+
+@router.delete("/concepts/assign", status_code=204)
+async def unassign_concept(
+    project_id: uuid.UUID,
+    body: ConceptAssignBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an ontology node assignment from a record or cluster."""
+    await _require_project(project_id, current_user, db)
+
+    q = select(RecordConcept).where(
+        RecordConcept.project_id == project_id,
+        RecordConcept.node_id == body.node_id,
+    )
+    if body.record_id is not None:
+        q = q.where(RecordConcept.record_id == body.record_id)
+    else:
+        q = q.where(RecordConcept.cluster_id == body.cluster_id)
+
+    rc = (await db.execute(q)).scalar_one_or_none()
+    if rc is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    await db.delete(rc)
+    await db.commit()
+
+
+@router.get("/concepts/item")
+async def get_item_concepts(
+    project_id: uuid.UUID,
+    record_id: Optional[uuid.UUID] = None,
+    cluster_id: Optional[uuid.UUID] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return all ontology nodes assigned to a specific record or cluster."""
+    await _require_project(project_id, current_user, db)
+
+    if record_id is None and cluster_id is None:
+        raise HTTPException(
+            status_code=422, detail="Provide record_id or cluster_id"
+        )
+
+    q = (
+        select(OntologyNode)
+        .join(RecordConcept, RecordConcept.node_id == OntologyNode.id)
+        .where(RecordConcept.project_id == project_id)
+    )
+    if record_id is not None:
+        q = q.where(RecordConcept.record_id == record_id)
+    else:
+        q = q.where(RecordConcept.cluster_id == cluster_id)
+
+    nodes = (await db.execute(q)).scalars().all()
+    return [_node_out(n) for n in nodes]

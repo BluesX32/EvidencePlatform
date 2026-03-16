@@ -72,31 +72,142 @@ const PRESETS: PresetDef[] = [
 // ---------------------------------------------------------------------------
 
 // ── Extraction template paste parser ─────────────────────────────────────────
-// Accepts tab-delimited (from Excel/Sheets) or comma-delimited rows.
-// Columns: Domain, Data Item, [Type], [Options]
+// Handles tab-delimited (Excel / Google Sheets / Word tables) and CSV.
+//
+// Key behaviours:
+//  • Merged domain cells: carries the last non-empty Domain value forward so
+//    rows with an empty first column still receive the correct domain.
+//  • Section-header rows (domain text, no item) are used to update the domain
+//    but do not produce a data row.
+//  • Auto-detects cell type from inline annotations in the Data Item text:
+//      (multi-select): opt1; opt2      → multi_select + options
+//      (single-select: opt1, opt2)     → single_select + options
+//      (Y/N)                           → single_select, options=[Yes, No]
+//      (Checkbox: opt1, opt2)          → multi_select + options
+//    The annotation is stripped from the displayed item label.
+//  • Optional explicit Type (col 3) and Options (col 4) columns override
+//    annotation detection when present.
+//  • Header rows whose first cell matches a known column label are skipped.
+
+const HEADER_WORDS = new Set(["domain", "data item", "item", "field", "category", "type", "options"]);
+
+/** Split one line: tab-delimited first, else proper CSV. */
+function splitLine(line: string): string[] {
+  if (line.includes("\t")) return line.split("\t");
+  const cells: string[] = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"' && !inQ)                       { inQ = true; continue; }
+    if (ch === '"' && inQ && line[i+1] === '"')   { cur += '"'; i++; continue; }
+    if (ch === '"' && inQ)                         { inQ = false; continue; }
+    if (ch === ',' && !inQ)                       { cells.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells;
+}
+
+const _c = (s?: string) => (s ?? "").replace(/^["'\s]+|["'\s]+$/g, "").trim();
+
+/** Split an options string on comma / semicolon / pipe; strip stray "and". */
+function splitOpts(s: string): string[] {
+  return s.split(/[,;|]/)
+    .map((o) => o.replace(/^\s*and\s+/i, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Inspect a raw Data Item string for an inline type annotation.
+ * Returns the cleaned label, inferred type, and options list.
+ */
+function detectAnnotation(raw: string): { label: string; type: ExtractionCellType; options: string[] } {
+  // (multi-select): opt1; opt2  OR  (multi-select)  OR  multi-select: opt1, opt2
+  const mColon = raw.match(/^(.*?)\s*\(multi[- ]?select(?:ion)?[^)]*\)\s*:?\s*(.*)$/i);
+  if (mColon) {
+    return {
+      label: mColon[1].trim() || raw,
+      type: "multi_select",
+      options: mColon[2].trim() ? splitOpts(mColon[2]) : [],
+    };
+  }
+
+  // (single-select: opt1, opt2)
+  const sInside = raw.match(/^(.*?)\s*\(single[- ]?select[:\s,]+([^)]+)\)/i);
+  if (sInside) {
+    return {
+      label: raw.replace(/\s*\(single[- ]?select[^)]*\)/i, "").trim() || raw,
+      type: "single_select",
+      options: splitOpts(sInside[2]),
+    };
+  }
+  // (single-select) with no options inside
+  const sEmpty = raw.match(/^(.*?)\s*\(single[- ]?select\)/i);
+  if (sEmpty) {
+    return { label: sEmpty[1].trim() || raw, type: "single_select", options: [] };
+  }
+
+  // (Y/N)
+  if (/\(Y\/N\)/i.test(raw)) {
+    return {
+      label: raw.replace(/\s*\(Y\/N\)/i, "").trim() || raw,
+      type: "single_select",
+      options: ["Yes", "No"],
+    };
+  }
+
+  // (Checkbox: opt1, opt2)
+  const cb = raw.match(/^(.*?)\s*\(checkbox[:\s]+([^)]+)\)/i);
+  if (cb) {
+    return { label: cb[1].trim() || raw, type: "multi_select", options: splitOpts(cb[2]) };
+  }
+
+  return { label: raw, type: "string", options: [] };
+}
+
 function parseTemplateTable(text: string): ExtractionTemplateRow[] {
   const lines = text.trim().split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return [];
+
   const rows: ExtractionTemplateRow[] = [];
+  let lastDomain = "";
+
   for (const line of lines) {
-    // Prefer tab split (Excel paste), fall back to comma
-    const parts = line.includes("\t")
-      ? line.split("\t")
-      : line.split(",");
-    const clean = (s?: string) => (s ?? "").replace(/^["']|["']$/g, "").trim();
-    const domain = clean(parts[0]);
-    const item   = clean(parts[1]);
-    if (!domain && !item) continue;
-    const rawType = clean(parts[2]).toLowerCase();
-    const validTypes = ["string", "single_select", "multi_select"];
-    const type: ExtractionCellType = validTypes.includes(rawType)
-      ? (rawType as ExtractionCellType)
-      : "string";
-    const optStr = clean(parts[3]);
-    const options = type !== "string" && optStr
-      ? optStr.split(";").map((s) => s.trim()).filter(Boolean)
-      : [];
-    rows.push({ id: crypto.randomUUID(), domain, item, type, options });
+    const parts = splitLine(line);
+    const col0  = _c(parts[0]);
+    const col1  = _c(parts[1] ?? "");
+
+    // Skip the very first line if it looks like a header
+    if (!rows.length && !lastDomain && HEADER_WORDS.has(col0.toLowerCase())) continue;
+
+    // Carry forward merged domain
+    if (col0) lastDomain = col0;
+    const domain = lastDomain;
+
+    // For a single-column paste the whole line is the item text
+    const rawItem = parts.length === 1 ? col0 : col1;
+
+    // A row with a domain value but no item is a section-header — update domain only
+    if (!rawItem) continue;
+
+    // Explicit Type / Options columns override annotation detection
+    const colType = _c(parts[2] ?? "").toLowerCase().replace(/[\s-]+/g, "_");
+    const VALID: ExtractionCellType[] = ["string", "single_select", "multi_select"];
+    const explicitType = VALID.includes(colType as ExtractionCellType)
+      ? (colType as ExtractionCellType) : null;
+    const colOpts = _c(parts[3] ?? "");
+
+    const { label, type: detectedType, options: detectedOpts } = detectAnnotation(rawItem);
+
+    rows.push({
+      id: crypto.randomUUID(),
+      domain,
+      item: label,
+      type: explicitType ?? detectedType,
+      options: colOpts ? splitOpts(colOpts) : detectedOpts,
+    });
   }
+
   return rows;
 }
 
@@ -1048,17 +1159,56 @@ export default function ProjectPage() {
                   background: "#fff",
                 }}
               >
-                <p style={{ fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.5rem" }}>
-                  Paste a table copied from Excel, Google Sheets, or CSV. Expected columns:{" "}
-                  <strong>Domain</strong>, <strong>Data Item</strong>,{" "}
-                  <em>Type (optional: "string" | "single_select" | "multi_select")</em>,{" "}
-                  <em>Options (optional, comma-separated)</em>.
+                <p style={{ fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
+                  Copy cells from <strong>Excel</strong> or <strong>Google Sheets</strong> and
+                  paste below — the table is imported instantly.
+                  Columns: <strong>Domain</strong>, <strong>Data Item</strong>,{" "}
+                  <em>Type</em> (optional: <code>string</code> / <code>single_select</code> /{" "}
+                  <code>multi_select</code>), <em>Options</em> (optional, separated by{" "}
+                  <code>;</code>). Header rows are skipped automatically.
                 </p>
+
+                {/* Preview list — shown after a paste that produced rows */}
+                {templatePasteText && (() => {
+                  const preview = parseTemplateTable(templatePasteText);
+                  return preview.length > 0 ? (
+                    <div
+                      style={{
+                        background: "#f0fdf4",
+                        border: "1px solid #bbf7d0",
+                        borderRadius: "0.25rem",
+                        padding: "0.5rem 0.75rem",
+                        marginBottom: "0.5rem",
+                        fontSize: "0.8rem",
+                        color: "#166534",
+                      }}
+                    >
+                      <strong>{preview.length} row{preview.length > 1 ? "s" : ""} ready to import:</strong>
+                      <ul style={{ margin: "0.3rem 0 0 1rem", padding: 0, lineHeight: 1.7 }}>
+                        {preview.slice(0, 6).map((r, i) => (
+                          <li key={i}>
+                            <strong>{r.domain}</strong>
+                            {r.item ? ` · ${r.item}` : ""}
+                            <span style={{ color: "#15803d", marginLeft: 6, fontStyle: "italic" }}>
+                              ({r.type}{r.options.length ? `: ${r.options.join(", ")}` : ""})
+                            </span>
+                          </li>
+                        ))}
+                        {preview.length > 6 && <li>…and {preview.length - 6} more</li>}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div style={{ color: "#b45309", fontSize: "0.8rem", marginBottom: "0.5rem" }}>
+                      ⚠ Could not detect table rows. Make sure you have at least a Domain and Data Item column.
+                    </div>
+                  );
+                })()}
+
                 <textarea
+                  autoFocus
                   value={templatePasteText}
-                  onChange={(e) => setTemplatePasteText(e.target.value)}
-                  placeholder="Paste here…"
-                  rows={6}
+                  placeholder="⌘V / Ctrl+V here — table is detected automatically"
+                  rows={4}
                   style={{
                     width: "100%",
                     boxSizing: "border-box",
@@ -1068,25 +1218,45 @@ export default function ProjectPage() {
                     borderRadius: "0.25rem",
                     padding: "0.4rem 0.5rem",
                     resize: "vertical",
+                    background: templatePasteText ? "#fafafa" : "#fffde7",
+                  }}
+                  onChange={(e) => setTemplatePasteText(e.target.value)}
+                  onPaste={(e) => {
+                    // Read plain text from clipboard (handles tab-delimited from Excel/Sheets)
+                    const text = e.clipboardData.getData("text/plain");
+                    e.preventDefault();           // don't fill textarea with raw text
+                    const parsed = parseTemplateTable(text);
+                    if (parsed.length > 0) {
+                      setTemplateRows((prev) => [...prev, ...parsed]);
+                      setTemplatePasteText("");
+                      setTemplatePasteOpen(false);
+                      setToast({ message: `${parsed.length} row${parsed.length > 1 ? "s" : ""} imported from table.`, type: "success" });
+                    } else {
+                      // Nothing parsed — show raw text so user can see what was pasted
+                      setTemplatePasteText(text);
+                    }
                   }}
                 />
+
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    style={{ fontSize: "0.82rem" }}
-                    onClick={() => {
-                      const parsed = parseTemplateTable(templatePasteText);
-                      if (parsed.length > 0) {
-                        setTemplateRows((prev) => [...prev, ...parsed]);
-                        setTemplatePasteText("");
-                        setTemplatePasteOpen(false);
-                      }
-                    }}
-                    disabled={!templatePasteText.trim()}
-                  >
-                    Import rows
-                  </button>
+                  {templatePasteText && (
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ fontSize: "0.82rem" }}
+                      onClick={() => {
+                        const parsed = parseTemplateTable(templatePasteText);
+                        if (parsed.length > 0) {
+                          setTemplateRows((prev) => [...prev, ...parsed]);
+                          setTemplatePasteText("");
+                          setTemplatePasteOpen(false);
+                          setToast({ message: `${parsed.length} row${parsed.length > 1 ? "s" : ""} imported.`, type: "success" });
+                        }
+                      }}
+                    >
+                      Import rows
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="btn-secondary"
