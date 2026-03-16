@@ -92,6 +92,9 @@ export interface ExtractionTemplateRow {
   item: string;
   type: ExtractionCellType;
   options: string[];             // non-empty for select types
+  allow_custom_options?: boolean; // let reviewers add options during extraction
+  linked_label_ids?: string[];   // label IDs linked to this row (many-to-many)
+  linked_node_ids?: string[];    // ontology node IDs linked to this row (many-to-many)
 }
 
 export interface ExtractionTemplate {
@@ -867,6 +870,7 @@ export const ONTOLOGY_NAMESPACES = [
   "level",
   "dimension",
   "relationships",
+  "thematic",
 ] as const;
 
 export type OntologyNamespace = (typeof ONTOLOGY_NAMESPACES)[number];

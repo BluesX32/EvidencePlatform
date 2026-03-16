@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { screeningApi, projectsApi, annotationsApi, fulltextApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow, QueueListEntry } from "../api/client";
+import { screeningApi, projectsApi, annotationsApi, fulltextApi, labelsApi, ontologyApi } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptPicker from "../components/ConceptPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -2015,6 +2015,29 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
   });
   const templateRows: ExtractionTemplateRow[] = project?.extraction_template?.rows ?? [];
 
+  // Labels and ontology nodes — used to show linked items as reference badges
+  const { data: allLabels = [] } = useQuery<ProjectLabel[]>({
+    queryKey: ["labels", projectId],
+    queryFn: () => labelsApi.list(projectId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const { data: allNodes = [] } = useQuery<OntologyNode[]>({
+    queryKey: ["ontology", projectId],
+    queryFn: () => ontologyApi.list(projectId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  // Per-row custom options added during this session (not persisted to template)
+  const [customOpts, setCustomOpts] = React.useState<Record<string, string[]>>({});
+  const [customInput, setCustomInput] = React.useState<Record<string, string>>({});
+
+  function addCustomOption(rowId: string) {
+    const val = (customInput[rowId] ?? "").trim();
+    if (!val) return;
+    setCustomOpts((prev) => ({ ...prev, [rowId]: [...(prev[rowId] ?? []), val] }));
+    setCustomInput((prev) => ({ ...prev, [rowId]: "" }));
+  }
+
   function setCellValue(rowId: string, value: string | string[]) {
     setForm((f) => ({
       ...f,
@@ -2098,6 +2121,15 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
                   const isLastInGroup = i === templateRows.length - 1 || domainSpans[i + 1] > 0;
                   const rowBorder = isLastInGroup ? "1px solid #dadce0" : "1px solid #f1f3f4";
 
+                  // Linked labels and concepts for this row
+                  const linkedLabels = (row.linked_label_ids ?? []).map((id) => allLabels.find((l) => l.id === id)).filter(Boolean) as ProjectLabel[];
+                  const linkedNodes = (row.linked_node_ids ?? []).map((id) => allNodes.find((n) => n.id === id)).filter(Boolean) as OntologyNode[];
+                  const hasLinks = linkedLabels.length > 0 || linkedNodes.length > 0;
+
+                  // Merged options = template options + custom options added this session
+                  const extraOpts = customOpts[row.id] ?? [];
+                  const allOpts = [...row.options, ...extraOpts];
+
                   return (
                     <tr key={row.id}>
                       {isGroupStart && (
@@ -2116,7 +2148,21 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
                           {row.domain || <em style={{ color: "#bbb" }}>—</em>}
                         </td>
                       )}
-                      <td style={{ ...td, color: "#3c4043", borderBottom: rowBorder }}>{row.item || <em style={{ color: "#bbb" }}>—</em>}</td>
+                      <td style={{ ...td, color: "#3c4043", borderBottom: rowBorder }}>
+                        <div>{row.item || <em style={{ color: "#bbb" }}>—</em>}</div>
+                        {/* Linked labels/concepts as reference badges */}
+                        {hasLinks && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
+                            {linkedLabels.map((lbl) => (
+                              <span key={lbl.id} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 999, background: lbl.color + "22", color: lbl.color, border: `1px solid ${lbl.color}` }}>{lbl.name}</span>
+                            ))}
+                            {linkedNodes.map((node) => {
+                              const color = node.color ?? (node.namespace === "thematic" ? "#7c3aed" : "#3b82f6");
+                              return <span key={node.id} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: color + "18", color, border: `1px solid ${color}` }}>{node.name}</span>;
+                            })}
+                          </div>
+                        )}
+                      </td>
                       <td style={{ ...td, borderBottom: rowBorder }}>
                         {row.type === "string" && (
                           <textarea
@@ -2124,72 +2170,73 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
                             onChange={(e) => setCellValue(row.id, e.target.value)}
                             rows={2}
                             placeholder="Enter value…"
-                            style={{
-                              width: "100%",
-                              boxSizing: "border-box",
-                              fontSize: "0.84rem",
-                              fontFamily: "inherit",
-                              border: "1px solid #e0e0e0",
-                              borderRadius: "0.25rem",
-                              padding: "0.25rem 0.4rem",
-                              resize: "vertical",
-                              background: "#fafafa",
-                            }}
+                            style={{ width: "100%", boxSizing: "border-box", fontSize: "0.84rem", fontFamily: "inherit", border: "1px solid #e0e0e0", borderRadius: "0.25rem", padding: "0.25rem 0.4rem", resize: "vertical", background: "#fafafa" }}
                           />
                         )}
 
                         {row.type === "single_select" && (
-                          <select
-                            value={String(val)}
-                            onChange={(e) => setCellValue(row.id, e.target.value)}
-                            style={{
-                              fontSize: "0.84rem",
-                              padding: "0.28rem 0.45rem",
-                              border: "1px solid #e0e0e0",
-                              borderRadius: "0.25rem",
-                              background: "#fafafa",
-                              width: "100%",
-                            }}
-                          >
-                            <option value="">— select —</option>
-                            {row.options.map((opt) => (
-                              <option key={opt} value={opt}>{opt}</option>
-                            ))}
-                          </select>
+                          <div>
+                            <select
+                              value={String(val)}
+                              onChange={(e) => setCellValue(row.id, e.target.value)}
+                              style={{ fontSize: "0.84rem", padding: "0.28rem 0.45rem", border: "1px solid #e0e0e0", borderRadius: "0.25rem", background: "#fafafa", width: "100%" }}
+                            >
+                              <option value="">— select —</option>
+                              {allOpts.map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                            {row.allow_custom_options && (
+                              <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                                <input
+                                  value={customInput[row.id] ?? ""}
+                                  onChange={(e) => setCustomInput((p) => ({ ...p, [row.id]: e.target.value }))}
+                                  onKeyDown={(e) => { if (e.key === "Enter") addCustomOption(row.id); }}
+                                  placeholder="+ custom option…"
+                                  style={{ fontSize: "0.77rem", padding: "0.18rem 0.4rem", border: "1px dashed #d1d5db", borderRadius: "0.25rem", flex: 1, outline: "none" }}
+                                />
+                                <button type="button" onClick={() => addCustomOption(row.id)}
+                                  style={{ fontSize: "0.72rem", padding: "0.18rem 0.5rem", borderRadius: "0.25rem", border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}>
+                                  Add
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         )}
 
                         {row.type === "multi_select" && (
-                          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
-                            {row.options.map((opt) => {
-                              const selected = Array.isArray(val) ? val.includes(opt) : false;
-                              return (
-                                <button
-                                  key={opt}
-                                  type="button"
-                                  onClick={() => {
-                                    const current = Array.isArray(val) ? val : [];
-                                    setCellValue(
-                                      row.id,
-                                      selected
-                                        ? current.filter((v) => v !== opt)
-                                        : [...current, opt]
-                                    );
-                                  }}
-                                  style={{
-                                    padding: "0.2rem 0.6rem",
-                                    borderRadius: "1rem",
-                                    border: `2px solid ${selected ? "#8f3f97" : "#dadce0"}`,
-                                    background: selected ? "#f3e5f5" : "#f8f9fa",
-                                    color: selected ? "#8f3f97" : "#5f6368",
-                                    fontWeight: selected ? 600 : 400,
-                                    fontSize: "0.8rem",
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  {opt}
+                          <div>
+                            <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                              {allOpts.map((opt) => {
+                                const selected = Array.isArray(val) ? val.includes(opt) : false;
+                                return (
+                                  <button key={opt} type="button"
+                                    onClick={() => {
+                                      const current = Array.isArray(val) ? val : [];
+                                      setCellValue(row.id, selected ? current.filter((v) => v !== opt) : [...current, opt]);
+                                    }}
+                                    style={{ padding: "0.2rem 0.6rem", borderRadius: "1rem", border: `2px solid ${selected ? "#8f3f97" : "#dadce0"}`, background: selected ? "#f3e5f5" : "#f8f9fa", color: selected ? "#8f3f97" : "#5f6368", fontWeight: selected ? 600 : 400, fontSize: "0.8rem", cursor: "pointer" }}
+                                  >
+                                    {opt}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {row.allow_custom_options && (
+                              <div style={{ display: "flex", gap: 4, marginTop: 5 }}>
+                                <input
+                                  value={customInput[row.id] ?? ""}
+                                  onChange={(e) => setCustomInput((p) => ({ ...p, [row.id]: e.target.value }))}
+                                  onKeyDown={(e) => { if (e.key === "Enter") addCustomOption(row.id); }}
+                                  placeholder="+ custom option…"
+                                  style={{ fontSize: "0.77rem", padding: "0.18rem 0.4rem", border: "1px dashed #d1d5db", borderRadius: "0.25rem", flex: 1, outline: "none" }}
+                                />
+                                <button type="button" onClick={() => addCustomOption(row.id)}
+                                  style={{ fontSize: "0.72rem", padding: "0.18rem 0.5rem", borderRadius: "0.25rem", border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}>
+                                  Add
                                 </button>
-                              );
-                            })}
+                              </div>
+                            )}
                           </div>
                         )}
                       </td>

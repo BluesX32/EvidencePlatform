@@ -19,7 +19,7 @@
  *   • Namespace filter → show only nodes of selected namespace
  *   • Parent selector in editor → reparent node (cycle-safe)
  */
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, Suspense, lazy } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -31,9 +31,15 @@ import {
 } from "../api/client";
 import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
 
-// ── ForceGraph3D direct import (Vite handles chunking) ────────────────────────
+// ── Lazy-load ForceGraph3D so the heavy react-force-graph chain
+// (→ 3d-force-graph-vr → aframe → …) is NOT loaded until the user
+// actually switches to 3D view.  A direct static import causes Vite to
+// block the OntologyPage module on the entire transitive dep graph,
+// which hangs page load in development mode.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-import { ForceGraph3D } from "react-force-graph";
+const ForceGraph3DLazy = lazy(() =>
+  import("react-force-graph").then((m) => ({ default: (m as any).ForceGraph3D }))
+);
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -55,19 +61,19 @@ export default function OntologyPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
-  // Measure via RAF + ResizeObserver for reliable sizing
+  // Measure container — retry every RAF tick until ref is attached AND has positive size
   useEffect(() => {
     if (viewMode !== "graph3d") { setGraphDims(null); return; }
     let raf: number;
     const measure = () => {
       const el = graphContainerRef.current;
-      if (!el) return;
-      const { width, height } = el.getBoundingClientRect();
-      if (width > 0 && height > 0) {
-        setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
-      } else {
+      if (!el || el.getBoundingClientRect().width === 0) {
+        // ref not yet attached or element not yet laid out — keep retrying
         raf = requestAnimationFrame(measure);
+        return;
       }
+      const { width, height } = el.getBoundingClientRect();
+      setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
     };
     raf = requestAnimationFrame(measure);
     const ro = new ResizeObserver(() => {
@@ -76,7 +82,10 @@ export default function OntologyPage() {
       const { width, height } = el.getBoundingClientRect();
       if (width > 0 && height > 0) setGraphDims({ w: Math.floor(width), h: Math.floor(height) });
     });
-    if (graphContainerRef.current) ro.observe(graphContainerRef.current);
+    // Attach observer after first successful measure fires via RAF
+    setTimeout(() => {
+      if (graphContainerRef.current) ro.observe(graphContainerRef.current);
+    }, 0);
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, [viewMode]);
 
@@ -272,6 +281,21 @@ export default function OntologyPage() {
     });
   };
 
+  // ── 3D Graph data (must be declared BEFORE handle3DNodeDragEnd useCallback) ──
+  const graphData = useMemo(() => {
+    const graphNodes = nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      namespace: n.namespace,
+      nodeColor: n.color ?? NS_COLORS[n.namespace] ?? "#9ca3af",
+      val: n.parent_id ? 1 : 2.5,
+    }));
+    const graphLinks = nodes
+      .filter((n) => n.parent_id !== null)
+      .map((n) => ({ source: n.parent_id!, target: n.id }));
+    return { nodes: graphNodes, links: graphLinks };
+  }, [nodes]);
+
   // 3D drag-to-reparent: when drag ends, find the nearest other node;
   // if within proximity threshold, reparent automatically.
   const handle3DNodeDragEnd = useCallback(
@@ -349,21 +373,6 @@ export default function OntologyPage() {
     }
     return nodes.filter((n) => !descendants.has(n.id));
   }, [nodes, selectedId]);
-
-  // ── 3D Graph data ─────────────────────────────────────────────────────────
-  const graphData = useMemo(() => {
-    const graphNodes = nodes.map((n) => ({
-      id: n.id,
-      name: n.name,
-      namespace: n.namespace,
-      nodeColor: n.color ?? NS_COLORS[n.namespace] ?? "#9ca3af",
-      val: n.parent_id ? 1 : 2.5,
-    }));
-    const graphLinks = nodes
-      .filter((n) => n.parent_id !== null)
-      .map((n) => ({ source: n.parent_id!, target: n.id }));
-    return { nodes: graphNodes, links: graphLinks };
-  }, [nodes]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -509,39 +518,37 @@ export default function OntologyPage() {
               Initialising 3D engine…
             </div>
           ) : (
-            <ForceGraph3D
-              ref={fgRef}
-              graphData={graphData}
-              width={graphDims.w}
-              height={graphDims.h}
-              backgroundColor="#0f172a"
-              // Hierarchical radial layout — distributes nodes in genuine 3D space
-              dagMode="radialout"
-              dagLevelDistance={80}
-              // Nodes
-              nodeLabel={(n: { name: string; namespace: string }) =>
-                `${n.name} [${n.namespace}]`
-              }
-              nodeColor={(n: { nodeColor: string }) => n.nodeColor}
-              nodeVal={(n: { val: number }) => n.val}
-              nodeOpacity={0.92}
-              // Links
-              linkColor={() => "rgba(148,163,184,0.35)"}
-              linkWidth={1.5}
-              linkDirectionalArrowLength={5}
-              linkDirectionalArrowRelPos={1}
-              linkDirectionalParticles={1}
-              linkDirectionalParticleSpeed={0.004}
-              // Drag to reparent: drop node close to another to re-parent
-              onNodeDragEnd={(node: { id: string; x?: number; y?: number; z?: number }) =>
-                handle3DNodeDragEnd(node)
-              }
-              // Click → switch to tree view and select node
-              onNodeClick={(node: { id: string }) => {
-                setViewMode("tree");
-                setSelectedId(node.id);
-              }}
-            />
+            <Suspense fallback={
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8" }}>
+                Loading 3D engine…
+              </div>
+            }>
+              <ForceGraph3DLazy
+                ref={fgRef}
+                graphData={graphData}
+                width={graphDims.w}
+                height={graphDims.h}
+                backgroundColor="#0f172a"
+                nodeLabel={(n: { name: string; namespace: string }) =>
+                  `${n.name} [${n.namespace}]`
+                }
+                nodeColor={(n: { nodeColor: string }) => n.nodeColor}
+                nodeVal={(n: { val: number }) => n.val}
+                linkColor={() => "rgba(148,163,184,0.5)"}
+                linkWidth={1.5}
+                linkDirectionalArrowLength={5}
+                linkDirectionalArrowRelPos={1}
+                linkDirectionalParticles={1}
+                linkDirectionalParticleSpeed={0.004}
+                onNodeDragEnd={(node: { id: string; x?: number; y?: number; z?: number }) =>
+                  handle3DNodeDragEnd(node)
+                }
+                onNodeClick={(node: { id: string }) => {
+                  setViewMode("tree");
+                  setSelectedId(node.id);
+                }}
+              />
+            </Suspense>
           )}
 
           {/* Legend */}

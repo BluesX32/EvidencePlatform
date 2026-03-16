@@ -9,9 +9,11 @@ import {
   strategiesApi,
   dedupJobsApi,
   overlapsApi,
+  labelsApi,
+  ontologyApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType } from "../api/client";
+import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
 
@@ -448,6 +450,20 @@ export default function ProjectPage() {
         : false;
     },
   });
+
+  // Labels and ontology nodes (for linking to extraction template rows)
+  const { data: allLabels = [] } = useQuery<ProjectLabel[]>({
+    queryKey: ["labels", id],
+    queryFn: () => labelsApi.list(id!).then((r) => r.data),
+    enabled: !!id,
+  });
+  const { data: allNodes = [] } = useQuery<OntologyNode[]>({
+    queryKey: ["ontology", id],
+    queryFn: () => ontologyApi.list(id!).then((r) => r.data),
+    enabled: !!id,
+  });
+  // Track which row's link panel is open (row id or null)
+  const [linkOpenFor, setLinkOpenFor] = useState<string | null>(null);
 
   // Sync local criteria from server data
   useEffect(() => {
@@ -969,7 +985,7 @@ export default function ProjectPage() {
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr 130px 1fr 32px",
                   gap: "0.5rem",
-                  padding: "0.5rem 1rem",
+                  padding: "0.5rem 0.6rem 0.5rem 1rem",
                   background: "#f1f3f4",
                   borderBottom: "1px solid #dadce0",
                   fontSize: "0.75rem",
@@ -989,113 +1005,160 @@ export default function ProjectPage() {
 
             {/* Rows */}
             <div style={{ padding: templateRows.length > 0 ? "0.5rem 1rem" : "0" }}>
-              {templateRows.map((row, idx) => (
-                <div
-                  key={row.id}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr 130px 1fr 32px",
-                    gap: "0.5rem",
-                    alignItems: "center",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="Domain…"
-                    value={row.domain}
-                    onChange={(e) =>
-                      setTemplateRows((prev) =>
-                        prev.map((r, i) => (i === idx ? { ...r, domain: e.target.value } : r))
-                      )
-                    }
-                    style={{ fontSize: "0.84rem" }}
-                  />
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="Data item…"
-                    value={row.item}
-                    onChange={(e) =>
-                      setTemplateRows((prev) =>
-                        prev.map((r, i) => (i === idx ? { ...r, item: e.target.value } : r))
-                      )
-                    }
-                    style={{ fontSize: "0.84rem" }}
-                  />
-                  <select
-                    value={row.type}
-                    onChange={(e) =>
-                      setTemplateRows((prev) =>
-                        prev.map((r, i) =>
-                          i === idx ? { ...r, type: e.target.value as ExtractionCellType } : r
-                        )
-                      )
-                    }
+              {templateRows.map((row, idx) => {
+                const isSelect = row.type === "single_select" || row.type === "multi_select";
+                const linkOpen = linkOpenFor === row.id;
+                const linkedLabelIds = row.linked_label_ids ?? [];
+                const linkedNodeIds = row.linked_node_ids ?? [];
+                const hasLinks = linkedLabelIds.length > 0 || linkedNodeIds.length > 0;
+
+                return (
+                  <div
+                    key={row.id}
                     style={{
-                      fontSize: "0.84rem",
-                      padding: "0.3rem 0.45rem",
-                      border: "1px solid #dadce0",
-                      borderRadius: "0.25rem",
+                      marginBottom: "0.6rem",
+                      border: "1px solid #e8eaed",
+                      borderRadius: "0.375rem",
                       background: "#fff",
+                      overflow: "hidden",
                     }}
                   >
-                    <option value="string">Free text</option>
-                    <option value="single_select">Single select</option>
-                    <option value="multi_select">Multi select</option>
-                  </select>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder={
-                      row.type === "string"
-                        ? "—"
-                        : "opt1, opt2, opt3…"
-                    }
-                    disabled={row.type === "string"}
-                    value={row.options.join(", ")}
-                    onChange={(e) =>
-                      setTemplateRows((prev) =>
-                        prev.map((r, i) =>
-                          i === idx
-                            ? {
-                                ...r,
-                                options: e.target.value
-                                  .split(",")
-                                  .map((s) => s.trim())
-                                  .filter(Boolean),
-                              }
-                            : r
-                        )
-                      )
-                    }
-                    style={{
-                      fontSize: "0.84rem",
-                      background: row.type === "string" ? "#f3f4f6" : "#fff",
-                      color: row.type === "string" ? "#aaa" : undefined,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setTemplateRows((prev) => prev.filter((_, i) => i !== idx))
-                    }
-                    title="Remove row"
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "#c5221f",
-                      fontSize: "1rem",
-                      lineHeight: 1,
-                      padding: "0.2rem",
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+                    {/* Main row */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 130px 1fr 32px", gap: "0.5rem", alignItems: "center", padding: "0.4rem 0.6rem" }}>
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="Domain…"
+                        value={row.domain}
+                        onChange={(e) => setTemplateRows((prev) => prev.map((r, i) => (i === idx ? { ...r, domain: e.target.value } : r)))}
+                        style={{ fontSize: "0.84rem" }}
+                      />
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="Data item…"
+                        value={row.item}
+                        onChange={(e) => setTemplateRows((prev) => prev.map((r, i) => (i === idx ? { ...r, item: e.target.value } : r)))}
+                        style={{ fontSize: "0.84rem" }}
+                      />
+                      <select
+                        value={row.type}
+                        onChange={(e) => setTemplateRows((prev) => prev.map((r, i) => i === idx ? { ...r, type: e.target.value as ExtractionCellType } : r))}
+                        style={{ fontSize: "0.84rem", padding: "0.3rem 0.45rem", border: "1px solid #dadce0", borderRadius: "0.25rem", background: "#fff" }}
+                      >
+                        <option value="string">Free text</option>
+                        <option value="single_select">Single select</option>
+                        <option value="multi_select">Multi select</option>
+                      </select>
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder={row.type === "string" ? "—" : "opt1, opt2, opt3…"}
+                        disabled={row.type === "string"}
+                        value={row.options.join(", ")}
+                        onChange={(e) => setTemplateRows((prev) => prev.map((r, i) => i === idx ? { ...r, options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } : r))}
+                        style={{ fontSize: "0.84rem", background: row.type === "string" ? "#f3f4f6" : "#fff", color: row.type === "string" ? "#aaa" : undefined }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setTemplateRows((prev) => prev.filter((_, i) => i !== idx))}
+                        title="Remove row"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", fontSize: "1rem", lineHeight: 1, padding: "0.2rem" }}
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    {/* Extra options row */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem", padding: "0.25rem 0.6rem 0.35rem", borderTop: "1px solid #f1f3f4", background: "#fafafa", flexWrap: "wrap" }}>
+                      {/* Allow custom options — only for select types */}
+                      {isSelect && (
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.76rem", color: "#5f6368", cursor: "pointer", userSelect: "none" }}>
+                          <input
+                            type="checkbox"
+                            checked={row.allow_custom_options ?? false}
+                            onChange={(e) => setTemplateRows((prev) => prev.map((r, i) => i === idx ? { ...r, allow_custom_options: e.target.checked } : r))}
+                            style={{ accentColor: "#4f46e5" }}
+                          />
+                          Allow reviewers to add custom options
+                        </label>
+                      )}
+
+                      {/* Link labels / ontology */}
+                      <button
+                        type="button"
+                        onClick={() => setLinkOpenFor(linkOpen ? null : row.id)}
+                        style={{
+                          fontSize: "0.74rem", padding: "0.1rem 0.55rem", borderRadius: "1rem",
+                          border: `1px solid ${hasLinks ? "#c7d2fe" : "#e0e0e0"}`,
+                          background: hasLinks ? "#eef3ff" : "transparent",
+                          color: hasLinks ? "#4f46e5" : "#9ca3af",
+                          cursor: "pointer", fontWeight: hasLinks ? 600 : 400,
+                        }}
+                      >
+                        {hasLinks ? `🔗 Linked (${linkedLabelIds.length + linkedNodeIds.length})` : "🔗 Link labels / concepts"}
+                      </button>
+
+                      {/* Show linked chips inline */}
+                      {hasLinks && !linkOpen && (
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {linkedLabelIds.map((lid) => {
+                            const lbl = allLabels.find((l) => l.id === lid);
+                            return lbl ? <span key={lid} style={{ fontSize: 11, padding: "1px 7px", borderRadius: 999, background: lbl.color + "22", color: lbl.color, border: `1px solid ${lbl.color}` }}>{lbl.name}</span> : null;
+                          })}
+                          {linkedNodeIds.map((nid) => {
+                            const node = allNodes.find((n) => n.id === nid);
+                            return node ? <span key={nid} style={{ fontSize: 11, padding: "1px 7px", borderRadius: 3, background: "#f3e8ff", color: "#7c3aed", border: "1px solid #c4b5fd" }}>{node.name}</span> : null;
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Link panel — expanded */}
+                    {linkOpen && (
+                      <div style={{ padding: "0.6rem 0.85rem", borderTop: "1px solid #e8eaed", background: "#f8f9fa" }}>
+                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: "#6b7280", marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          Labels
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: "0.6rem" }}>
+                          {allLabels.length === 0 && <span style={{ fontSize: 12, color: "#bbb", fontStyle: "italic" }}>No labels defined yet</span>}
+                          {allLabels.map((lbl) => {
+                            const active = linkedLabelIds.includes(lbl.id);
+                            return (
+                              <button key={lbl.id} type="button"
+                                onClick={() => setTemplateRows((prev) => prev.map((r, i) => i !== idx ? r : { ...r, linked_label_ids: active ? (r.linked_label_ids ?? []).filter((x) => x !== lbl.id) : [...(r.linked_label_ids ?? []), lbl.id] }))}
+                                style={{ fontSize: 12, padding: "2px 9px", borderRadius: 999, border: `1.5px solid ${lbl.color}`, background: active ? lbl.color : "transparent", color: active ? "#fff" : lbl.color, cursor: "pointer", fontWeight: 500 }}
+                              >
+                                {active && "✓ "}{lbl.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: "#6b7280", marginBottom: "0.4rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          Concepts / Ontology
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                          {allNodes.length === 0 && <span style={{ fontSize: 12, color: "#bbb", fontStyle: "italic" }}>No ontology nodes defined yet</span>}
+                          {allNodes.map((node) => {
+                            const active = linkedNodeIds.includes(node.id);
+                            const color = node.color ?? (node.namespace === "thematic" ? "#7c3aed" : "#3b82f6");
+                            return (
+                              <button key={node.id} type="button"
+                                onClick={() => setTemplateRows((prev) => prev.map((r, i) => i !== idx ? r : { ...r, linked_node_ids: active ? (r.linked_node_ids ?? []).filter((x) => x !== node.id) : [...(r.linked_node_ids ?? []), node.id] }))}
+                                style={{ fontSize: 12, padding: "2px 9px", borderRadius: 4, border: `1.5px solid ${color}`, background: active ? color : "transparent", color: active ? "#fff" : color, cursor: "pointer", fontWeight: 500 }}
+                              >
+                                {active && "✓ "}{node.name}
+                                <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 3 }}>{node.namespace}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             {/* Footer actions */}
@@ -1122,6 +1185,9 @@ export default function ProjectPage() {
                       item: "",
                       type: "string",
                       options: [],
+                      allow_custom_options: false,
+                      linked_label_ids: [],
+                      linked_node_ids: [],
                     },
                   ])
                 }
