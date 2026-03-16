@@ -46,12 +46,19 @@ services:
     volumes:
       - ./frontend:/app
       # Named volume keeps node_modules inside the container (Linux binaries,
-      # no host platform mismatch).  On every start the CMD runs `npm install`
-      # to sync any newly added packages from the mounted package.json without
-      # a full image rebuild.  To force a clean reinstall:
-      #   docker compose down -v && docker compose up --build
+      # no host platform mismatch).  CMD runs `npm install --prefer-offline`
+      # on every start to sync newly added packages without a full rebuild.
+      #
+      # To reset node_modules only (e.g. after adding npm packages):
+      #   docker compose stop frontend
+      #   docker volume rm evidenceplatform_frontend_nm
+      #   docker compose up --build frontend
       - frontend_nm:/app/node_modules
 
 volumes:
+  # pgdata is NEVER removed by docker compose down.
+  # To wipe the database intentionally: docker volume rm evidenceplatform_pgdata
   pgdata:
+    external: false
   frontend_nm:
+    external: false
