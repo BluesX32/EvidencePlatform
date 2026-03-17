@@ -1069,6 +1069,28 @@ async def get_next_item(
             slot = slots[pos]
             slot_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
             slot_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
+
+            # Skip slots whose entity no longer exists (e.g. cluster deleted after
+            # overlap re-run, or record deleted after import rollback).
+            if slot_cluster_id is not None:
+                exists = await db.get(OverlapCluster, slot_cluster_id)
+                if exists is None:
+                    logger.warning(
+                        "get_next_item: queue slot cluster_id=%s no longer exists — skipping",
+                        slot_cluster_id,
+                    )
+                    pos += 1
+                    continue
+            elif slot_record_id is not None:
+                exists = await db.get(Record, slot_record_id)
+                if exists is None:
+                    logger.warning(
+                        "get_next_item: queue slot record_id=%s no longer exists — skipping",
+                        slot_record_id,
+                    )
+                    pos += 1
+                    continue
+
             # Check if this slot has a decision from this reviewer for this stage
             dec_q = select(ScreeningDecision).where(
                 ScreeningDecision.project_id == project_id,
@@ -1118,27 +1140,43 @@ async def get_next_item(
         found_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
         found_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
 
-        # Create claim
-        if found_record_id is not None:
-            await db.execute(
-                text(
-                    "INSERT INTO screening_claims (id, project_id, record_id, reviewer_id, claimed_at) "
-                    "VALUES (gen_random_uuid(), :project_id, :record_id, :reviewer_id, now()) "
-                    "ON CONFLICT (project_id, record_id) WHERE record_id IS NOT NULL "
-                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
-                ),
-                {"project_id": project_id, "record_id": found_record_id, "reviewer_id": reviewer_id},
+        # Create claim — wrapped in a savepoint so a FK violation (stale queue
+        # entry surviving the existence check above via race condition) only rolls
+        # back the claim INSERT without invalidating the whole session.
+        from sqlalchemy.exc import IntegrityError as _IntegrityError
+        claim_ok = True
+        try:
+            async with db.begin_nested():
+                if found_record_id is not None:
+                    await db.execute(
+                        text(
+                            "INSERT INTO screening_claims (id, project_id, record_id, reviewer_id, claimed_at) "
+                            "VALUES (gen_random_uuid(), :project_id, :record_id, :reviewer_id, now()) "
+                            "ON CONFLICT (project_id, record_id) WHERE record_id IS NOT NULL "
+                            "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                        ),
+                        {"project_id": project_id, "record_id": found_record_id, "reviewer_id": reviewer_id},
+                    )
+                else:
+                    await db.execute(
+                        text(
+                            "INSERT INTO screening_claims (id, project_id, cluster_id, reviewer_id, claimed_at) "
+                            "VALUES (gen_random_uuid(), :project_id, :cluster_id, :reviewer_id, now()) "
+                            "ON CONFLICT (project_id, cluster_id) WHERE cluster_id IS NOT NULL "
+                            "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
+                        ),
+                        {"project_id": project_id, "cluster_id": found_cluster_id, "reviewer_id": reviewer_id},
+                    )
+        except _IntegrityError:
+            # Savepoint already rolled back — session is still usable.
+            logger.warning(
+                "get_next_item: FK violation inserting claim for record_id=%s cluster_id=%s — skipping item",
+                found_record_id, found_cluster_id,
             )
-        else:
-            await db.execute(
-                text(
-                    "INSERT INTO screening_claims (id, project_id, cluster_id, reviewer_id, claimed_at) "
-                    "VALUES (gen_random_uuid(), :project_id, :cluster_id, :reviewer_id, now()) "
-                    "ON CONFLICT (project_id, cluster_id) WHERE cluster_id IS NOT NULL "
-                    "DO UPDATE SET claimed_at = now(), reviewer_id = EXCLUDED.reviewer_id"
-                ),
-                {"project_id": project_id, "cluster_id": found_cluster_id, "reviewer_id": reviewer_id},
-            )
+            claim_ok = False
+
+        if not claim_ok:
+            return {"done": True}
 
         # Fetch metadata
         if found_record_id is not None:

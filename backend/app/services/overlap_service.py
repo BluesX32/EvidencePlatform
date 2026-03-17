@@ -38,6 +38,7 @@ from app.models.overlap_cluster import OverlapCluster
 from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.record import Record
 from app.models.record_source import RecordSource
+from app.models.screening_queue import ScreeningQueue
 from app.repositories.dedup_repo import DedupJobRepo
 from app.repositories.strategy_repo import StrategyRepo
 from app.services.locks import try_acquire_project_lock, release_project_lock
@@ -201,6 +202,10 @@ async def run_within_source_detection(
         if old_cluster_ids:
             await db.execute(
                 delete(OverlapCluster).where(OverlapCluster.id.in_(old_cluster_ids))
+            )
+            # Invalidate screening queues — cluster IDs just changed
+            await db.execute(
+                delete(ScreeningQueue).where(ScreeningQueue.project_id == project_id)
             )
             await db.flush()
 
@@ -368,6 +373,12 @@ async def _run_cross_source_detection(
             OverlapCluster.scope == "cross_source",
             OverlapCluster.locked == False,  # noqa: E712
         )
+    )
+    # Invalidate all screening queues for this project — cluster IDs just changed
+    # and any cached queue would contain stale cluster UUIDs that would cause FK
+    # violations when the screening service tries to insert claims.
+    await db.execute(
+        delete(ScreeningQueue).where(ScreeningQueue.project_id == project_id)
     )
     await db.flush()
 
