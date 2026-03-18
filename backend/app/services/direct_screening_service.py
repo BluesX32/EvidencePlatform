@@ -1745,7 +1745,8 @@ async def get_saturation(
 
     Walk extraction_records ordered by created_at DESC (most recent first).
     Stop counting as soon as a record with framework_updated=true is encountered.
-    Returns the count, whether it has reached the threshold, and the threshold itself.
+    framework_updated=false means "this paper confirmed existing concepts — nothing new".
+    framework_updated=true means "this paper introduced new framework concepts" — resets the counter.
     """
     q = (
         select(ExtractionRecord.extracted_json)
@@ -1756,10 +1757,11 @@ async def get_saturation(
         q = q.where(ExtractionRecord.reviewer_id == reviewer_id)
 
     rows = (await db.execute(q)).scalars().all()
+    total = len(rows)
 
     consecutive = 0
     for extracted_json in rows:
-        # framework_updated defaults to True if missing (treats old records as "added something")
+        # framework_updated missing → treat as True (old records assumed to have added concepts)
         if extracted_json.get("framework_updated", True):
             break
         consecutive += 1
@@ -1768,6 +1770,7 @@ async def get_saturation(
         "consecutive_no_novelty": consecutive,
         "saturated": consecutive >= threshold,
         "threshold": threshold,
+        "total_extractions": total,
     }
 
 

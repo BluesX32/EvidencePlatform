@@ -780,6 +780,8 @@ export interface SaturationStatus {
   saturated: boolean;
   /** Stopping threshold (default 5). */
   threshold: number;
+  /** Total extractions saved for this project (used to hide badge before first save). */
+  total_extractions: number;
 }
 
 export interface ScreeningQueueInfo {

@@ -1943,33 +1943,38 @@ function SaturationBadge({ projectId }: { projectId: string }) {
   const { data } = useQuery<SaturationStatus>({
     queryKey: ["saturation", projectId],
     queryFn: () => screeningApi.getSaturation(projectId, SATURATION_THRESHOLD).then((r) => r.data),
-    staleTime: 30_000,
+    staleTime: 0, // always fresh — invalidated after each save
   });
 
   if (!data) return null;
 
+  // Don't show the badge until at least one extraction has been saved
+  if (data.total_extractions === 0) return null;
+
   const { consecutive_no_novelty: count, saturated, threshold } = data;
-  const pct = count / threshold;
+  const pct = Math.min(1, count / threshold);
   const bg = saturated ? "#fee2e2" : pct >= 0.6 ? "#fff7ed" : "#f9fafb";
   const borderColor = saturated ? "#fca5a5" : pct >= 0.6 ? "#fdba74" : "#e5e7eb";
   const textColor = saturated ? "#b91c1c" : pct >= 0.6 ? "#c2410c" : "#6b7280";
-  const barColor = saturated ? "#ef4444" : pct >= 0.6 ? "#f97316" : "#6b7280";
+  const barColor = saturated ? "#ef4444" : pct >= 0.6 ? "#f97316" : count > 0 ? "#facc15" : "#22c55e";
 
   return (
     <div style={{ marginBottom: "1rem", padding: "10px 14px", borderRadius: 8, border: `1px solid ${borderColor}`, background: bg }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: textColor, textTransform: "uppercase", letterSpacing: "0.05em" }}>Saturation</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: textColor, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          Framework Saturation
+        </span>
         <span style={{ fontSize: 13, fontWeight: 700, color: textColor }}>{count} / {threshold}</span>
       </div>
       <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${Math.min(100, (count / threshold) * 100)}%`, background: barColor, borderRadius: 999, transition: "width 0.4s ease" }} />
+        <div style={{ height: "100%", width: `${pct * 100}%`, background: barColor, borderRadius: 999, transition: "width 0.4s ease" }} />
       </div>
       <div style={{ marginTop: 5, fontSize: 11, color: textColor }}>
         {saturated
-          ? `⚠️ ${threshold} consecutive papers added nothing new — consider stopping this source.`
+          ? `⚠️ ${threshold} papers in a row added no new framework concepts — consider stopping.`
           : count === 0
-          ? "Counter resets when a paper adds new concepts."
-          : `${count} consecutive paper${count > 1 ? "s" : ""} without new concepts.`}
+          ? "✅ Last paper added new framework concepts. Counter at zero."
+          : `${count} consecutive paper${count > 1 ? "s" : ""} confirmed existing concepts only.`}
       </div>
     </div>
   );
@@ -1982,7 +1987,7 @@ function SaturationBadge({ projectId }: { projectId: string }) {
 const EMPTY_EXTRACTION: ExtractionJson = {
   table: {},
   free_note: "",
-  framework_updated: true,
+  framework_updated: false,
   framework_update_note: "",
   levels: [],
   dimensions: [],
@@ -2042,8 +2047,6 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
     setForm((f) => ({
       ...f,
       table: { ...f.table, [rowId]: value },
-      // any non-empty cell → framework_updated = true (drives saturation)
-      framework_updated: true,
     }));
   }
 
@@ -2280,6 +2283,35 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
           placeholder="General notes about this paper…"
           style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "inherit" }}
         />
+      </div>
+
+      {/* ── Framework novelty toggle ── drives saturation counter */}
+      <div style={{ marginBottom: "1rem", padding: "0.75rem 1rem", borderRadius: 8, border: `1px solid ${form.framework_updated ? "#a5b4fc" : "#e5e7eb"}`, background: form.framework_updated ? "#eef2ff" : "#f9fafb" }}>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: "0.6rem", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={!!form.framework_updated}
+            onChange={(e) => setForm((f) => ({ ...f, framework_updated: e.target.checked, framework_update_note: e.target.checked ? f.framework_update_note : "" }))}
+            style={{ marginTop: 3, accentColor: "#6366f1", width: 15, height: 15, flexShrink: 0 }}
+          />
+          <div>
+            <div style={{ fontSize: "0.85rem", fontWeight: 600, color: form.framework_updated ? "#4338ca" : "#6b7280" }}>
+              ✨ This paper introduced new framework concepts
+            </div>
+            <div style={{ fontSize: "0.76rem", color: "#9ca3af", marginTop: 2 }}>
+              Check if you added new categories, codes, or themes not seen in previous papers. Uncheck if everything confirmed existing concepts.
+            </div>
+          </div>
+        </label>
+        {form.framework_updated && (
+          <textarea
+            value={form.framework_update_note ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, framework_update_note: e.target.value }))}
+            placeholder="Briefly describe what was new (optional)…"
+            rows={2}
+            style={{ marginTop: "0.5rem", width: "100%", boxSizing: "border-box", fontSize: "0.8rem", fontFamily: "inherit", border: "1px solid #c7d2fe", borderRadius: "0.375rem", padding: "0.3rem 0.5rem", background: "#fff", resize: "vertical", outline: "none" }}
+          />
+        )}
       </div>
 
       <SaturationBadge projectId={projectId} />
