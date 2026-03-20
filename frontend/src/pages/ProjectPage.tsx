@@ -809,6 +809,58 @@ export default function ProjectPage() {
           </div>
         </div>
 
+        {/* ── Screening Progress ───────────────────────────────────────────── */}
+        {screeningSources && (() => {
+          const agg = screeningSources.find((s) => s.id === "all");
+          if (!agg || agg.ta_screened === 0) return null;
+
+          const taTotal = agg.record_count;
+          const taPct = taTotal > 0 ? Math.round((agg.ta_screened / taTotal) * 100) : 0;
+          const taDone = agg.ta_screened >= taTotal && taTotal > 0;
+
+          const ftTotal = agg.ta_included;
+          const ftPct = ftTotal > 0 ? Math.round((agg.ft_screened / ftTotal) * 100) : 0;
+          const ftDone = ftTotal > 0 && agg.ft_screened >= ftTotal;
+          const ftStarted = agg.ft_screened > 0;
+
+          const exTotal = agg.ft_included;
+          const exPct = exTotal > 0 ? Math.round((agg.extracted_count / exTotal) * 100) : 0;
+          const exDone = exTotal > 0 && agg.extracted_count >= exTotal;
+          const exStarted = agg.extracted_count > 0;
+
+          type StageRow = { label: string; pct: number; done: boolean; started: boolean; detail: string };
+          const stages: StageRow[] = [
+            { label: "Abstract screening (TA)", pct: taPct, done: taDone, started: true, detail: `${agg.ta_screened.toLocaleString()} / ${taTotal.toLocaleString()}` },
+            { label: "Full-text review (FT)", pct: ftPct, done: ftDone, started: ftStarted, detail: ftStarted ? `${agg.ft_screened.toLocaleString()} / ${ftTotal.toLocaleString()}` : "Not started" },
+            { label: "Data extraction", pct: exPct, done: exDone, started: exStarted, detail: exStarted ? `${agg.extracted_count.toLocaleString()} / ${exTotal.toLocaleString()}` : "Not started" },
+          ];
+
+          return (
+            <section style={{ marginTop: "2rem" }}>
+              <h3 style={{ marginBottom: "0.75rem" }}>Screening Progress</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
+                {stages.map((s) => (
+                  <div key={s.label} style={{ background: s.done ? "#f0fdf4" : "#f8f9fa", border: `1px solid ${s.done ? "#bbf7d0" : "#e5e7eb"}`, borderRadius: "0.5rem", padding: "0.65rem 0.9rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: s.started ? "0.4rem" : 0 }}>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 600, color: s.done ? "#15803d" : s.started ? "#374151" : "#9ca3af" }}>
+                        {s.done && <span style={{ marginRight: "0.35rem" }}>✓</span>}{s.label}
+                      </span>
+                      <span style={{ fontSize: "0.78rem", color: s.done ? "#15803d" : s.started ? "#6b7280" : "#9ca3af", fontWeight: s.done ? 600 : 400 }}>
+                        {s.done ? "Complete" : s.detail}
+                      </span>
+                    </div>
+                    {s.started && (
+                      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${s.pct}%`, background: s.done ? "#16a34a" : "#4f46e5", borderRadius: 3, transition: "width 0.3s" }} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+        })()}
+
         {/* ── Labels ───────────────────────────────────────────────────────── */}
         <section style={{ marginTop: "2rem" }}>
           <h3>Labels</h3>
