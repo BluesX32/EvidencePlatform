@@ -354,16 +354,23 @@ async def create_extraction(
 @router.get("/extractions")
 async def list_extractions(
     project_id: uuid.UUID,
+    record_id: Optional[uuid.UUID] = Query(None),
+    cluster_id: Optional[uuid.UUID] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await _require_project(project_id, current_user, db)
 
-    rows = await db.execute(
+    stmt = (
         select(ExtractionRecord)
         .where(ExtractionRecord.project_id == project_id)
-        .order_by(ExtractionRecord.created_at)
     )
+    if record_id is not None:
+        stmt = stmt.where(ExtractionRecord.record_id == record_id)
+    elif cluster_id is not None:
+        stmt = stmt.where(ExtractionRecord.cluster_id == cluster_id)
+
+    rows = await db.execute(stmt.order_by(ExtractionRecord.created_at))
     extractions = rows.scalars().all()
     return [_extraction_out(e) for e in extractions]
 

@@ -11,9 +11,10 @@ import {
   overlapsApi,
   labelsApi,
   ontologyApi,
+  screeningApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode } from "../api/client";
+import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
 
@@ -481,6 +482,13 @@ export default function ProjectPage() {
   const lastDedupJob = dedupJobs?.[0];
   const isJobRunning =
     lastDedupJob?.status === "pending" || lastDedupJob?.status === "running";
+
+  const { data: screeningSources } = useQuery<ScreeningSource[]>({
+    queryKey: ["screening-sources", id],
+    queryFn: () => screeningApi.getSources(id!).then((r) => r.data),
+    enabled: !!id && (project?.record_count ?? 0) > 0,
+    staleTime: 30_000,
+  });
 
   // Derived strategy state
   const enabledFieldCount = selectedFields.size;

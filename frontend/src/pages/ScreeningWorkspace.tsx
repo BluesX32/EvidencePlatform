@@ -2368,6 +2368,10 @@ function MixedPanel({
   const [queueSeed, setQueueSeed] = useState<number | null>(null);
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseForm, setBrowseForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
+  const [browseSaving, setBrowseSaving] = useState(false);
+  const [browseSaveError, setBrowseSaveError] = useState(false);
+  const [browsePdfOpen, setBrowsePdfOpen] = useState(false);
   const isBrowsingHistory = browseItem !== null;
 
   const [pdfOpen, setPdfOpen] = useState(false);
@@ -2383,6 +2387,7 @@ function MixedPanel({
     setPhase("ta");
     setForm(EMPTY_EXTRACTION);
     setBrowseItem(null);
+    setBrowsePdfOpen(false);
     try {
       const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "mixed", strategy: "mixed", randomize: randomize || undefined, seed: seed });
       if ((res.data as any).error) {
@@ -2423,10 +2428,25 @@ function MixedPanel({
       return;
     }
     setBrowseLoading(true);
+    setBrowsePdfOpen(false);
     try {
       const res = await screeningApi.getQueueSlot(projectId, { source, stage: "mixed", position: pos });
       setBrowseItem(res.data);
       setDisplayPos(pos);
+      // Load existing extraction when this item reached extraction stage
+      const slot = res.data;
+      if (slot.ft_decision === "include") {
+        try {
+          const exRes = await screeningApi.getItemExtraction(projectId, {
+            record_id: slot.record_id ?? null,
+            cluster_id: slot.cluster_id ?? null,
+          });
+          const existing = exRes.data[0];
+          setBrowseForm(existing ? (existing.extracted_json as ExtractionJson) : EMPTY_EXTRACTION);
+        } catch {
+          setBrowseForm(EMPTY_EXTRACTION);
+        }
+      }
     } catch { /* stay on current */ } finally {
       setBrowseLoading(false);
     }
@@ -2492,7 +2512,11 @@ function MixedPanel({
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
 
-  // ── History browse view (editable) ──
+  // ── History browse view (editable decisions + extraction) ──
+  function toggleBrowseChip(field: "levels" | "dimensions", value: string) {
+    setBrowseForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
+  }
+
   if (isBrowsingHistory && browseItem) {
     return (
       <div>
@@ -2504,12 +2528,23 @@ function MixedPanel({
         )}
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>Viewing session history</span>
+          <span>Viewing session history{browseItem.ft_decision === "include" ? " — you can edit the extraction below" : ""}</span>
           <button onClick={() => maxPos !== null && navigateToPos(maxPos)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
         <PaperCard item={browseItem} projectId={projectId} showAnnotations />
+        <PDFFetchButton projectId={projectId} item={browseItem} />
+        <PDFUploadPanel projectId={projectId} item={browseItem} />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.4rem", marginBottom: "0.5rem" }}>
+          <button
+            onClick={() => setBrowsePdfOpen((v) => !v)}
+            style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: browsePdfOpen ? "#4f46e5" : "#fff", color: browsePdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+          >
+            📄 {browsePdfOpen ? "Hide PDF" : "View PDF"}
+          </button>
+        </div>
+        {browsePdfOpen && <PDFViewerPanel projectId={projectId} item={browseItem} onClose={() => setBrowsePdfOpen(false)} />}
         <HistoryDecisionPanel
           item={browseItem}
           onDecide={(s, d, reason) =>
@@ -2521,6 +2556,34 @@ function MixedPanel({
           }
           isPending={browseDecideMutation.isPending}
         />
+        {browseItem.ft_decision === "include" && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#8f3f97", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.5rem" }}>
+              Edit Extraction
+            </div>
+            <ExtractionForm
+              projectId={projectId} form={browseForm} setForm={setBrowseForm} levels={levels}
+              onSave={async () => {
+                setBrowseSaving(true);
+                setBrowseSaveError(false);
+                try {
+                  await screeningApi.submitExtraction(projectId, {
+                    record_id: browseItem.record_id ?? null,
+                    cluster_id: browseItem.cluster_id ?? null,
+                    extracted_json: browseForm,
+                  });
+                  queryClient.invalidateQueries({ queryKey: ["saturation", projectId] });
+                } catch {
+                  setBrowseSaveError(true);
+                } finally {
+                  setBrowseSaving(false);
+                }
+              }}
+              onSkip={() => maxPos !== null && navigateToPos(maxPos)}
+              isPending={browseSaving} isError={browseSaveError} toggleChip={toggleBrowseChip}
+            />
+          </div>
+        )}
       </div>
     );
   }
@@ -2731,6 +2794,10 @@ function ExtractionPanel({
   const [queueSeed, setQueueSeed] = useState<number | null>(null);
   const [browseItem, setBrowseItem] = useState<ScreeningNextItem | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseForm, setBrowseForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
+  const [browseSaving, setBrowseSaving] = useState(false);
+  const [browseSaveError, setBrowseSaveError] = useState(false);
+  const [browsePdfOpen, setBrowsePdfOpen] = useState(false);
   const isBrowsingHistory = browseItem !== null;
 
   const [pdfOpen, setPdfOpen] = useState(false);
@@ -2741,6 +2808,7 @@ function ExtractionPanel({
     setLoading(true);
     setFetchError(null);
     setBrowseItem(null);
+    setBrowsePdfOpen(false);
     try {
       const res = await screeningApi.nextItem(projectId, { source_id: source, mode: "extract", strategy, bucket: "extract_pending", randomize: randomize || undefined, seed: seed });
       if ((res.data as any).error) {
@@ -2776,10 +2844,23 @@ function ExtractionPanel({
       return;
     }
     setBrowseLoading(true);
+    setBrowsePdfOpen(false);
     try {
       const res = await screeningApi.getQueueSlot(projectId, { source, stage: "extract", position: pos });
       setBrowseItem(res.data);
       setDisplayPos(pos);
+      // Load existing extraction for the history item
+      const slot = res.data;
+      try {
+        const exRes = await screeningApi.getItemExtraction(projectId, {
+          record_id: slot.record_id ?? null,
+          cluster_id: slot.cluster_id ?? null,
+        });
+        const existing = exRes.data[0];
+        setBrowseForm(existing ? (existing.extracted_json as ExtractionJson) : EMPTY_EXTRACTION);
+      } catch {
+        setBrowseForm(EMPTY_EXTRACTION);
+      }
     } catch { /* stay on current */ } finally {
       setBrowseLoading(false);
     }
@@ -2817,19 +2898,23 @@ function ExtractionPanel({
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Extract Data" projectId={projectId} /></>;
 
-  // ── History browse view — show paper info, no extraction form ──
+  // ── History browse view — show paper info + editable extraction form ──
+  function toggleBrowseChip(field: "levels" | "dimensions", value: string) {
+    setBrowseForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
+  }
+
   if (isBrowsingHistory && browseItem) {
     return (
       <div>
         {nav}
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>Viewing session history</span>
+          <span>Viewing session history — you can edit the extraction below</span>
           <button onClick={() => maxPos !== null && navigateToPos(maxPos)} style={{ background: "none", border: "none", color: "#92400e", fontWeight: 600, cursor: "pointer", fontSize: "0.78rem", padding: 0 }}>
             Return to current →
           </button>
         </div>
-        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", background: "#fff" }}>
+        <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "1rem", background: "#fff" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{browseItem.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
           <div style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
             {browseItem.year && <span>{browseItem.year}</span>}
@@ -2841,6 +2926,38 @@ function ExtractionPanel({
             <p style={{ marginTop: "0.6rem", fontSize: "0.85rem", lineHeight: 1.6, color: "#3c4043" }}>{browseItem.abstract}</p>
           )}
         </div>
+        <PDFFetchButton projectId={projectId} item={browseItem} />
+        <PDFUploadPanel projectId={projectId} item={browseItem} />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.4rem", marginBottom: "0.5rem" }}>
+          <button
+            onClick={() => setBrowsePdfOpen((v) => !v)}
+            style={{ fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #c7d7fd", background: browsePdfOpen ? "#4f46e5" : "#fff", color: browsePdfOpen ? "#fff" : "#1558d6", cursor: "pointer" }}
+          >
+            📄 {browsePdfOpen ? "Hide PDF" : "View PDF"}
+          </button>
+        </div>
+        {browsePdfOpen && <PDFViewerPanel projectId={projectId} item={browseItem} onClose={() => setBrowsePdfOpen(false)} />}
+        <ExtractionForm
+          projectId={projectId} form={browseForm} setForm={setBrowseForm} levels={levels}
+          onSave={async () => {
+            setBrowseSaving(true);
+            setBrowseSaveError(false);
+            try {
+              await screeningApi.submitExtraction(projectId, {
+                record_id: browseItem.record_id ?? null,
+                cluster_id: browseItem.cluster_id ?? null,
+                extracted_json: browseForm,
+              });
+              extractionQc.invalidateQueries({ queryKey: ["saturation", projectId] });
+            } catch {
+              setBrowseSaveError(true);
+            } finally {
+              setBrowseSaving(false);
+            }
+          }}
+          onSkip={() => maxPos !== null && navigateToPos(maxPos)}
+          isPending={browseSaving} isError={browseSaveError} toggleChip={toggleBrowseChip}
+        />
       </div>
     );
   }
@@ -2936,22 +3053,27 @@ function QueueSidebar({
   const ftPending = Math.max(0, agg.ta_included - agg.ft_screened);
   const extractPending = Math.max(0, agg.ft_included - agg.extracted_count);
 
+  // Completion flags — a stage is "done" when pending drops to 0 and work was actually done
+  const taDone = taUnscreened === 0 && agg.ta_screened > 0;
+  const ftDone = ftPending === 0 && agg.ft_screened > 0;
+  const extractDone = extractPending === 0 && agg.extracted_count > 0;
+
   function goToBucket(bucket: string) {
     navigate(`/projects/${projectId}/screen?${new URLSearchParams({ bucket, source, strategy }).toString()}`);
   }
 
   type SidebarRow =
-    | { type: "bucket"; bucket: string; label: string; count: number; accent?: string }
+    | { type: "bucket"; bucket: string; label: string; count: number; accent?: string; done?: boolean }
     | { type: "divider" };
 
   const rows: SidebarRow[] = [
-    { type: "bucket", bucket: "ta_unscreened", label: "Screen (TA)", count: taUnscreened },
+    { type: "bucket", bucket: "ta_unscreened", label: "Screen (TA)", count: taUnscreened, done: taDone },
     { type: "bucket", bucket: "ta_included", label: "TA Included", count: agg.ta_included, accent: "#188038" },
     { type: "divider" },
-    { type: "bucket", bucket: "ft_pending", label: "Full-text Review", count: ftPending },
+    { type: "bucket", bucket: "ft_pending", label: "Full-text Review", count: ftPending, done: ftDone },
     { type: "bucket", bucket: "ft_included", label: "FT Included", count: agg.ft_included, accent: "#188038" },
     { type: "divider" },
-    { type: "bucket", bucket: "extract_pending", label: "Extract Data", count: extractPending },
+    { type: "bucket", bucket: "extract_pending", label: "Extract Data", count: extractPending, done: extractDone },
     { type: "bucket", bucket: "extract_done", label: "Extracted", count: agg.extracted_count, accent: "#188038" },
   ];
 
@@ -2969,16 +3091,23 @@ function QueueSidebar({
           }
           const isActive = currentBucket === row.bucket;
           const hasItems = row.count > 0;
+          const isDone = row.done === true;
           return (
             <button key={row.bucket} onClick={() => goToBucket(row.bucket)}
-              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0.9rem", background: isActive ? "#eef3ff" : "transparent", border: "none", borderLeft: isActive ? "3px solid #4f46e5" : "3px solid transparent", cursor: "pointer", textAlign: "left", color: isActive ? "#3730a3" : "#374151", fontWeight: isActive ? 600 : 400, fontSize: "0.82rem" }}
-              onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "#f9fafb"; }}
-              onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+              style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0.9rem", background: isActive ? "#eef3ff" : isDone ? "#f0fdf4" : "transparent", border: "none", borderLeft: isActive ? "3px solid #4f46e5" : isDone ? "3px solid #16a34a" : "3px solid transparent", cursor: "pointer", textAlign: "left", color: isActive ? "#3730a3" : isDone ? "#15803d" : "#374151", fontWeight: isActive || isDone ? 600 : 400, fontSize: "0.82rem" }}
+              onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = isDone ? "#dcfce7" : "#f9fafb"; }}
+              onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = isDone ? "#f0fdf4" : "transparent"; }}
             >
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
+              {isDone ? (
+                <span style={{ marginLeft: "0.4rem", flexShrink: 0, padding: "0.05rem 0.45rem", borderRadius: "1rem", fontSize: "0.73rem", fontWeight: 700, background: "#dcfce7", color: "#15803d" }}>
+                  ✓ Done
+                </span>
+              ) : (
               <span style={{ marginLeft: "0.4rem", flexShrink: 0, padding: "0.05rem 0.45rem", borderRadius: "1rem", fontSize: "0.73rem", fontWeight: 600, background: isActive ? "#c7d2fe" : hasItems ? (row.accent ? "#dcfce7" : "#dbeafe") : "#f3f4f6", color: isActive ? "#3730a3" : hasItems ? (row.accent ? "#166534" : "#1e40af") : "#9ca3af" }}>
                 {row.count}
               </span>
+              )}
             </button>
           );
         })}

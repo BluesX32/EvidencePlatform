@@ -850,6 +850,12 @@ export const screeningApi = {
   listExtractions: (projectId: string) =>
     api.get<ExtractionRecord[]>(`/projects/${projectId}/screening/extractions`),
 
+  getItemExtraction: (
+    projectId: string,
+    params: { record_id?: string | null; cluster_id?: string | null }
+  ) =>
+    api.get<ExtractionRecord[]>(`/projects/${projectId}/screening/extractions`, { params }),
+
   getSaturation: (projectId: string, threshold?: number) =>
     api.get<SaturationStatus>(`/projects/${projectId}/screening/saturation`, {
       params: threshold !== undefined ? { threshold } : undefined,
