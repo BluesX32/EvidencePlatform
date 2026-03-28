@@ -23,6 +23,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
   const itemKey = recordId ?? clusterId;
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const { data: allLabels = [] } = useQuery<ProjectLabel[]>({
@@ -99,15 +100,25 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
 
   return (
     <div>
-      {/* Section header */}
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 6 }}>
+      {/* Section header — click to collapse */}
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: collapsed ? 0 : 6, background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left" }}
+      >
+        <span style={{ fontSize: 10, color: "#9ca3af", lineHeight: 1 }}>{collapsed ? "▸" : "▾"}</span>
         <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Labels
         </span>
-        <span style={{ fontSize: 11, color: "#9ca3af" }}>— anything you want to tag this paper with</span>
-      </div>
+        {collapsed ? (
+          <span style={{ fontSize: 11, color: "#9ca3af" }}>
+            {assignedIds.size > 0 ? `${assignedIds.size} assigned` : allLabels.length > 0 ? `${allLabels.length} available` : "none"}
+          </span>
+        ) : (
+          <span style={{ fontSize: 11, color: "#9ca3af" }}>— anything you want to tag this paper with</span>
+        )}
+      </button>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+      {!collapsed && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
         {allLabels.map((lbl) => {
           const active = assignedIds.has(lbl.id);
           return (
@@ -194,7 +205,7 @@ export default function LabelPicker({ projectId, recordId, clusterId }: Props) {
             + new label
           </button>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

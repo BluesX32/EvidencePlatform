@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { screeningApi, projectsApi, annotationsApi, fulltextApi, labelsApi, ontologyApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, FulltextPdfMeta, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
+import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptPicker from "../components/ConceptPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
+import { PDFUploadPanel } from "../components/PDFUploadPanel";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -770,147 +771,7 @@ function PaperCard({
 // PDFUploadPanel
 // ---------------------------------------------------------------------------
 
-function PDFUploadPanel({
-  projectId,
-  item,
-}: {
-  projectId: string;
-  item: ScreeningNextItem;
-}) {
-  const qc = useQueryClient();
-  const itemKey = item.record_id ?? item.cluster_id;
-  const [uploading, setUploading] = useState(false);
-
-  const { data: meta, isLoading } = useQuery<FulltextPdfMeta | null>({
-    queryKey: ["fulltext-pdf", projectId, itemKey],
-    queryFn: () =>
-      fulltextApi
-        .getMeta(projectId, {
-          record_id: item.record_id,
-          cluster_id: item.cluster_id,
-        })
-        .then((r) => r.data),
-    enabled: !!itemKey,
-    staleTime: 60_000,
-  });
-
-  const deleteMut = useMutation({
-    mutationFn: (pdfId: string) => fulltextApi.delete(projectId, pdfId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["fulltext-pdf", projectId, itemKey] }),
-  });
-
-  async function handleOpen() {
-    if (!meta) return;
-    const res = await fulltextApi.download(projectId, meta.id);
-    const url = URL.createObjectURL(res.data);
-    window.open(url, "_blank");
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }
-
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      await fulltextApi.upload(projectId, file, {
-        record_id: item.record_id,
-        cluster_id: item.cluster_id,
-      });
-      qc.invalidateQueries({ queryKey: ["fulltext-pdf", projectId, itemKey] });
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
-  }
-
-  if (isLoading || !itemKey) return null;
-
-  const pillStyle: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "0.2rem",
-    padding: "0.22rem 0.65rem",
-    borderRadius: "1rem",
-    border: "1px solid #bbf7d0",
-    background: "#fff",
-    color: "#166534",
-    fontSize: "0.78rem",
-    fontWeight: 600,
-    cursor: "pointer",
-  };
-
-  return (
-    <div
-      style={{
-        background: meta ? "#f0fdf4" : "#f8fafc",
-        border: `1px solid ${meta ? "#bbf7d0" : "#e2e8f0"}`,
-        borderRadius: "0.375rem",
-        padding: "0.55rem 1rem",
-        display: "flex",
-        gap: "0.4rem",
-        alignItems: "center",
-        flexWrap: "wrap",
-        marginTop: "0.4rem",
-      }}
-    >
-      <span
-        style={{
-          color: meta ? "#166534" : "#64748b",
-          fontWeight: 600,
-          fontSize: "0.73rem",
-          textTransform: "uppercase",
-          letterSpacing: "0.07em",
-          marginRight: "0.25rem",
-          flexShrink: 0,
-        }}
-      >
-        PDF:
-      </span>
-
-      {meta ? (
-        <>
-          <button onClick={handleOpen} style={{ ...pillStyle, maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block" }}
-            title={meta.original_filename}>
-            {String.fromCodePoint(0x1F4C4)} {meta.original_filename}
-          </button>
-          <span style={{ fontSize: "0.72rem", color: "#64748b" }}>
-            ({(meta.file_size / 1024).toFixed(0)} KB)
-          </span>
-          <label style={{ ...pillStyle, border: "1px solid #e2e8f0", color: "#64748b" }}>
-            {uploading ? "Uploading…" : "Replace"}
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              style={{ display: "none" }}
-              onChange={handleUpload}
-              disabled={uploading}
-            />
-          </label>
-          <button
-            onClick={() => {
-              if (window.confirm("Remove uploaded PDF?")) deleteMut.mutate(meta.id);
-            }}
-            disabled={deleteMut.isPending}
-            style={{ ...pillStyle, border: "1px solid #fecaca", color: "#dc2626" }}
-          >
-            Remove
-          </button>
-        </>
-      ) : (
-        <label style={{ ...pillStyle, border: "1px solid #c7d7fd", color: "#1558d6" }}>
-          {uploading ? "Uploading…" : "↑ Upload PDF"}
-          <input
-            type="file"
-            accept="application/pdf,.pdf"
-            style={{ display: "none" }}
-            onChange={handleUpload}
-            disabled={uploading}
-          />
-        </label>
-      )}
-    </div>
-  );
-}
+// PDFUploadPanel lives in components/PDFUploadPanel.tsx — imported below
 
 // ---------------------------------------------------------------------------
 // HistoryNav — prev / next article navigation bar
@@ -2006,12 +1867,13 @@ interface ExtractionFormProps {
   levels: string[];          // kept for back-compat; not used in table view
   onSave: () => void;
   onSkip: () => void;
+  onGoBack?: () => void;     // navigate back to the previous extracted article
   isPending: boolean;
   isError: boolean;
   toggleChip: (field: "levels" | "dimensions", value: string) => void;
 }
 
-function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, isError }: ExtractionFormProps) {
+function ExtractionForm({ projectId, form, setForm, onSave, onSkip, onGoBack, isPending, isError }: ExtractionFormProps) {
   // Load the project's extraction template
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
@@ -2318,13 +2180,36 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, isPending, i
 
       {isError && <p style={{ color: "#c5221f", marginBottom: "0.5rem" }}>Failed to save extraction. Try again.</p>}
 
-      <div style={{ display: "flex", gap: "0.75rem" }}>
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
         <button className="btn-primary" onClick={onSave} disabled={isPending}>
           {isPending ? "Saving…" : "Save"}
         </button>
         <button className="btn-secondary" onClick={onSkip} disabled={isPending} title="Skip — come back later">
           Skip
         </button>
+        {onGoBack && (
+          <button
+            onClick={onGoBack}
+            disabled={isPending}
+            title="Go back to the previous article you extracted"
+            style={{
+              marginLeft: "auto",
+              fontSize: "0.78rem",
+              fontWeight: 600,
+              padding: "0.25rem 0.75rem",
+              borderRadius: "0.375rem",
+              border: "1px solid #d1d5db",
+              background: "#fff",
+              color: "#374151",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.3rem",
+            }}
+          >
+            ← Previous extraction
+          </button>
+        )}
       </div>
     </div>
   );
@@ -2751,6 +2636,7 @@ function MixedPanel({
               onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
               saveMutation.mutate({ record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null, extracted_json: form });
             }}
+            onGoBack={displayPos !== null && displayPos > 1 ? goToPrev : undefined}
             onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
           />
         </div>
@@ -3015,6 +2901,7 @@ function ExtractionPanel({
           onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
           saveMutation.mutate({ record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null, extracted_json: form });
         }}
+        onGoBack={displayPos !== null && displayPos > 1 ? goToPrev : undefined}
         onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
       />
       {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
@@ -3119,9 +3006,41 @@ function QueueSidebar({
         </div>
       )}
 
-      <div style={{ marginTop: "0.6rem", fontSize: "0.75rem", color: "#9ca3af", textAlign: "center" }}>
-        {agg.record_count.toLocaleString()} total records
-      </div>
+      {/* Per-corpus TA completion dots */}
+      {(() => {
+        const perSource = sources.filter((s) => s.id !== "all" && s.record_count > 0);
+        if (perSource.length === 0) return null;
+        return (
+          <div style={{ marginTop: "0.75rem", background: "#f8f9fa", border: "1px solid #e5e7eb", borderRadius: "0.375rem", padding: "0.5rem 0.75rem" }}>
+            <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.4rem" }}>
+              Corpora
+            </div>
+            {perSource.map((src) => {
+              const taDone = src.ta_screened >= src.record_count;
+              const ftDone = src.ft_screened >= src.ta_included && src.ta_included > 0;
+              const exDone = src.extracted_count >= src.ft_included && src.ft_included > 0;
+              return (
+                <div key={src.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.25rem" }}>
+                  <span style={{ fontSize: "0.73rem", color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 110 }} title={src.name}>
+                    {src.name}
+                  </span>
+                  <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                    {[
+                      { done: taDone, label: "TA" },
+                      { done: ftDone, label: "FT" },
+                      { done: exDone, label: "EX" },
+                    ].map(({ done, label }) => (
+                      <span key={label} title={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.6rem", fontWeight: 700, background: done ? "#dcfce7" : "#f3f4f6", color: done ? "#15803d" : "#d1d5db" }}>
+                        {done ? "✓" : label[0]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </aside>
   );
 }

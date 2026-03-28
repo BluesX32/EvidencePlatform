@@ -8,14 +8,16 @@ Open-source infrastructure for systematic, reproducible evidence synthesis. Impo
 
 | Step | What happens |
 |------|-------------|
-| **Import** | Upload RIS, MEDLINE, or BibTeX files from PubMed, Embase, Cochrane, etc. |
-| **Deduplication** | Automatically merges duplicate records within each source using a 3-tier Union-Find engine |
-| **Overlap detection** | Identifies cross-source duplicates with a configurable 5-tier strategy (exact DOI/PMID, title+year+author, fuzzy); manual linking and locking supported |
-| **Screening** | Title/abstract → full-text pipeline with configurable inclusion/exclusion criteria, custom exclusion reasons, anchored annotations, back/forward navigation, and full-text link resolution (Unpaywall/DOI/PMC/PubMed/Scholar) |
-| **Extraction** | Structured evidence capture (populations, interventions, outcomes, study design) with a saturation counter that tracks diminishing returns |
-| **Thematic analysis** | Codebook-driven thematic mapping — create themes and codes, assign evidence excerpts, and review coded passages |
-| **Labels & Taxonomy** | Tag articles with colour-coded labels; build a hierarchical concept taxonomy for the project |
-| **PDF viewer** | Attach full-text PDFs per record or cluster; view inline with freehand drawing (pen + eraser), text selection, and anchored annotation notes that persist as highlighted passages across sessions |
+| **Import** | Upload RIS, MEDLINE, or BibTeX files from PubMed, Embase, Cochrane, and other databases |
+| **Deduplication** | Automatically merges duplicate records within each source using a 3-tier Union-Find engine (exact DOI/PMID → title+year+author → fuzzy) |
+| **Overlap detection** | Identifies the same paper across multiple databases with a configurable 5-tier strategy; manual linking and cluster locking supported; visualised as Euler diagram, pairwise heatmap, and intersection summary |
+| **Human screening** | Title/abstract → full-text pipeline with sequential or mixed mode; configurable inclusion/exclusion criteria; per-reason exclusion tracking; custom exclusion reasons; anchored annotations; back/forward navigation through session history; full-text link resolution (Unpaywall/DOI/PMC/PubMed/Scholar); per-corpus progress dashboard |
+| **LLM-assisted screening** | AI screening runs using 15+ models across Anthropic, OpenAI, Google, Meta, DeepSeek, Mistral, and others; each record receives an include/exclude/uncertain decision with rationale; cost and time estimated before launch; all inputs and outputs logged with model version |
+| **Team collaboration** | Invite reviewers by token; dual-reviewer isolation with independent decision storage; automatic conflict detection; adjudication by project owner; Cohen's kappa computed per stage and reviewer pair; team screening statistics |
+| **Extraction** | Template-driven structured evidence capture with inline editing; Extraction Library with search, filter, and edit; saturation counter tracks diminishing returns on new concepts |
+| **Thematic analysis** | Codebook-driven synthesis — create themes and codes, assign evidence excerpts, review coded passages, track codebook history |
+| **Labels & Ontology** | Colour-coded personal labels for retrieval; hierarchical concept ontology with 3D graph view, drag-and-drop reparenting, and tagging during screening |
+| **PDF viewer** | Attach full-text PDFs per record or cluster; floating panel with freehand drawing (pen + eraser), text selection, anchored annotation notes, and session history navigation |
 
 ---
 
@@ -182,7 +184,7 @@ source .venv/bin/activate
 python -m pytest tests/ -v --tb=short
 ```
 
-The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, and strategy history (485+ backend tests + 23 Vitest frontend tests).
+The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, and strategy history (485+ backend tests + 23 Vitest frontend tests). Run a specific module with `-k <name>`, e.g. `pytest tests/ -k screening`.
 
 ---
 
@@ -302,7 +304,7 @@ EvidencePlatform/
 │   │   ├── repositories/    # Database queries
 │   │   ├── parsers/         # RIS / MEDLINE / BibTeX parsers
 │   │   └── utils/           # Dedup, overlap detection, matching
-│   ├── migrations/          # Alembic migrations (021 versions)
+│   ├── migrations/          # Alembic migrations (024 versioned)
 │   └── tests/               # pytest test suite
 ├── frontend/
 │   ├── src/
@@ -353,6 +355,32 @@ Ensure the database user has `CREATE` privileges, then re-run `alembic upgrade h
 
 **Frontend shows "Failed to load"**  
 Verify the backend is running on port 8000 and that `BACKEND_CORS_ORIGINS` in `.env` includes your frontend URL.
+
+---
+
+## Roadmap
+
+Features currently in development or planned for upcoming sprints.
+
+### LLM Partial Screening (same pipeline as human reviewers)
+
+Today's LLM screening runs as a separate batch process — it produces decisions but they are stored independently and reviewed after the run. The planned upgrade makes LLM decisions **first-class citizens in the same screening pipeline** used by human reviewers:
+
+- LLM runs through the same TA → FT → Extraction queue, processing one article at a time
+- Each decision is recorded in `screening_decisions` with the LLM treated as a reviewer (using a service account or a designated model identity)
+- Exclusion reasons are recorded in `reason_code` — the same field used by humans
+- LLM decisions appear in the conflict detection and adjudication flow alongside human decisions, so disagreements between a human and an LLM reviewer are surfaced and can be adjudicated
+- Cohen's kappa and team statistics include LLM reviewers, enabling quantitative human–AI agreement analysis
+- Partial runs are supported: the LLM can screen one source or bucket at a time, leaving others for human reviewers
+
+This enables hybrid workflows where the LLM pre-screens the full corpus and humans adjudicate uncertain cases — without any separate import/merge step.
+
+### Enhanced Team Workflows
+
+- **Reviewer assignment** — assign specific articles or sources to specific team members rather than relying on claim-based first-come-first-served allocation
+- **Reviewer progress dashboard** — per-reviewer completion rate, speed, and agreement trends in one view
+- **Consensus export** — one-click export of final adjudicated decisions with dissenting votes and rationale, formatted for PRISMA flow diagrams
+- **Observer role** — read-only project access for advisors or external auditors without screening rights
 
 ---
 

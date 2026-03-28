@@ -22,6 +22,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
   const itemKey = recordId ?? clusterId;
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
 
   // Only thematic-namespace nodes
   const { data: allNodes = [] } = useQuery<OntologyNode[]>({
@@ -90,14 +91,25 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 6 }}>
+      {/* Section header — click to collapse */}
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: collapsed ? 0 : 6, background: "none", border: "none", padding: 0, cursor: "pointer", width: "100%", textAlign: "left" }}
+      >
+        <span style={{ fontSize: 10, color: "#9ca3af", lineHeight: 1 }}>{collapsed ? "▸" : "▾"}</span>
         <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Concepts
         </span>
-        <span style={{ fontSize: 11, color: "#9ca3af" }}>— thematic analysis / taxonomy</span>
-      </div>
+        {collapsed ? (
+          <span style={{ fontSize: 11, color: "#9ca3af" }}>
+            {assignedIds.size > 0 ? `${assignedIds.size} assigned` : conceptNodes.length > 0 ? `${conceptNodes.length} available` : "none"}
+          </span>
+        ) : (
+          <span style={{ fontSize: 11, color: "#9ca3af" }}>— thematic analysis / taxonomy</span>
+        )}
+      </button>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+      {!collapsed && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
         {conceptNodes.map((node) => {
           const active = assignedIds.has(node.id);
           const color = node.color ?? CONCEPT_COLOR;
@@ -162,7 +174,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
             + add concept
           </button>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

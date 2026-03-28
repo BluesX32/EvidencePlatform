@@ -809,53 +809,72 @@ export default function ProjectPage() {
           </div>
         </div>
 
-        {/* ── Screening Progress ───────────────────────────────────────────── */}
+        {/* ── Screening Progress by Corpus ─────────────────────────────────── */}
         {screeningSources && (() => {
-          const agg = screeningSources.find((s) => s.id === "all");
-          if (!agg || agg.ta_screened === 0) return null;
+          const perSource = screeningSources.filter((s) => s.id !== "all" && s.record_count > 0);
+          if (perSource.length === 0 || perSource.every((s) => s.ta_screened === 0)) return null;
 
-          const taTotal = agg.record_count;
-          const taPct = taTotal > 0 ? Math.round((agg.ta_screened / taTotal) * 100) : 0;
-          const taDone = agg.ta_screened >= taTotal && taTotal > 0;
+          // Render one progress cell: % bar when in progress, ✓ when done, — when not started
+          function cell(screened: number, total: number) {
+            if (total === 0) return <span style={{ color: "#d1d5db", fontSize: "0.78rem" }}>—</span>;
+            if (screened >= total) {
+              return <span style={{ color: "#15803d", fontWeight: 700, fontSize: "0.82rem" }}>✓</span>;
+            }
+            if (screened === 0) return <span style={{ color: "#d1d5db", fontSize: "0.78rem" }}>—</span>;
+            const pct = Math.round((screened / total) * 100);
+            return (
+              <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2, minWidth: 52 }}>
+                <span style={{ fontSize: "0.73rem", color: "#4f46e5", fontWeight: 600 }}>{pct}%</span>
+                <div style={{ height: 4, width: 52, background: "#e5e7eb", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: "#4f46e5", borderRadius: 2 }} />
+                </div>
+              </div>
+            );
+          }
 
-          const ftTotal = agg.ta_included;
-          const ftPct = ftTotal > 0 ? Math.round((agg.ft_screened / ftTotal) * 100) : 0;
-          const ftDone = ftTotal > 0 && agg.ft_screened >= ftTotal;
-          const ftStarted = agg.ft_screened > 0;
-
-          const exTotal = agg.ft_included;
-          const exPct = exTotal > 0 ? Math.round((agg.extracted_count / exTotal) * 100) : 0;
-          const exDone = exTotal > 0 && agg.extracted_count >= exTotal;
-          const exStarted = agg.extracted_count > 0;
-
-          type StageRow = { label: string; pct: number; done: boolean; started: boolean; detail: string };
-          const stages: StageRow[] = [
-            { label: "Abstract screening (TA)", pct: taPct, done: taDone, started: true, detail: `${agg.ta_screened.toLocaleString()} / ${taTotal.toLocaleString()}` },
-            { label: "Full-text review (FT)", pct: ftPct, done: ftDone, started: ftStarted, detail: ftStarted ? `${agg.ft_screened.toLocaleString()} / ${ftTotal.toLocaleString()}` : "Not started" },
-            { label: "Data extraction", pct: exPct, done: exDone, started: exStarted, detail: exStarted ? `${agg.extracted_count.toLocaleString()} / ${exTotal.toLocaleString()}` : "Not started" },
-          ];
+          const thStyle: React.CSSProperties = {
+            padding: "0.4rem 0.75rem", borderBottom: "2px solid #e5e7eb",
+            color: "#6b7280", fontWeight: 600, fontSize: "0.73rem",
+            textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "center" as const,
+          };
 
           return (
             <section style={{ marginTop: "2rem" }}>
               <h3 style={{ marginBottom: "0.75rem" }}>Screening Progress</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem" }}>
-                {stages.map((s) => (
-                  <div key={s.label} style={{ background: s.done ? "#f0fdf4" : "#f8f9fa", border: `1px solid ${s.done ? "#bbf7d0" : "#e5e7eb"}`, borderRadius: "0.5rem", padding: "0.65rem 0.9rem" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: s.started ? "0.4rem" : 0 }}>
-                      <span style={{ fontSize: "0.85rem", fontWeight: 600, color: s.done ? "#15803d" : s.started ? "#374151" : "#9ca3af" }}>
-                        {s.done && <span style={{ marginRight: "0.35rem" }}>✓</span>}{s.label}
-                      </span>
-                      <span style={{ fontSize: "0.78rem", color: s.done ? "#15803d" : s.started ? "#6b7280" : "#9ca3af", fontWeight: s.done ? 600 : 400 }}>
-                        {s.done ? "Complete" : s.detail}
-                      </span>
-                    </div>
-                    {s.started && (
-                      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${s.pct}%`, background: s.done ? "#16a34a" : "#4f46e5", borderRadius: 3, transition: "width 0.3s" }} />
-                      </div>
-                    )}
-                  </div>
-                ))}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.83rem" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...thStyle, textAlign: "left", width: "40%" }}>Corpus</th>
+                      <th style={thStyle}>TA Screening</th>
+                      <th style={thStyle}>Full-text Review</th>
+                      <th style={thStyle}>Extraction</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {perSource.map((src, i) => {
+                      const allDone = src.ta_screened >= src.record_count
+                        && src.ft_screened >= src.ta_included && src.ta_included > 0
+                        && src.extracted_count >= src.ft_included && src.ft_included > 0;
+                      return (
+                        <tr key={src.id} style={{ background: allDone ? "#f0fdf4" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                          <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", fontWeight: 500, color: allDone ? "#15803d" : "#374151" }}>
+                            {allDone && <span style={{ marginRight: "0.3rem" }}>✓</span>}{src.name}
+                          </td>
+                          <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
+                            {cell(src.ta_screened, src.record_count)}
+                          </td>
+                          <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
+                            {cell(src.ft_screened, src.ta_included)}
+                          </td>
+                          <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
+                            {cell(src.extracted_count, src.ft_included)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </section>
           );

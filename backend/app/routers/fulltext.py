@@ -220,11 +220,15 @@ async def download_pdf(
     path = Path(row.storage_path)
     if not path.exists():
         raise HTTPException(404, "File missing from storage")
+    # HTTP headers are latin-1; use RFC 5987 filename* for Unicode filenames.
+    from urllib.parse import quote
+    safe_ascii = row.original_filename.encode("latin-1", errors="replace").decode("latin-1")
+    encoded = quote(row.original_filename, safe="")
+    content_disposition = f'inline; filename="{safe_ascii}"; filename*=UTF-8\'\'{encoded}'
     return FileResponse(
         path=str(path),
         media_type=row.content_type,
-        filename=row.original_filename,
-        headers={"Content-Disposition": f'inline; filename="{row.original_filename}"'},
+        headers={"Content-Disposition": content_disposition},
     )
 
 
