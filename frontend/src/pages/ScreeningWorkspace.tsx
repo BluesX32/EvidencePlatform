@@ -2940,10 +2940,11 @@ function QueueSidebar({
   const ftPending = Math.max(0, agg.ta_included - agg.ft_screened);
   const extractPending = Math.max(0, agg.ft_included - agg.extracted_count);
 
-  // Completion flags — a stage is "done" when pending drops to 0 and work was actually done
-  const taDone = taUnscreened === 0 && agg.ta_screened > 0;
-  const ftDone = ftPending === 0 && agg.ft_screened > 0;
-  const extractDone = extractPending === 0 && agg.extracted_count > 0;
+  // Completion flags — a stage is "done" when all TA is screened and downstream
+  // stages have no pending work (including when all FT-included were excluded = 0 remaining).
+  const taDone = agg.record_count > 0 && taUnscreened === 0;
+  const ftDone = taDone && ftPending === 0;
+  const extractDone = ftDone && extractPending === 0;
 
   function goToBucket(bucket: string) {
     navigate(`/projects/${projectId}/screen?${new URLSearchParams({ bucket, source, strategy }).toString()}`);
@@ -3016,9 +3017,9 @@ function QueueSidebar({
               Corpora
             </div>
             {perSource.map((src) => {
-              const taDone = src.ta_screened >= src.record_count;
-              const ftDone = src.ft_screened >= src.ta_included && src.ta_included > 0;
-              const exDone = src.extracted_count >= src.ft_included && src.ft_included > 0;
+              const taDone = src.record_count > 0 && src.ta_screened >= src.record_count;
+              const ftDone = taDone && (src.ta_included === 0 || src.ft_screened >= src.ta_included);
+              const exDone = ftDone && (src.ft_included === 0 || src.extracted_count >= src.ft_included);
               return (
                 <div key={src.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.25rem" }}>
                   <span style={{ fontSize: "0.73rem", color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 110 }} title={src.name}>

@@ -128,11 +128,19 @@ async def get_project_sources_with_stats(
 
     # Build: slot_id → "cluster:<uuid>" or "record:<uuid>"
     # A record in a cross-source cluster contributes its cluster_id as the slot.
+    #
+    # IMPORTANT: the outerjoin can produce multiple rows per record when a record
+    # belongs to both a within-source cluster and a cross-source cluster (the
+    # within-source path produces cluster_id=NULL because the scope filter fails).
+    # We must ensure the cross-source cluster row wins over the NULL row,
+    # regardless of iteration order. Only set standalone if no cluster key exists yet.
     record_to_slot: Dict[uuid.UUID, str] = {}
     for row in record_rows:
         if row.cluster_id is not None:
+            # Cross-source cluster always wins — overwrite any standalone entry.
             record_to_slot[row.record_id] = f"cluster:{row.cluster_id}"
-        else:
+        elif row.record_id not in record_to_slot:
+            # Only write standalone if we haven't seen a cluster for this record.
             record_to_slot[row.record_id] = f"record:{row.record_id}"
 
     # 3. Build source → set-of-slot-ids
@@ -166,7 +174,11 @@ async def get_project_sources_with_stats(
     )
     sd_rows = sd_result.all()
 
-    # Aggregate per slot
+    # Aggregate per slot.
+    # IMPORTANT: normalize record_id-based decisions through record_to_slot so
+    # that a decision stored as "record:Y" when the record was standalone still
+    # matches as "cluster:X" if overlap detection later grouped it into a
+    # cross-source cluster (and vice-versa).
     ta_screened_slots: set = set()
     ta_included_slots: set = set()
     ft_screened_slots: set = set()
@@ -174,7 +186,7 @@ async def get_project_sources_with_stats(
 
     for row in sd_rows:
         if row.record_id is not None:
-            slot = f"record:{row.record_id}"
+            slot = record_to_slot.get(row.record_id, f"record:{row.record_id}")
         else:
             slot = f"cluster:{row.cluster_id}"
         if row.stage == "TA":
@@ -194,7 +206,7 @@ async def get_project_sources_with_stats(
     extracted_slots: set = set()
     for row in er_result.all():
         if row.record_id is not None:
-            extracted_slots.add(f"record:{row.record_id}")
+            extracted_slots.add(record_to_slot.get(row.record_id, f"record:{row.record_id}"))
         else:
             extracted_slots.add(f"cluster:{row.cluster_id}")
 
@@ -268,6 +280,9 @@ WITH
     FROM screening_claims
     WHERE project_id = :project_id
       AND claimed_at > now() - interval '30 minutes'
+      -- Don't block items claimed by the current reviewer: they can re-screen
+      -- their own stale claims when they start a new session.
+      AND (:reviewer_id IS NULL OR reviewer_id != :reviewer_id)
   ),
   -- Available standalone records (mode-filtered, not claimed)
   available_standalone AS (
@@ -430,6 +445,9 @@ WITH
     FROM screening_claims
     WHERE project_id = :project_id
       AND claimed_at > now() - interval '30 minutes'
+      -- Don't block items claimed by the current reviewer: they can re-screen
+      -- their own stale claims when they start a new session.
+      AND (:reviewer_id IS NULL OR reviewer_id != :reviewer_id)
   ),
   -- Mixed standalone: not TA-excluded AND no FT decision
   -- Priority 0 = unscreened (no TA decision), Priority 1 = TA-included awaiting FT

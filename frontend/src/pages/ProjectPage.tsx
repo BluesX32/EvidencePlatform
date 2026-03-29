@@ -853,9 +853,14 @@ export default function ProjectPage() {
                   </thead>
                   <tbody>
                     {perSource.map((src, i) => {
-                      const allDone = src.ta_screened >= src.record_count
-                        && src.ft_screened >= src.ta_included && src.ta_included > 0
-                        && src.extracted_count >= src.ft_included && src.ft_included > 0;
+                      // A corpus is fully done when:
+                      //  • every record has a TA decision
+                      //  • every TA-included record has a FT decision (or none were included)
+                      //  • every FT-included record has an extraction (or none were included)
+                      const taAllDone = src.record_count > 0 && src.ta_screened >= src.record_count;
+                      const ftAllDone = src.ta_included === 0 || src.ft_screened >= src.ta_included;
+                      const exAllDone = src.ft_included === 0 || src.extracted_count >= src.ft_included;
+                      const allDone = taAllDone && ftAllDone && exAllDone;
                       return (
                         <tr key={src.id} style={{ background: allDone ? "#f0fdf4" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                           <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", fontWeight: 500, color: allDone ? "#15803d" : "#374151" }}>
