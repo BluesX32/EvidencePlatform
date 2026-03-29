@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptPicker from "../components/ConceptPicker";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -60,11 +60,26 @@ function useLocalStorage<T>(key: string, defaultValue: T): [T, (v: T) => void] {
       return defaultValue;
     }
   });
+
+  // Re-sync when another instance of this hook (same key, same tab) writes.
+  useEffect(() => {
+    function onLocalStorageWrite(e: Event) {
+      const detail = (e as CustomEvent<{ key: string; value: unknown }>).detail;
+      if (detail.key === key) {
+        setValue(detail.value as T);
+      }
+    }
+    window.addEventListener("ep-localstorage-write", onLocalStorageWrite);
+    return () => window.removeEventListener("ep-localstorage-write", onLocalStorageWrite);
+  }, [key]);
+
   const set = useCallback(
     (v: T) => {
       setValue(v);
       try {
         localStorage.setItem(key, JSON.stringify(v));
+        // Broadcast to all other instances of useLocalStorage with this key
+        window.dispatchEvent(new CustomEvent("ep-localstorage-write", { detail: { key, value: v } }));
       } catch { /* ignore */ }
     },
     [key]
@@ -631,6 +646,149 @@ function AnnotationsPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Keyword highlighting
+// ---------------------------------------------------------------------------
+
+const HIGHLIGHT_COLORS = [
+  { bg: "#fef08a", fg: "#713f12" },  // yellow
+  { bg: "#bbf7d0", fg: "#14532d" },  // green
+  { bg: "#bfdbfe", fg: "#1e3a5f" },  // blue
+  { bg: "#fecaca", fg: "#7f1d1d" },  // red
+  { bg: "#e9d5ff", fg: "#4c1d95" },  // purple
+  { bg: "#fed7aa", fg: "#7c2d12" },  // orange
+];
+
+/** Split `text` into alternating plain/highlighted segments and return React nodes. */
+function highlightText(text: string, keywords: string[]): React.ReactNode {
+  const active = keywords.filter((k) => k.trim().length > 0);
+  if (active.length === 0) return text;
+
+  // Build one regex from all keywords, each escaped
+  const escaped = active.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+
+  const parts = text.split(re);
+  // Build a lookup: lowercased keyword → color index
+  const colorMap: Record<string, number> = {};
+  active.forEach((k, i) => { colorMap[k.toLowerCase()] = i % HIGHLIGHT_COLORS.length; });
+
+  return parts.map((part, i) => {
+    const idx = colorMap[part.toLowerCase()];
+    if (idx !== undefined) {
+      const { bg, fg } = HIGHLIGHT_COLORS[idx];
+      return (
+        <mark key={i} style={{ background: bg, color: fg, borderRadius: "0.2em", padding: "0 0.1em", fontWeight: 600 }}>
+          {part}
+        </mark>
+      );
+    }
+    return part;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// KeywordBar — compact collapsible keyword manager shown above PaperCard
+// ---------------------------------------------------------------------------
+
+function KeywordBar() {
+  const [keywords, setKeywords] = useLocalStorage<string[]>("ep_highlight_keywords", []);
+  const [input, setInput] = useState("");
+  const [open, setOpen] = useLocalStorage<boolean>("ep_highlight_bar_open", false);
+
+  function addKeyword() {
+    const kw = input.trim();
+    if (kw && !keywords.some((k) => k.toLowerCase() === kw.toLowerCase())) {
+      setKeywords([...keywords, kw]);
+    }
+    setInput("");
+  }
+
+  return (
+    <div style={{ marginBottom: "0.4rem", border: "1px solid #e0e0e0", borderRadius: "0.375rem", background: "#fff", overflow: "visible" }}>
+      {/* Header toggle */}
+      <button
+        onClick={() => setOpen(!open)}
+        style={{ width: "100%", background: "none", border: "none", padding: "0.4rem 0.75rem", display: "flex", alignItems: "center", gap: "0.45rem", cursor: "pointer", textAlign: "left" }}
+      >
+        <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#4f46e5", textTransform: "uppercase", letterSpacing: "0.06em" }}>🔍 Highlight keywords</span>
+        {keywords.length > 0 && (
+          <span style={{ marginLeft: "0.25rem", background: "#4f46e5", color: "#fff", borderRadius: "9999px", fontSize: "0.65rem", fontWeight: 700, padding: "0 0.4rem", lineHeight: "1.5" }}>
+            {keywords.length}
+          </span>
+        )}
+        {/* Preview chips when collapsed */}
+        {!open && keywords.length > 0 && (
+          <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", flex: 1 }}>
+            {keywords.map((kw, i) => {
+              const { bg, fg } = HIGHLIGHT_COLORS[i % HIGHLIGHT_COLORS.length];
+              return (
+                <span key={kw} style={{ background: bg, color: fg, borderRadius: "0.25rem", padding: "0.05rem 0.45rem", fontSize: "0.72rem", fontWeight: 600 }}>
+                  {kw}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <span style={{ marginLeft: "auto", color: "#9ca3af", fontSize: "0.72rem" }}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div style={{ padding: "0 0.75rem 0.6rem" }}>
+          {/* Active keyword chips */}
+          {keywords.length > 0 && (
+            <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", marginBottom: "0.5rem" }}>
+              {keywords.map((kw, i) => {
+                const { bg, fg } = HIGHLIGHT_COLORS[i % HIGHLIGHT_COLORS.length];
+                return (
+                  <span key={kw} style={{ display: "inline-flex", alignItems: "center", gap: "0.2rem", background: bg, color: fg, borderRadius: "0.25rem", padding: "0.15rem 0.5rem 0.15rem 0.6rem", fontSize: "0.78rem", fontWeight: 600 }}>
+                    {kw}
+                    <button
+                      onClick={() => setKeywords(keywords.filter((k) => k !== kw))}
+                      title="Remove keyword"
+                      style={{ background: "none", border: "none", color: fg, cursor: "pointer", padding: 0, fontSize: "0.78rem", lineHeight: 1, opacity: 0.7 }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+              <button
+                onClick={() => setKeywords([])}
+                style={{ background: "none", border: "none", color: "#9ca3af", fontSize: "0.72rem", cursor: "pointer", padding: "0.1rem 0.2rem" }}
+              >
+                Clear all
+              </button>
+            </div>
+          )}
+
+          {/* Add keyword input */}
+          <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+            <input
+              type="text"
+              placeholder="Add keyword…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addKeyword(); }}
+              style={{ flex: 1, maxWidth: 240, padding: "0.25rem 0.55rem", border: "1px solid #e0e0e0", borderRadius: "0.25rem", fontSize: "0.8rem" }}
+            />
+            <button
+              onClick={addKeyword}
+              disabled={!input.trim()}
+              style={{ padding: "0.25rem 0.75rem", borderRadius: "0.25rem", border: "1px solid #4f46e5", background: "#4f46e5", color: "#fff", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer" }}
+            >
+              Add
+            </button>
+          </div>
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.7rem", color: "#9ca3af" }}>
+            Keywords are highlighted in the title and abstract. Up to 6 colors cycle automatically.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PaperCard
 // ---------------------------------------------------------------------------
 
@@ -646,6 +804,7 @@ function PaperCard({
   showAnnotations?: boolean;
 }) {
   const [abstractExpanded, setAbstractExpanded] = useState(false);
+  const [keywords] = useLocalStorage<string[]>("ep_highlight_keywords", []);
   const isLong = (item.abstract?.length ?? 0) > ABSTRACT_LIMIT;
   const displayAbstract =
     abstractExpanded || !isLong
@@ -671,7 +830,7 @@ function PaperCard({
           color: "#1a1a2e",
         }}
       >
-        {item.title ?? <em style={{ color: "#888", fontWeight: 400 }}>No title</em>}
+        {item.title ? highlightText(item.title, keywords) : <em style={{ color: "#888", fontWeight: 400 }}>No title</em>}
       </h3>
 
       <div
@@ -736,7 +895,7 @@ function PaperCard({
       {item.abstract && (
         <div>
           <p style={{ margin: "0 0 0.2rem", fontSize: "0.87rem", lineHeight: 1.65, color: "#3c4043" }}>
-            {displayAbstract}
+            {displayAbstract ? highlightText(displayAbstract, keywords) : null}
           </p>
           {isLong && (
             <button
@@ -1780,6 +1939,7 @@ function ScreeningPanel({
         </div>
       )}
 
+      <KeywordBar />
       <PaperCard item={displayItem} projectId={projectId} showAnnotations />
 
       {!isBrowseBucket && stage === "FT" && !isBrowsingHistory && <PDFFetchButton projectId={projectId} item={displayItem} />}
@@ -1898,10 +2058,19 @@ function ScreeningPanel({
 const SATURATION_THRESHOLD = 5;
 
 function SaturationBadge({ projectId, source }: { projectId: string; source?: string }) {
+  const [showPapers, setShowPapers] = useState(false);
+
   const { data } = useQuery<SaturationStatus>({
     queryKey: ["saturation", projectId, source ?? "all"],
     queryFn: () => screeningApi.getSaturation(projectId, SATURATION_THRESHOLD, source).then((r) => r.data),
-    staleTime: 0, // always fresh — invalidated after each save
+    staleTime: 0,
+  });
+
+  const { data: papers } = useQuery<SaturationPaper[]>({
+    queryKey: ["saturation-papers", projectId, source ?? "all"],
+    queryFn: () => screeningApi.getSaturationPapers(projectId, source).then((r) => r.data),
+    enabled: showPapers,
+    staleTime: 0,
   });
 
   if (!data) return null;
@@ -1924,15 +2093,51 @@ function SaturationBadge({ projectId, source }: { projectId: string; source?: st
       <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct * 100}%`, background: barColor, borderRadius: 999, transition: "width 0.4s ease" }} />
       </div>
-      <div style={{ marginTop: 5, fontSize: 11, color: textColor }}>
-        {saturated
-          ? `⚠️ ${threshold} papers in a row added no new framework concepts — consider stopping.`
-          : count === 0
-          ? data.total_extractions === 0
-            ? "No extractions yet for this corpus."
-            : "✅ Last paper added new framework concepts. Counter at zero."
-          : `${count} consecutive paper${count > 1 ? "s" : ""} confirmed existing concepts only.`}
+      <div style={{ marginTop: 5, fontSize: 11, color: textColor, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>
+          {saturated
+            ? `⚠️ ${threshold} papers in a row added no new framework concepts — consider stopping.`
+            : count === 0
+            ? data.total_extractions === 0
+              ? "No extractions yet for this corpus."
+              : "✅ Last paper added new framework concepts. Counter at zero."
+            : `${count} consecutive paper${count > 1 ? "s" : ""} confirmed existing concepts only.`}
+        </span>
+        {count > 0 && (
+          <button
+            onClick={() => setShowPapers((v) => !v)}
+            style={{ marginLeft: "0.5rem", background: "none", border: "none", color: textColor, fontSize: 11, cursor: "pointer", textDecoration: "underline", padding: 0, flexShrink: 0 }}
+          >
+            {showPapers ? "Hide papers ▲" : "See papers ▼"}
+          </button>
+        )}
       </div>
+
+      {showPapers && count > 0 && (
+        <div style={{ marginTop: 8, borderTop: `1px solid ${borderColor}`, paddingTop: 8 }}>
+          {!papers ? (
+            <p style={{ fontSize: 11, color: textColor, margin: 0 }}>Loading…</p>
+          ) : papers.length === 0 ? (
+            <p style={{ fontSize: 11, color: textColor, margin: 0 }}>No papers found.</p>
+          ) : (
+            <ol style={{ margin: 0, paddingLeft: "1.2rem" }}>
+              {papers.map((p) => (
+                <li key={p.record_id ?? p.cluster_id} style={{ fontSize: 11, color: textColor, marginBottom: 3, lineHeight: 1.4 }}>
+                  {p.position != null && (
+                    <span style={{ fontWeight: 600 }}>#{p.position}</span>
+                  )}{" "}
+                  {p.title ?? <em style={{ color: "#9ca3af" }}>No title</em>}
+                  {p.extracted_at && (
+                    <span style={{ color: "#9ca3af", marginLeft: 4 }}>
+                      ({new Date(p.extracted_at).toLocaleDateString()})
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2515,6 +2720,7 @@ function MixedPanel({
             Return to current →
           </button>
         </div>
+        <KeywordBar />
         <PaperCard item={browseItem} projectId={projectId} showAnnotations />
         <PDFFetchButton projectId={projectId} item={browseItem} />
         <PDFUploadPanel projectId={projectId} item={browseItem} />
@@ -2633,6 +2839,7 @@ function MixedPanel({
       )}
 
       <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
+      <KeywordBar />
       <PaperCard item={item} projectId={projectId} showAnnotations />
 
       {!showFT && (

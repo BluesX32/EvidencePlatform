@@ -1859,13 +1859,70 @@ async def get_saturation(
         if queue_obj.created_at is not None:
             q = q.where(ExtractionRecord.created_at >= queue_obj.created_at)
 
-    rows = (await db.execute(q)).scalars().all()
-    total = len(rows)
+    # Fetch FT-excluded record/cluster IDs — papers excluded at FT are excluded
+    # overall and must not contribute to the saturation counter.
+    ft_excl_result = await db.execute(
+        select(ScreeningDecision.record_id, ScreeningDecision.cluster_id).where(
+            ScreeningDecision.project_id == project_id,
+            ScreeningDecision.reviewer_id == reviewer_id,
+            ScreeningDecision.stage == "FT",
+            ScreeningDecision.decision == "exclude",
+        )
+    )
+    ft_excl_rows_sat = ft_excl_result.all()
+    ft_excl_records: set = {r.record_id for r in ft_excl_rows_sat if r.record_id}
+    ft_excl_clusters: set = {r.cluster_id for r in ft_excl_rows_sat if r.cluster_id}
 
+    # Switch original scalars() query to full-row query so we can filter by record/cluster ID
+    q_full = (
+        select(
+            ExtractionRecord.record_id,
+            ExtractionRecord.cluster_id,
+            ExtractionRecord.extracted_json,
+        )
+        .where(ExtractionRecord.project_id == project_id)
+        .order_by(ExtractionRecord.created_at.desc())
+    )
+    if reviewer_id is not None:
+        q_full = q_full.where(ExtractionRecord.reviewer_id == reviewer_id)
+
+    if source_id is not None:
+        # Re-apply the source filters that were already built into `q`
+        source_id_str_inner = str(source_id)
+        queue_result2 = await db.execute(
+            select(ScreeningQueue).where(
+                ScreeningQueue.project_id == project_id,
+                ScreeningQueue.reviewer_id == reviewer_id,
+                ScreeningQueue.source_id == source_id_str_inner,
+                ScreeningQueue.stage.in_(["extract", "mixed"]),
+            ).order_by(ScreeningQueue.stage)
+        )
+        queue_obj2 = queue_result2.scalars().first()
+        if queue_obj2 is not None:
+            slots2 = queue_obj2.slots
+            rec2 = [uuid.UUID(s["id"]) for s in slots2 if s.get("type") == "record"]
+            cl2 = [uuid.UUID(s["id"]) for s in slots2 if s.get("type") == "cluster"]
+            conds2 = []
+            if rec2:
+                conds2.append(ExtractionRecord.record_id.in_(rec2))
+            if cl2:
+                conds2.append(ExtractionRecord.cluster_id.in_(cl2))
+            if conds2:
+                q_full = q_full.where(or_(*conds2))
+            if queue_obj2.created_at is not None:
+                q_full = q_full.where(ExtractionRecord.created_at >= queue_obj2.created_at)
+
+    full_rows = (await db.execute(q_full)).all()
+
+    # Filter FT-excluded, then count streak
+    included_rows = [
+        r for r in full_rows
+        if r.record_id not in ft_excl_records and r.cluster_id not in ft_excl_clusters
+    ]
+    total = len(included_rows)
     consecutive = 0
-    for extracted_json in rows:
-        # framework_updated missing → treat as True (old records assumed to have added concepts)
-        if extracted_json.get("framework_updated", True):
+    for row in included_rows:
+        if row.extracted_json.get("framework_updated", True):
             break
         consecutive += 1
 
@@ -1875,6 +1932,138 @@ async def get_saturation(
         "threshold": threshold,
         "total_extractions": total,
     }
+
+
+async def get_saturation_papers(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: Optional[uuid.UUID],
+    source_id: Optional[uuid.UUID] = None,
+) -> List[Dict[str, Any]]:
+    """Return the papers in the current consecutive no-novelty streak.
+
+    Each paper's position reflects its 1-based order in the screening queue
+    (not its rank within the streak). FT-excluded papers are omitted.
+    """
+    q = (
+        select(
+            ExtractionRecord.record_id,
+            ExtractionRecord.cluster_id,
+            ExtractionRecord.extracted_json,
+            ExtractionRecord.created_at,
+        )
+        .where(ExtractionRecord.project_id == project_id)
+        .order_by(ExtractionRecord.created_at.desc())
+    )
+    if reviewer_id is not None:
+        q = q.where(ExtractionRecord.reviewer_id == reviewer_id)
+
+    # Build slot-position map (id → 1-based queue position)
+    slot_position_map: Dict[str, int] = {}
+
+    if source_id is not None:
+        source_id_str = str(source_id)
+        queue_result = await db.execute(
+            select(ScreeningQueue).where(
+                ScreeningQueue.project_id == project_id,
+                ScreeningQueue.reviewer_id == reviewer_id,
+                ScreeningQueue.source_id == source_id_str,
+                ScreeningQueue.stage.in_(["extract", "mixed"]),
+            ).order_by(ScreeningQueue.stage)
+        )
+        queue_obj = queue_result.scalars().first()
+        if queue_obj is None:
+            return []
+        slots = queue_obj.slots
+        # Build 1-based position map keyed by string UUID
+        for i, s in enumerate(slots):
+            slot_position_map[s["id"]] = i + 1
+
+        record_ids = [uuid.UUID(s["id"]) for s in slots if s.get("type") == "record"]
+        cluster_ids = [uuid.UUID(s["id"]) for s in slots if s.get("type") == "cluster"]
+        conditions = []
+        if record_ids:
+            conditions.append(ExtractionRecord.record_id.in_(record_ids))
+        if cluster_ids:
+            conditions.append(ExtractionRecord.cluster_id.in_(cluster_ids))
+        if not conditions:
+            return []
+        q = q.where(or_(*conditions))
+        if queue_obj.created_at is not None:
+            q = q.where(ExtractionRecord.created_at >= queue_obj.created_at)
+
+    # Fetch FT-excluded IDs
+    ft_excl_result = await db.execute(
+        select(ScreeningDecision.record_id, ScreeningDecision.cluster_id).where(
+            ScreeningDecision.project_id == project_id,
+            ScreeningDecision.reviewer_id == reviewer_id,
+            ScreeningDecision.stage == "FT",
+            ScreeningDecision.decision == "exclude",
+        )
+    )
+    ft_excl_rows = ft_excl_result.all()
+    ft_excl_records: set = {r.record_id for r in ft_excl_rows if r.record_id}
+    ft_excl_clusters: set = {r.cluster_id for r in ft_excl_rows if r.cluster_id}
+
+    rows = (await db.execute(q)).all()
+
+    # Filter FT-excluded, then walk the streak
+    included_rows = [
+        r for r in rows
+        if r.record_id not in ft_excl_records and r.cluster_id not in ft_excl_clusters
+    ]
+
+    streak_rows = []
+    for row in included_rows:
+        if row.extracted_json.get("framework_updated", True):
+            break
+        streak_rows.append(row)
+
+    if not streak_rows:
+        return []
+
+    # Resolve titles
+    record_ids_in_streak = [r.record_id for r in streak_rows if r.record_id is not None]
+    cluster_ids_in_streak = [r.cluster_id for r in streak_rows if r.cluster_id is not None]
+
+    title_map: Dict[uuid.UUID, Optional[str]] = {}
+    if record_ids_in_streak:
+        rec_rows = await db.execute(
+            select(Record.id, Record.title).where(Record.id.in_(record_ids_in_streak))
+        )
+        for rec in rec_rows.all():
+            title_map[rec.id] = rec.title
+
+    if cluster_ids_in_streak:
+        cl_rows = await db.execute(
+            text("""
+                SELECT DISTINCT ON (ocm.cluster_id)
+                    ocm.cluster_id,
+                    r.title
+                FROM overlap_cluster_members ocm
+                JOIN record_sources rs ON rs.id = ocm.record_source_id
+                JOIN records r ON r.id = rs.record_id
+                WHERE ocm.cluster_id = ANY(:cluster_ids)
+                ORDER BY ocm.cluster_id, r.created_at
+            """),
+            {"cluster_ids": cluster_ids_in_streak},
+        )
+        for cl in cl_rows.all():
+            title_map[cl.cluster_id] = cl.title
+
+    result = []
+    for row in streak_rows:
+        key_id = row.record_id or row.cluster_id
+        key_str = str(key_id) if key_id else None
+        queue_pos = slot_position_map.get(key_str) if key_str else None
+        result.append({
+            "position": queue_pos,  # actual 1-based queue position; None if no queue
+            "record_id": str(row.record_id) if row.record_id else None,
+            "cluster_id": str(row.cluster_id) if row.cluster_id else None,
+            "title": title_map.get(key_id) if key_id else None,
+            "extracted_at": row.created_at.isoformat() if row.created_at else None,
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------

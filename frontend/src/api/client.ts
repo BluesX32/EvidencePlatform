@@ -774,14 +774,18 @@ export const labelsApi = {
 };
 
 export interface SaturationStatus {
-  /** Number of consecutive most-recent extractions where framework_updated=false. */
   consecutive_no_novelty: number;
-  /** True when consecutive_no_novelty >= threshold. */
   saturated: boolean;
-  /** Stopping threshold (default 5). */
   threshold: number;
-  /** Total extractions saved for this project (used to hide badge before first save). */
   total_extractions: number;
+}
+
+export interface SaturationPaper {
+  position: number | null;  // 1-based queue position; null when no per-source queue
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string | null;
+  extracted_at: string | null;
 }
 
 export interface ScreeningQueueInfo {
@@ -862,6 +866,11 @@ export const screeningApi = {
         ...(threshold !== undefined ? { threshold } : {}),
         ...(sourceId && sourceId !== "all" ? { source_id: sourceId } : {}),
       },
+    }),
+
+  getSaturationPapers: (projectId: string, sourceId?: string) =>
+    api.get<SaturationPaper[]>(`/projects/${projectId}/screening/saturation/papers`, {
+      params: { ...(sourceId && sourceId !== "all" ? { source_id: sourceId } : {}) },
     }),
 
   getQueueSlot: (projectId: string, params: { source?: string; stage?: string; position: number }) =>

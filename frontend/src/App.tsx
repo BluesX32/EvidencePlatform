@@ -1,7 +1,45 @@
-import { useState, lazy, Suspense, type ReactNode } from "react";
+import { useState, lazy, Suspense, type ReactNode, Component, type ErrorInfo } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getToken } from "./api/client";
+
+// ---------------------------------------------------------------------------
+// ErrorBoundary — catches any unhandled render error and shows a recovery UI
+// instead of a blank white screen.
+// ---------------------------------------------------------------------------
+interface EBState { error: Error | null }
+class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  state: EBState = { error: null };
+  static getDerivedStateFromError(error: Error): EBState { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[ErrorBoundary]", error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: "3rem 2rem", maxWidth: 520, margin: "4rem auto", fontFamily: "sans-serif" }}>
+          <h2 style={{ color: "#c5221f", marginBottom: "0.5rem" }}>Something went wrong</h2>
+          <p style={{ color: "#444", marginBottom: "1rem", fontSize: "0.9rem" }}>
+            {this.state.error.message ?? "An unexpected error occurred."}
+          </p>
+          <button
+            onClick={() => { this.setState({ error: null }); window.location.reload(); }}
+            style={{ padding: "0.5rem 1.25rem", background: "#4f46e5", color: "#fff", border: "none", borderRadius: "0.375rem", fontWeight: 600, cursor: "pointer", fontSize: "0.9rem" }}
+          >
+            Reload page
+          </button>
+          <button
+            onClick={() => { window.location.href = "/projects"; }}
+            style={{ marginLeft: "0.75rem", padding: "0.5rem 1.25rem", background: "#f1f5f9", color: "#374151", border: "1px solid #e2e8f0", borderRadius: "0.375rem", fontWeight: 600, cursor: "pointer", fontSize: "0.9rem" }}
+          >
+            Back to projects
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import ProjectsPage from "./pages/ProjectsPage";
@@ -32,11 +70,13 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return getToken() ? children : <Navigate to="/login" replace />;
 }
 
-/** Wraps a page in AppShell (sidebar layout). */
+/** Wraps a page in AppShell (sidebar layout) with an error boundary. */
 function WithShell({ children }: { children: ReactNode }) {
   return (
     <RequireAuth>
-      <AppShell>{children}</AppShell>
+      <AppShell>
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </AppShell>
     </RequireAuth>
   );
 }

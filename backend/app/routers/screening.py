@@ -39,6 +39,7 @@ from app.services.direct_screening_service import (
     get_queue_list_summary,
     get_queue_slot,
     get_saturation,
+    get_saturation_papers,
     list_queues_for_project,
     reset_queue,
     submit_decision,
@@ -519,6 +520,23 @@ async def get_saturation_status(
         project_id=project_id,
         reviewer_id=current_user.id,
         threshold=threshold,
+        source_id=source_id,
+    )
+
+
+@router.get("/saturation/papers")
+async def get_saturation_papers_list(
+    project_id: uuid.UUID,
+    source_id: Optional[uuid.UUID] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the list of papers in the current consecutive no-novelty streak."""
+    await _require_project(project_id, current_user, db)
+    return await get_saturation_papers(
+        db,
+        project_id=project_id,
+        reviewer_id=current_user.id,
         source_id=source_id,
     )
 
