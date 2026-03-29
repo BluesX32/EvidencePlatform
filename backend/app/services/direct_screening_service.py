@@ -23,7 +23,7 @@ import random as _random
 import uuid
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import bindparam, delete, func, select, text
+from sqlalchemy import bindparam, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1118,26 +1118,55 @@ async def get_next_item(
                 dec_q = dec_q.where(ScreeningDecision.record_id == slot_record_id)
             else:
                 dec_q = dec_q.where(ScreeningDecision.cluster_id == slot_cluster_id)
-            # For mixed mode, check FT decision (if FT decided, item is done; otherwise show it)
+            # For mixed mode, check decisions + extraction to determine if item is done
             if mode in ("mixed",):
-                # Item is "done" when FT has been decided OR TA was excluded
                 dec_q_ta = dec_q.where(ScreeningDecision.stage == "TA")
                 dec_q_ft = dec_q.where(ScreeningDecision.stage == "FT")
                 ta_row = await db.execute(dec_q_ta)
                 ta_dec = ta_row.scalar_one_or_none()
                 ft_row = await db.execute(dec_q_ft)
                 ft_dec = ft_row.scalar_one_or_none()
-                if (ta_dec and ta_dec.decision == "exclude") or ft_dec:
+                # TA=exclude or FT=exclude → done
+                if (ta_dec and ta_dec.decision == "exclude") or (ft_dec and ft_dec.decision == "exclude"):
                     pos += 1
                     continue
+                # FT=include → done only when extraction record exists
+                if ft_dec and ft_dec.decision == "include":
+                    ext_q = select(ExtractionRecord).where(
+                        ExtractionRecord.project_id == project_id,
+                        ExtractionRecord.reviewer_id == reviewer_id,
+                    )
+                    if slot_record_id:
+                        ext_q = ext_q.where(ExtractionRecord.record_id == slot_record_id)
+                    else:
+                        ext_q = ext_q.where(ExtractionRecord.cluster_id == slot_cluster_id)
+                    ext_row = await db.execute(ext_q)
+                    if ext_row.scalar_one_or_none():
+                        pos += 1
+                        continue
             else:
-                # For screen mode: check TA; for fulltext: check FT; for extract: check extraction
-                check_stage = {"screen": "TA", "fulltext": "FT", "extract": "FT"}.get(effective_stage, "TA")
-                dec_q = dec_q.where(ScreeningDecision.stage == check_stage)
-                row = await db.execute(dec_q)
-                if row.scalar_one_or_none():
-                    pos += 1
-                    continue
+                if effective_stage == "extract":
+                    # Item is "done" when an extraction record exists for this slot
+                    ext_q = select(ExtractionRecord).where(
+                        ExtractionRecord.project_id == project_id,
+                        ExtractionRecord.reviewer_id == reviewer_id,
+                    )
+                    if slot_record_id:
+                        ext_q = ext_q.where(ExtractionRecord.record_id == slot_record_id)
+                    else:
+                        ext_q = ext_q.where(ExtractionRecord.cluster_id == slot_cluster_id)
+                    row = await db.execute(ext_q)
+                    if row.scalar_one_or_none():
+                        pos += 1
+                        continue
+                else:
+                    # For screen mode: check TA; for fulltext: check FT
+                    check_stage = {"screen": "TA", "fulltext": "FT"}.get(effective_stage, "TA")
+                    dec_q = dec_q.where(ScreeningDecision.stage == check_stage)
+                    row = await db.execute(dec_q)
+                    if row.scalar_one_or_none():
+                        pos += 1
+                        continue
             break  # found undecided item at pos
 
         if pos != queue.position:
@@ -1758,6 +1787,7 @@ async def get_saturation(
     project_id: uuid.UUID,
     reviewer_id: Optional[uuid.UUID],
     threshold: int = 5,
+    source_id: Optional[uuid.UUID] = None,
 ) -> Dict[str, Any]:
     """Count consecutive most-recent extractions where framework_updated is false.
 
@@ -1765,6 +1795,9 @@ async def get_saturation(
     Stop counting as soon as a record with framework_updated=true is encountered.
     framework_updated=false means "this paper confirmed existing concepts — nothing new".
     framework_updated=true means "this paper introduced new framework concepts" — resets the counter.
+
+    When source_id is provided, only extractions for records/clusters belonging
+    to that source are counted — saturation resets across corpora.
     """
     q = (
         select(ExtractionRecord.extracted_json)
@@ -1773,6 +1806,58 @@ async def get_saturation(
     )
     if reviewer_id is not None:
         q = q.where(ExtractionRecord.reviewer_id == reviewer_id)
+
+    if source_id is not None:
+        # Use the ScreeningQueue to determine which slots were shown to this
+        # reviewer during extraction for this specific source.  This is the only
+        # accurate way to attribute an extraction to a corpus: a cross-source
+        # cluster extracted during PsycINFO screening must NOT count towards
+        # PubMed's saturation even though the cluster has a PubMed member.
+        source_id_str = str(source_id)
+        # Accept either a dedicated "extract" queue or a "mixed" queue (both
+        # contain all eligible slots for this source; prefer "extract" if both exist).
+        queue_result = await db.execute(
+            select(ScreeningQueue).where(
+                ScreeningQueue.project_id == project_id,
+                ScreeningQueue.reviewer_id == reviewer_id,
+                ScreeningQueue.source_id == source_id_str,
+                ScreeningQueue.stage.in_(["extract", "mixed"]),
+            ).order_by(ScreeningQueue.stage)  # "extract" < "mixed" alphabetically
+        )
+        queue_obj = queue_result.scalars().first()
+        if queue_obj is None:
+            # No extraction queue for this source yet → zero extractions.
+            return {
+                "consecutive_no_novelty": 0,
+                "saturated": False,
+                "threshold": threshold,
+                "total_extractions": 0,
+            }
+        slots = queue_obj.slots  # list of {"type": "record"|"cluster", "id": "uuid-str"}
+        record_ids = [
+            uuid.UUID(s["id"]) for s in slots if s.get("type") == "record"
+        ]
+        cluster_ids = [
+            uuid.UUID(s["id"]) for s in slots if s.get("type") == "cluster"
+        ]
+        conditions = []
+        if record_ids:
+            conditions.append(ExtractionRecord.record_id.in_(record_ids))
+        if cluster_ids:
+            conditions.append(ExtractionRecord.cluster_id.in_(cluster_ids))
+        if not conditions:
+            return {
+                "consecutive_no_novelty": 0,
+                "saturated": False,
+                "threshold": threshold,
+                "total_extractions": 0,
+            }
+        q = q.where(or_(*conditions))
+        # Only count extractions made after this corpus queue was created.
+        # This prevents cross-source clusters extracted during an earlier corpus
+        # from contaminating the current corpus's saturation counter.
+        if queue_obj.created_at is not None:
+            q = q.where(ExtractionRecord.created_at >= queue_obj.created_at)
 
     rows = (await db.execute(q)).scalars().all()
     total = len(rows)

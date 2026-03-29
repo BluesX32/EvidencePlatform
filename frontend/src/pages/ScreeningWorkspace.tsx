@@ -1800,17 +1800,14 @@ function ScreeningPanel({
 
 const SATURATION_THRESHOLD = 5;
 
-function SaturationBadge({ projectId }: { projectId: string }) {
+function SaturationBadge({ projectId, source }: { projectId: string; source?: string }) {
   const { data } = useQuery<SaturationStatus>({
-    queryKey: ["saturation", projectId],
-    queryFn: () => screeningApi.getSaturation(projectId, SATURATION_THRESHOLD).then((r) => r.data),
+    queryKey: ["saturation", projectId, source ?? "all"],
+    queryFn: () => screeningApi.getSaturation(projectId, SATURATION_THRESHOLD, source).then((r) => r.data),
     staleTime: 0, // always fresh — invalidated after each save
   });
 
   if (!data) return null;
-
-  // Don't show the badge until at least one extraction has been saved
-  if (data.total_extractions === 0) return null;
 
   const { consecutive_no_novelty: count, saturated, threshold } = data;
   const pct = Math.min(1, count / threshold);
@@ -1834,7 +1831,9 @@ function SaturationBadge({ projectId }: { projectId: string }) {
         {saturated
           ? `⚠️ ${threshold} papers in a row added no new framework concepts — consider stopping.`
           : count === 0
-          ? "✅ Last paper added new framework concepts. Counter at zero."
+          ? data.total_extractions === 0
+            ? "No extractions yet for this corpus."
+            : "✅ Last paper added new framework concepts. Counter at zero."
           : `${count} consecutive paper${count > 1 ? "s" : ""} confirmed existing concepts only.`}
       </div>
     </div>
@@ -1862,6 +1861,7 @@ const EMPTY_EXTRACTION: ExtractionJson = {
 
 interface ExtractionFormProps {
   projectId: string;
+  source?: string;           // current corpus — scopes the saturation counter
   form: ExtractionJson;
   setForm: React.Dispatch<React.SetStateAction<ExtractionJson>>;
   levels: string[];          // kept for back-compat; not used in table view
@@ -1873,7 +1873,7 @@ interface ExtractionFormProps {
   toggleChip: (field: "levels" | "dimensions", value: string) => void;
 }
 
-function ExtractionForm({ projectId, form, setForm, onSave, onSkip, onGoBack, isPending, isError }: ExtractionFormProps) {
+function ExtractionForm({ projectId, source, form, setForm, onSave, onSkip, onGoBack, isPending, isError }: ExtractionFormProps) {
   // Load the project's extraction template
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
@@ -2176,7 +2176,7 @@ function ExtractionForm({ projectId, form, setForm, onSave, onSkip, onGoBack, is
         )}
       </div>
 
-      <SaturationBadge projectId={projectId} />
+      <SaturationBadge projectId={projectId} source={source} />
 
       {isError && <p style={{ color: "#c5221f", marginBottom: "0.5rem" }}>Failed to save extraction. Try again.</p>}
 
@@ -2447,7 +2447,7 @@ function MixedPanel({
               Edit Extraction
             </div>
             <ExtractionForm
-              projectId={projectId} form={browseForm} setForm={setBrowseForm} levels={levels}
+              projectId={projectId} source={source} form={browseForm} setForm={setBrowseForm} levels={levels}
               onSave={async () => {
                 setBrowseSaving(true);
                 setBrowseSaveError(false);
@@ -2630,7 +2630,7 @@ function MixedPanel({
             </button>
           </div>
           <ExtractionForm
-            projectId={projectId} form={form} setForm={setForm} levels={levels}
+            projectId={projectId} source={source} form={form} setForm={setForm} levels={levels}
             onSave={() => {
               const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
               onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
@@ -2824,7 +2824,7 @@ function ExtractionPanel({
         </div>
         {browsePdfOpen && <PDFViewerPanel projectId={projectId} item={browseItem} onClose={() => setBrowsePdfOpen(false)} />}
         <ExtractionForm
-          projectId={projectId} form={browseForm} setForm={setBrowseForm} levels={levels}
+          projectId={projectId} source={source} form={browseForm} setForm={setBrowseForm} levels={levels}
           onSave={async () => {
             setBrowseSaving(true);
             setBrowseSaveError(false);
@@ -2895,7 +2895,7 @@ function ExtractionPanel({
         </button>
       </div>
       <ExtractionForm
-        projectId={projectId} form={form} setForm={setForm} levels={levels}
+        projectId={projectId} source={source} form={form} setForm={setForm} levels={levels}
         onSave={() => {
           const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
           onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
@@ -3003,7 +3003,7 @@ function QueueSidebar({
 
       {isExtractBucket && (
         <div style={{ marginTop: "0.75rem" }}>
-          <SaturationBadge projectId={projectId} />
+          <SaturationBadge projectId={projectId} source={source} />
         </div>
       )}
 

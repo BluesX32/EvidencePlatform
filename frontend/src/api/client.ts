@@ -856,9 +856,12 @@ export const screeningApi = {
   ) =>
     api.get<ExtractionRecord[]>(`/projects/${projectId}/screening/extractions`, { params }),
 
-  getSaturation: (projectId: string, threshold?: number) =>
+  getSaturation: (projectId: string, threshold?: number, sourceId?: string) =>
     api.get<SaturationStatus>(`/projects/${projectId}/screening/saturation`, {
-      params: threshold !== undefined ? { threshold } : undefined,
+      params: {
+        ...(threshold !== undefined ? { threshold } : {}),
+        ...(sourceId && sourceId !== "all" ? { source_id: sourceId } : {}),
+      },
     }),
 
   getQueueSlot: (projectId: string, params: { source?: string; stage?: string; position: number }) =>

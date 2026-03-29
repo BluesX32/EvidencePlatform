@@ -500,6 +500,7 @@ async def get_queue_slot_endpoint(
 async def get_saturation_status(
     project_id: uuid.UUID,
     threshold: int = Query(5, ge=1, le=50),
+    source_id: Optional[uuid.UUID] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -508,6 +509,9 @@ async def get_saturation_status(
     consecutive_no_novelty — number of most-recent extractions in a row where
     framework_updated=false.  Resets to 0 whenever framework_updated=true.
     saturated=true when count >= threshold (default 5).
+
+    When source_id is provided, only extractions for that corpus are considered
+    so the counter resets independently per corpus.
     """
     await _require_project(project_id, current_user, db)
     return await get_saturation(
@@ -515,6 +519,7 @@ async def get_saturation_status(
         project_id=project_id,
         reviewer_id=current_user.id,
         threshold=threshold,
+        source_id=source_id,
     )
 
 
