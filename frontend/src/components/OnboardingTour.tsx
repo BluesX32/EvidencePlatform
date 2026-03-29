@@ -81,7 +81,7 @@ const STEPS: Step[] = [
       "The decision bar sticks to the bottom of the screen so Include / Exclude buttons are always reachable regardless of abstract length.",
     features: [
       { color: "#4f46e5", text: "Sequential mode (TA → FT → Extract) or mixed mode" },
-      { color: "#059669", text: "⚡ Quick-exclude shortcuts — pin your most-used reasons (e.g. "Not disease severity") so one click excludes instantly; click ⚙ to change which reasons are pinned" },
+      { color: "#059669", text: "⚡ Quick-exclude shortcuts — pin your most-used reasons (e.g. 'Not disease severity') so one click excludes instantly; click ⚙ to change which reasons are pinned" },
       { color: "#0284c7", text: "Full-text links via Unpaywall, PMC, PubMed, and DOI" },
     ],
     where: [
