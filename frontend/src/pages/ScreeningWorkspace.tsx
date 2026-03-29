@@ -1747,7 +1747,8 @@ function ScreeningPanel({
       extracted_json: ExtractionJson;
     }) => screeningApi.submitExtraction(projectId, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["saturation", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["saturation", projectId], refetchType: "all" });
+      queryClient.invalidateQueries({ queryKey: ["saturation-papers", projectId], refetchType: "all" });
       fetchNext();
     },
   });
@@ -2662,7 +2663,8 @@ function MixedPanel({
     mutationFn: (payload: { record_id?: string | null; cluster_id?: string | null; extracted_json: ExtractionJson }) =>
       screeningApi.submitExtraction(projectId, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["saturation", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["saturation", projectId], refetchType: "all" });
+      queryClient.invalidateQueries({ queryKey: ["saturation-papers", projectId], refetchType: "all" });
       fetchNext();
     },
   });
@@ -2760,7 +2762,8 @@ function MixedPanel({
                     cluster_id: browseItem.cluster_id ?? null,
                     extracted_json: browseForm,
                   });
-                  queryClient.invalidateQueries({ queryKey: ["saturation", projectId] });
+                  queryClient.invalidateQueries({ queryKey: ["saturation", projectId], refetchType: "all" });
+                  queryClient.invalidateQueries({ queryKey: ["saturation-papers", projectId], refetchType: "all" });
                 } catch {
                   setBrowseSaveError(true);
                 } finally {
@@ -3069,7 +3072,8 @@ function ExtractionPanel({
     mutationFn: (payload: { record_id?: string | null; cluster_id?: string | null; extracted_json: ExtractionJson }) =>
       screeningApi.submitExtraction(projectId, payload),
     onSuccess: () => {
-      extractionQc.invalidateQueries({ queryKey: ["saturation", projectId] });
+      extractionQc.invalidateQueries({ queryKey: ["saturation", projectId], refetchType: "all" });
+      extractionQc.invalidateQueries({ queryKey: ["saturation-papers", projectId], refetchType: "all" });
       fetchNext();
     },
   });
@@ -3138,7 +3142,8 @@ function ExtractionPanel({
                 cluster_id: browseItem.cluster_id ?? null,
                 extracted_json: browseForm,
               });
-              extractionQc.invalidateQueries({ queryKey: ["saturation", projectId] });
+              extractionQc.invalidateQueries({ queryKey: ["saturation", projectId], refetchType: "all" });
+              extractionQc.invalidateQueries({ queryKey: ["saturation-papers", projectId], refetchType: "all" });
             } catch {
               setBrowseSaveError(true);
             } finally {
