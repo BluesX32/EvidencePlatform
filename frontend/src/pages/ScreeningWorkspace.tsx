@@ -17,6 +17,7 @@ const EXCLUDE_REASONS = [
   { code: "population", label: "Wrong population" },
   { code: "intervention", label: "Wrong intervention / exposure" },
   { code: "outcome", label: "Wrong outcome" },
+  { code: "not_disease_severity", label: "Not disease severity" },
   { code: "study_design", label: "Wrong study design" },
   { code: "duplicate", label: "Duplicate" },
   { code: "other", label: "Other" },
@@ -1113,6 +1114,14 @@ function ExcludeControls({
 }) {
   const [custom, setCustom] = useState("");
   const [savedReasons, setSavedReasons] = useLocalStorage<string[]>("ep_custom_exclude_reasons", []);
+  const [pinnedReasons, setPinnedReasons] = useLocalStorage<string[]>("ep_pinned_exclude_reasons", ["not_disease_severity"]);
+  const [showPinManager, setShowPinManager] = useState(false);
+
+  // All available reason codes (built-in + custom saved)
+  const allReasons: { code: string; label: string; isCustom?: boolean }[] = [
+    ...EXCLUDE_REASONS,
+    ...savedReasons.map((r) => ({ code: r, label: r, isCustom: true })),
+  ];
 
   function submit(reason?: string) {
     onExclude(reason);
@@ -1121,7 +1130,6 @@ function ExcludeControls({
 
   function submitCustom() {
     const trimmed = custom.trim();
-    // If non-empty and not already in built-in or saved list, persist it
     if (trimmed && !EXCLUDE_REASONS.some((r) => r.code === trimmed) && !savedReasons.includes(trimmed)) {
       setSavedReasons([...savedReasons, trimmed]);
     }
@@ -1130,7 +1138,18 @@ function ExcludeControls({
 
   function removesaved(reason: string) {
     setSavedReasons(savedReasons.filter((r) => r !== reason));
+    setPinnedReasons(pinnedReasons.filter((p) => p !== reason));
   }
+
+  function togglePin(code: string) {
+    setPinnedReasons(
+      pinnedReasons.includes(code)
+        ? pinnedReasons.filter((p) => p !== code)
+        : [...pinnedReasons, code]
+    );
+  }
+
+  const pinnedItems = allReasons.filter((r) => pinnedReasons.includes(r.code));
 
   const reasonChipStyle: React.CSSProperties = {
     padding: "0.18rem 0.6rem",
@@ -1145,6 +1164,81 @@ function ExcludeControls({
 
   return (
     <div>
+      {/* ── Pinned quick-exclude shortcuts ── */}
+      {pinnedItems.length > 0 && (
+        <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", flexWrap: "wrap", marginBottom: "0.55rem", padding: "0.4rem 0.6rem", background: "#fff8f0", border: "1px solid #fed7aa", borderRadius: "0.375rem" }}>
+          <span style={{ fontSize: "0.68rem", fontWeight: 700, color: "#c2410c", textTransform: "uppercase", letterSpacing: "0.06em", flexShrink: 0 }}>⚡ Quick</span>
+          {pinnedItems.map((r) => (
+            <button
+              key={r.code}
+              onClick={() => submit(r.code)}
+              disabled={disabled}
+              title={`Quick exclude — ${r.label}`}
+              style={{
+                padding: "0.28rem 0.75rem",
+                borderRadius: "1rem",
+                border: "1.5px solid #f97316",
+                background: "#fff",
+                color: "#c2410c",
+                fontSize: "0.8rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.background = "#fff7ed"; }}
+              onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.background = "#fff"; }}
+            >
+              ✕ {r.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setShowPinManager((v) => !v)}
+            title="Manage pinned shortcuts"
+            style={{ marginLeft: "auto", padding: "0.15rem 0.4rem", borderRadius: "0.25rem", border: "1px solid #fed7aa", background: showPinManager ? "#fed7aa" : "transparent", color: "#92400e", fontSize: "0.72rem", cursor: "pointer" }}
+          >
+            ⚙
+          </button>
+        </div>
+      )}
+
+      {/* ── Pin manager ── */}
+      {(showPinManager || pinnedItems.length === 0) && (
+        <div style={{ marginBottom: "0.5rem", padding: "0.5rem 0.7rem", background: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: "0.375rem" }}>
+          <div style={{ fontSize: "0.69rem", fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.35rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>📌 Pin shortcuts to Quick bar</span>
+            {pinnedItems.length > 0 && (
+              <button onClick={() => setShowPinManager(false)} style={{ background: "none", border: "none", color: "#9aa0a6", fontSize: "0.72rem", cursor: "pointer", padding: 0 }}>✕ close</button>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+            {allReasons.map((r) => {
+              const pinned = pinnedReasons.includes(r.code);
+              return (
+                <button
+                  key={r.code}
+                  onClick={() => togglePin(r.code)}
+                  title={pinned ? "Unpin" : "Pin to Quick bar"}
+                  style={{
+                    padding: "0.18rem 0.6rem",
+                    borderRadius: "1rem",
+                    border: `1.5px solid ${pinned ? "#f97316" : "#dadce0"}`,
+                    background: pinned ? "#fff7ed" : "#fff",
+                    color: pinned ? "#c2410c" : "#5f6368",
+                    fontSize: "0.74rem",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    fontWeight: pinned ? 600 : 400,
+                  }}
+                >
+                  {pinned ? "📌 " : ""}{r.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Exclude button + reason chips ── */}
       <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
         <button
           onClick={submitCustom}
@@ -1276,6 +1370,9 @@ function DecisionBar({
         borderRadius: "0 0 0.5rem 0.5rem",
         padding: "0.9rem 1.25rem 0.8rem",
         marginTop: 0,
+        position: "sticky",
+        bottom: 0,
+        zIndex: 20,
       }}
     >
       <div

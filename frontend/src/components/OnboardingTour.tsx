@@ -8,7 +8,7 @@
 import { useState } from "react";
 import {
   Upload, GitMerge, CheckSquare, FlaskConical, Tag, Users, Layers,
-  FileText, MessageSquare, X, ArrowRight, ArrowLeft, MapPin,
+  FileText, X, ArrowRight, ArrowLeft, MapPin,
 } from "lucide-react";
 
 interface Step {
@@ -78,11 +78,10 @@ const STEPS: Step[] = [
     description:
       "Work through title/abstract screening, then full-text review. " +
       "Your inclusion/exclusion criteria are shown in a collapsible panel while you screen. " +
-      "Use built-in or custom exclusion reasons, navigate back and forward freely, " +
-      "and let the platform track your progress per source.",
+      "The decision bar sticks to the bottom of the screen so Include / Exclude buttons are always reachable regardless of abstract length.",
     features: [
       { color: "#4f46e5", text: "Sequential mode (TA → FT → Extract) or mixed mode" },
-      { color: "#059669", text: "Custom exclusion reasons — type and save your own" },
+      { color: "#059669", text: "⚡ Quick-exclude shortcuts — pin your most-used reasons (e.g. "Not disease severity") so one click excludes instantly; click ⚙ to change which reasons are pinned" },
       { color: "#0284c7", text: "Full-text links via Unpaywall, PMC, PubMed, and DOI" },
     ],
     where: [
