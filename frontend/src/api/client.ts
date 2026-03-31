@@ -553,6 +553,10 @@ export interface ScreeningSource {
   ft_screened: number;
   ft_included: number;
   extracted_count: number;
+  /** True when this corpus's extraction has reached the saturation threshold. */
+  saturated: boolean;
+  /** Number of consecutive no-novelty extractions when saturated; null otherwise. */
+  saturated_at: number | null;
 }
 
 export interface ScreeningNextItem {

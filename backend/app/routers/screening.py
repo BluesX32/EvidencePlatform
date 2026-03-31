@@ -133,7 +133,7 @@ async def list_sources_with_stats(
 ):
     """Return sources with screening stats for StartScreeningModal."""
     await _require_project(project_id, current_user, db)
-    return await get_project_sources_with_stats(db, project_id)
+    return await get_project_sources_with_stats(db, project_id, reviewer_id=current_user.id)
 
 
 _VALID_BUCKETS = frozenset({

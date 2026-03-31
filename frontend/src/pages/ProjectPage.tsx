@@ -487,7 +487,7 @@ export default function ProjectPage() {
     queryKey: ["screening-sources", id],
     queryFn: () => screeningApi.getSources(id!).then((r) => r.data),
     enabled: !!id && (project?.record_count ?? 0) > 0,
-    staleTime: 30_000,
+    staleTime: 0,
   });
 
   // Derived strategy state
@@ -853,13 +853,10 @@ export default function ProjectPage() {
                   </thead>
                   <tbody>
                     {perSource.map((src, i) => {
-                      // A corpus is fully done when:
-                      //  • every record has a TA decision
-                      //  • every TA-included record has a FT decision (or none were included)
-                      //  • every FT-included record has an extraction (or none were included)
                       const taAllDone = src.record_count > 0 && src.ta_screened >= src.record_count;
                       const ftAllDone = src.ta_included === 0 || src.ft_screened >= src.ta_included;
-                      const exAllDone = src.ft_included === 0 || src.extracted_count >= src.ft_included;
+                      const exAllDoneByCount = src.ft_included === 0 || src.extracted_count >= src.ft_included;
+                      const exAllDone = exAllDoneByCount || (ftAllDone && !!src.saturated);
                       const allDone = taAllDone && ftAllDone && exAllDone;
                       return (
                         <tr key={src.id} style={{ background: allDone ? "#f0fdf4" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -873,7 +870,13 @@ export default function ProjectPage() {
                             {cell(src.ft_screened, src.ta_included)}
                           </td>
                           <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
-                            {cell(src.extracted_count, src.ft_included)}
+                            {!!src.saturated ? (
+                              <span title={`Saturated after ${src.saturated_at} consecutive papers with no new themes`} style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", background: "#fef9c3", color: "#a16207", borderRadius: "1rem", padding: "0.1rem 0.5rem", fontSize: "0.75rem", fontWeight: 700, cursor: "default" }}>
+                                ⚡ {src.saturated_at}/{src.ft_included}
+                              </span>
+                            ) : (
+                              cell(src.extracted_count, src.ft_included)
+                            )}
                           </td>
                         </tr>
                       );

@@ -86,6 +86,7 @@ async def _build_cluster_map(
 async def get_project_sources_with_stats(
     db: AsyncSession,
     project_id: uuid.UUID,
+    reviewer_id: Optional[uuid.UUID] = None,
 ) -> List[Dict]:
     """
     Return per-source stats + one aggregate "all" row.
@@ -183,6 +184,7 @@ async def get_project_sources_with_stats(
     ta_included_slots: set = set()
     ft_screened_slots: set = set()
     ft_included_slots: set = set()
+    ft_excluded_slots: set = set()
 
     for row in sd_rows:
         if row.record_id is not None:
@@ -197,6 +199,8 @@ async def get_project_sources_with_stats(
             ft_screened_slots.add(slot)
             if row.decision == "include":
                 ft_included_slots.add(slot)
+            else:
+                ft_excluded_slots.add(slot)
 
     # 5. Get extraction counts
     er_result = await db.execute(
@@ -216,7 +220,8 @@ async def get_project_sources_with_stats(
         ta_i = len(slots & ta_included_slots)
         ft_s = len(slots & ft_screened_slots)
         ft_i = len(slots & ft_included_slots)
-        ex   = len(slots & extracted_slots)
+        # FT-excluded papers don't count toward extracted_count even if extraction data exists
+        ex   = len(slots & (extracted_slots - ft_excluded_slots))
         return {
             "record_count": len(slots),
             "ta_screened": ta_s,
@@ -232,6 +237,89 @@ async def get_project_sources_with_stats(
     ]
     # Aggregate "all" row
     result_list.append({"id": "all", "name": "All databases (deduplicated)", **_stats(all_slots)})
+
+    # 7. Compute per-source saturation (only meaningful when reviewer_id is known)
+    if reviewer_id is not None:
+        # Fetch all extractions for this reviewer with their created_at order
+        er_full = await db.execute(
+            select(
+                ExtractionRecord.record_id,
+                ExtractionRecord.cluster_id,
+                ExtractionRecord.extracted_json,
+                ExtractionRecord.created_at,
+            )
+            .where(
+                ExtractionRecord.project_id == project_id,
+                ExtractionRecord.reviewer_id == reviewer_id,
+            )
+            .order_by(ExtractionRecord.created_at.desc())
+        )
+        all_er_rows = er_full.all()
+
+        # FT-excluded slots (excluded papers don't count toward saturation)
+        ft_excl_q = await db.execute(
+            select(ScreeningDecision.record_id, ScreeningDecision.cluster_id).where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.reviewer_id == reviewer_id,
+                ScreeningDecision.stage == "FT",
+                ScreeningDecision.decision == "exclude",
+            )
+        )
+        ft_excl_rows_all = ft_excl_q.all()  # consume cursor once
+        ft_excl_r: set = {r.record_id for r in ft_excl_rows_all if r.record_id}
+        ft_excl_c: set = {r.cluster_id for r in ft_excl_rows_all if r.cluster_id}
+
+        for item in result_list:
+            source_uuid_item = None if item["id"] == "all" else uuid.UUID(item["id"])
+
+            # Find the queue for this source to get slot list + created_at
+            queue_q = await db.execute(
+                select(ScreeningQueue).where(
+                    ScreeningQueue.project_id == project_id,
+                    ScreeningQueue.reviewer_id == reviewer_id,
+                    ScreeningQueue.source_id == item["id"],
+                    ScreeningQueue.stage.in_(["extract", "mixed"]),
+                ).order_by(ScreeningQueue.stage)
+            )
+            queue_obj = queue_q.scalars().first()
+
+            if queue_obj is None:
+                item["saturated"] = False
+                item["saturated_at"] = None
+                continue
+
+            slots_set_rec = {uuid.UUID(s["id"]) for s in queue_obj.slots if s.get("type") == "record"}
+            slots_set_cl = {uuid.UUID(s["id"]) for s in queue_obj.slots if s.get("type") == "cluster"}
+
+            filtered = [
+                r for r in all_er_rows
+                if r.record_id not in ft_excl_r
+                and r.cluster_id not in ft_excl_c
+                and (queue_obj.created_at is None or r.created_at >= queue_obj.created_at)
+                and (
+                    (r.record_id is not None and r.record_id in slots_set_rec)
+                    or (r.cluster_id is not None and r.cluster_id in slots_set_cl)
+                )
+            ]
+
+            consecutive = 0
+            for row in filtered:
+                if row.extracted_json.get("framework_updated", True):
+                    break
+                consecutive += 1
+
+            sat_threshold = 5
+            saturated = consecutive >= sat_threshold
+            # saturated_at = total extractions done when saturation was first reached
+            # = total extractions minus the papers before the streak started
+            saturated_at = len(filtered) - (len(filtered) - consecutive) if saturated else None
+            item["saturated"] = saturated
+            item["saturated_at"] = consecutive if saturated else None
+    else:
+        for item in result_list:
+            item["saturated"] = False
+            item["saturated_at"] = None
+
     return result_list
 
 

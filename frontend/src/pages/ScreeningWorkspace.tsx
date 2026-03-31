@@ -1004,7 +1004,7 @@ function QueueNavigatorPanel({
         {isLoading && <p style={{ padding: "0.75rem 1rem", color: "#9ca3af", fontSize: "0.82rem" }}>Loading…</p>}
         {(list ?? []).map((entry) => {
           const isCurrent = entry.position === currentPos;
-          const isExcluded = entry.ta_decision === "exclude";
+          const isExcluded = entry.ta_decision === "exclude" || entry.ft_decision === "exclude";
           return (
             <div
               key={entry.position}
@@ -3249,11 +3249,15 @@ function QueueSidebar({
   const ftPending = Math.max(0, agg.ta_included - agg.ft_screened);
   const extractPending = Math.max(0, agg.ft_included - agg.extracted_count);
 
+  // Current source's saturation state (used to mark extract as done when saturated)
+  const currentSrc = sources.find((s) => s.id === source);
+
   // Completion flags — a stage is "done" when all TA is screened and downstream
   // stages have no pending work (including when all FT-included were excluded = 0 remaining).
+  // Extract is also "done" when the current corpus has reached saturation.
   const taDone = agg.record_count > 0 && taUnscreened === 0;
   const ftDone = taDone && ftPending === 0;
-  const extractDone = ftDone && extractPending === 0;
+  const extractDone = ftDone && (extractPending === 0 || (currentSrc?.saturated ?? false));
 
   function goToBucket(bucket: string) {
     navigate(`/projects/${projectId}/screen?${new URLSearchParams({ bucket, source, strategy }).toString()}`);
@@ -3328,22 +3332,32 @@ function QueueSidebar({
             {perSource.map((src) => {
               const taDone = src.record_count > 0 && src.ta_screened >= src.record_count;
               const ftDone = taDone && (src.ta_included === 0 || src.ft_screened >= src.ta_included);
-              const exDone = ftDone && (src.ft_included === 0 || src.extracted_count >= src.ft_included);
+              const exDoneByCount = ftDone && (src.ft_included === 0 || src.extracted_count >= src.ft_included);
+              const exDone = exDoneByCount || (ftDone && src.saturated);
               return (
                 <div key={src.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.25rem" }}>
-                  <span style={{ fontSize: "0.73rem", color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 110 }} title={src.name}>
+                  <span style={{ fontSize: "0.73rem", color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 100 }} title={src.name}>
                     {src.name}
                   </span>
-                  <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 3, flexShrink: 0, alignItems: "center" }}>
                     {[
                       { done: taDone, label: "TA" },
                       { done: ftDone, label: "FT" },
-                      { done: exDone, label: "EX" },
                     ].map(({ done, label }) => (
                       <span key={label} title={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.6rem", fontWeight: 700, background: done ? "#dcfce7" : "#f3f4f6", color: done ? "#15803d" : "#d1d5db" }}>
                         {done ? "✓" : label[0]}
                       </span>
                     ))}
+                    {/* EX dot — green tick if done by count, lightning if saturated */}
+                    {src.saturated && !exDoneByCount ? (
+                      <span title={`Saturated at ${src.saturated_at} consecutive papers`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.62rem", fontWeight: 700, background: "#fef9c3", color: "#a16207" }}>
+                        ⚡
+                      </span>
+                    ) : (
+                      <span title="EX" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.6rem", fontWeight: 700, background: exDone ? "#dcfce7" : "#f3f4f6", color: exDone ? "#15803d" : "#d1d5db" }}>
+                        {exDone ? "✓" : "E"}
+                      </span>
+                    )}
                   </div>
                 </div>
               );
