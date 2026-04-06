@@ -8,27 +8,38 @@ GET  /runs                                  → list runs (newest first)
 GET  /runs/{run_id}                        → single run with progress %
 GET  /runs/{run_id}/results                → paginated results
 POST /runs/{run_id}/results/{result_id}/review → mark reviewed
+GET  /runs/{run_id}/export                 → CSV download
+GET  /runs/{run_id}/comparison             → compare LLM vs human decisions
+POST /runs/{run_id}/send-to-consensus      → flag disagreements in consensus table
+GET  /preview-prompt                       → preview resolved prompt for a sample record
+
+GET  /projects/{project_id}/llm-config     → get LLM prompt config
+PATCH /projects/{project_id}/llm-config    → save LLM prompt config
 """
 from __future__ import annotations
 
+import csv
+import io
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func as sqlfunc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
 from app.models.project import Project
+from app.models.record import Record
+from app.models.screening_decision import ScreeningDecision
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
-from app.repositories.team_repo import TeamRepo
 from app.services import llm_screening_service as svc
 
 router = APIRouter(tags=["llm_screening"])
@@ -61,6 +72,21 @@ async def _require_project(
         raise HTTPException(403, "Forbidden")
     row: Optional[Project] = await db.get(Project, pid)
     return row  # type: ignore[return-value]
+
+
+async def _require_run(
+    run_id: str,
+    project: Project,
+    db: AsyncSession,
+) -> LlmScreeningRun:
+    try:
+        rid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid run_id")
+    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, rid)
+    if run is None or run.project_id != project.id:
+        raise HTTPException(404, "Run not found")
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +125,13 @@ class LlmRunResponse(BaseModel):
     created_at: str
     triggered_by: Optional[str]
     progress_pct: float
+    # Mode fields (migration 025)
+    mode: str
+    source_id: Optional[str]
+    seed: Optional[int]
+    saturation_threshold: int
+    include_extraction: bool
+    stopped_at_saturation: bool
 
 
 class LlmResultResponse(BaseModel):
@@ -120,15 +153,35 @@ class LlmResultResponse(BaseModel):
     reviewed_by: Optional[str]
     reviewed_at: Optional[str]
     review_action: Optional[str]
+    extracted_json: Optional[Any]
     created_at: str
 
 
 class CreateRunBody(BaseModel):
     model: str = "claude-sonnet-4-6"
+    mode: str = "prisma_scr"
+    source_id: Optional[str] = None
+    seed: Optional[int] = None
+    saturation_threshold: int = 5
+    include_extraction: bool = True
 
 
 class ReviewBody(BaseModel):
     action: str  # accepted / rejected / merged
+
+
+class LlmConfigBody(BaseModel):
+    research_question: Optional[str] = None
+    custom_system_additions: Optional[str] = None
+    extraction_instructions: Optional[str] = None
+    concept_instructions: Optional[str] = None
+    use_full_override: bool = False
+    full_override_prompt: Optional[str] = None
+
+
+class SendToConsensusBody(BaseModel):
+    record_ids: list[str]
+    stage: str  # "TA" or "FT"
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +221,12 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
         created_at=run.created_at.isoformat(),
         triggered_by=str(run.triggered_by) if run.triggered_by else None,
         progress_pct=round(progress, 1),
+        mode=run.mode or "prisma_scr",
+        source_id=str(run.source_id) if run.source_id else None,
+        seed=run.seed,
+        saturation_threshold=run.saturation_threshold or 5,
+        include_extraction=run.include_extraction if run.include_extraction is not None else True,
+        stopped_at_saturation=run.stopped_at_saturation or False,
     )
 
 
@@ -194,12 +253,43 @@ def _result_to_response(res: LlmScreeningResult) -> LlmResultResponse:
         reviewed_by=str(res.reviewed_by) if res.reviewed_by else None,
         reviewed_at=_dt(res.reviewed_at),
         review_action=res.review_action,
+        extracted_json=res.extracted_json,
         created_at=res.created_at.isoformat(),
     )
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# LLM Config endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{project_id}/llm-config")
+async def get_llm_config(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return the project's LLM prompt configuration."""
+    project = await _require_project(project_id, db, user)
+    return project.llm_config or {}
+
+
+@router.patch("/projects/{project_id}/llm-config")
+async def update_llm_config(
+    project_id: str,
+    body: LlmConfigBody,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Save LLM prompt configuration for a project (admin/owner only)."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    updated = await ProjectRepo.update_llm_config(db, project.id, body.model_dump())
+    await db.commit()
+    return updated.llm_config or {}  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Screening endpoints
 # ---------------------------------------------------------------------------
 
 
@@ -210,12 +300,19 @@ def _result_to_response(res: LlmScreeningResult) -> LlmResultResponse:
 async def estimate(
     project_id: str,
     model: str = Query(default="claude-sonnet-4-6"),
+    source_id: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> EstimateResponse:
     """Return estimated cost and time for an LLM screening run."""
     project = await _require_project(project_id, db, user)
-    data = await svc.estimate_run(db, project.id, model)
+    sid: Optional[uuid.UUID] = None
+    if source_id:
+        try:
+            sid = uuid.UUID(source_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid source_id")
+    data = await svc.estimate_run(db, project.id, model, source_id=sid)
     return EstimateResponse(model=model, **data)
 
 
@@ -235,6 +332,13 @@ async def create_run(
 ) -> LlmRunResponse:
     """Create and launch an LLM screening run (admin/owner only — incurs API cost)."""
     project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+
+    # Validate mode-specific requirements
+    if body.mode not in ("prisma_scr", "saturation"):
+        raise HTTPException(400, "mode must be 'prisma_scr' or 'saturation'")
+    if body.mode == "saturation" and not body.source_id:
+        raise HTTPException(422, "source_id is required for saturation mode")
+
     # Require at least one LLM provider key (header key OR env var).
     effective_anthropic = x_anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
     effective_openrouter = x_openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
@@ -253,6 +357,13 @@ async def create_run(
             "Get a key at https://openrouter.ai/keys",
         )
 
+    source_id_uuid: Optional[uuid.UUID] = None
+    if body.source_id:
+        try:
+            source_id_uuid = uuid.UUID(body.source_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid source_id")
+
     run = await svc.create_and_launch_run(
         db=db,
         project_id=project.id,
@@ -261,6 +372,11 @@ async def create_run(
         background_tasks=background_tasks,
         anthropic_api_key=x_anthropic_api_key,
         openrouter_api_key=x_openrouter_api_key,
+        mode=body.mode,
+        source_id=source_id_uuid,
+        seed=body.seed,
+        saturation_threshold=body.saturation_threshold,
+        include_extraction=body.include_extraction,
     )
     return _run_to_response(run)
 
@@ -298,13 +414,7 @@ async def get_run(
 ) -> LlmRunResponse:
     """Get a single LLM screening run with progress percentage."""
     project = await _require_project(project_id, db, user)
-    try:
-        rid = uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(400, "Invalid run_id")
-    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, rid)
-    if run is None or run.project_id != project.id:
-        raise HTTPException(404, "Run not found")
+    run = await _require_run(run_id, project, db)
     return _run_to_response(run)
 
 
@@ -321,36 +431,21 @@ async def list_results(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """Return paginated LLM screening results for a run.
-
-    Optional query param: ta_decision (include/exclude/uncertain)
-    """
+    """Return paginated LLM screening results for a run."""
     project = await _require_project(project_id, db, user)
-    try:
-        rid = uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(400, "Invalid run_id")
+    run = await _require_run(run_id, project, db)
 
-    # Validate run belongs to project
-    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, rid)
-    if run is None or run.project_id != project.id:
-        raise HTTPException(404, "Run not found")
-
-    stmt = select(LlmScreeningResult).where(LlmScreeningResult.run_id == rid)
+    stmt = select(LlmScreeningResult).where(LlmScreeningResult.run_id == run.id)
     if ta_decision:
         stmt = stmt.where(LlmScreeningResult.ta_decision == ta_decision)
 
     stmt = stmt.order_by(LlmScreeningResult.created_at)
     offset = (page - 1) * page_size
     stmt = stmt.offset(offset).limit(page_size)
-
     results = (await db.execute(stmt)).scalars().all()
 
-    # Count total for pagination
-    from sqlalchemy import func as sqlfunc
-
     count_stmt = select(sqlfunc.count()).select_from(LlmScreeningResult).where(
-        LlmScreeningResult.run_id == rid
+        LlmScreeningResult.run_id == run.id
     )
     if ta_decision:
         count_stmt = count_stmt.where(LlmScreeningResult.ta_decision == ta_decision)
@@ -391,9 +486,422 @@ async def review_result(
         raise HTTPException(404, "Result not found")
 
     res.reviewed_by = user.id
-    res.reviewed_at = datetime.utcnow()
+    res.reviewed_at = datetime.now(tz=timezone.utc)
     res.review_action = body.action
 
     await db.commit()
     await db.refresh(res)
     return _result_to_response(res)
+
+
+# ---------------------------------------------------------------------------
+# CSV Export
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/export",
+)
+async def export_run_csv(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Stream a CSV of all results for a completed run."""
+    project = await _require_project(project_id, db, user)
+    run = await _require_run(run_id, project, db)
+
+    # Build extraction template columns
+    extraction_rows: list[dict] = []
+    if project.extraction_template and project.extraction_template.get("rows"):
+        extraction_rows = project.extraction_template["rows"]
+    extraction_headers = [
+        f"{r.get('domain', '')}: {r.get('item', '')}" if r.get('domain') else r.get('item', r.get('id', ''))
+        for r in extraction_rows
+    ]
+    extraction_ids = [r.get("id", "") for r in extraction_rows]
+
+    # Load all results with record metadata
+    results = (
+        await db.execute(
+            select(LlmScreeningResult)
+            .where(LlmScreeningResult.run_id == run.id)
+            .order_by(LlmScreeningResult.created_at)
+        )
+    ).scalars().all()
+
+    # Pre-load records for metadata
+    record_ids = [r.record_id for r in results if r.record_id]
+    record_map: dict[uuid.UUID, Record] = {}
+    if record_ids:
+        recs = (
+            await db.execute(select(Record).where(Record.id.in_(record_ids)))
+        ).scalars().all()
+        record_map = {r.id: r for r in recs}
+
+    def _generate() -> Any:
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        base_headers = [
+            "record_id", "title", "authors", "year", "doi",
+            "ta_decision", "ta_reason", "ft_decision", "ft_reason",
+        ]
+        writer.writerow(base_headers + extraction_headers)
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+
+        for res in results:
+            rec = record_map.get(res.record_id) if res.record_id else None
+            authors_str = "; ".join(rec.authors or []) if rec and rec.authors else ""
+            row = [
+                str(res.record_id) if res.record_id else str(res.cluster_id or ""),
+                (rec.title or "") if rec else "",
+                authors_str,
+                str(rec.year or "") if rec else "",
+                (rec.doi or "") if rec else "",
+                res.ta_decision or "",
+                res.ta_reason or "",
+                res.ft_decision or "",
+                res.ft_reason or "",
+            ]
+            # Extraction fields
+            extracted = res.extracted_json or {}
+            for eid in extraction_ids:
+                val = extracted.get(eid, "")
+                if isinstance(val, list):
+                    val = "; ".join(str(v) for v in val)
+                row.append(str(val) if val is not None else "")
+            writer.writerow(row)
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+    filename = f"llm_results_{str(run.id)[-8:]}.csv"
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Human Comparison
+# ---------------------------------------------------------------------------
+
+
+def _cohen_kappa_simple(agreements: int, total: int, p_e: float) -> Optional[float]:
+    """Cohen's kappa given raw counts."""
+    if total == 0:
+        return None
+    p_o = agreements / total
+    denom = 1.0 - p_e
+    if denom == 0:
+        return 1.0 if p_o == 1.0 else 0.0
+    return (p_o - p_e) / denom
+
+
+def _kappa_label(kappa: Optional[float]) -> str:
+    if kappa is None:
+        return "n/a"
+    if kappa >= 0.81:
+        return "almost perfect"
+    if kappa >= 0.61:
+        return "substantial"
+    if kappa >= 0.41:
+        return "moderate"
+    if kappa >= 0.21:
+        return "fair"
+    if kappa >= 0.0:
+        return "slight"
+    return "poor"
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/comparison",
+)
+async def compare_with_humans(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Compare LLM decisions with human reviewer decisions for this run."""
+    project = await _require_project(project_id, db, user)
+    run = await _require_run(run_id, project, db)
+
+    # Load all LLM results for records (not clusters)
+    llm_results = (
+        await db.execute(
+            select(LlmScreeningResult)
+            .where(
+                LlmScreeningResult.run_id == run.id,
+                LlmScreeningResult.record_id.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    if not llm_results:
+        return {
+            "stats": {
+                "n_compared_ta": 0,
+                "ta_agreement_pct": None,
+                "kappa_ta": None,
+                "kappa_ta_label": "n/a",
+                "n_compared_ft": 0,
+                "ft_agreement_pct": None,
+                "kappa_ft": None,
+                "kappa_ft_label": "n/a",
+            },
+            "items": [],
+        }
+
+    # Load human decisions for the same records
+    record_ids = [r.record_id for r in llm_results if r.record_id]
+    human_decisions = (
+        await db.execute(
+            select(ScreeningDecision)
+            .where(
+                ScreeningDecision.project_id == project.id,
+                ScreeningDecision.record_id.in_(record_ids),
+                ScreeningDecision.reviewer_id.isnot(None),
+            )
+            .order_by(ScreeningDecision.created_at.desc())
+        )
+    ).scalars().all()
+
+    # Build per-record human decision map: {record_id: {stage: decision}}
+    human_map: dict[uuid.UUID, dict[str, str]] = {}
+    for hd in human_decisions:
+        rid = hd.record_id
+        if rid not in human_map:
+            human_map[rid] = {}
+        # Keep most-recent decision per stage (results ordered desc already)
+        if hd.stage not in human_map[rid]:
+            human_map[rid][hd.stage] = hd.decision
+
+    # Load record titles for display
+    recs = (
+        await db.execute(select(Record).where(Record.id.in_(record_ids)))
+    ).scalars().all()
+    record_title_map = {r.id: r.title for r in recs}
+
+    # Build comparison items
+    items = []
+    ta_compared = ta_agree = 0
+    ft_compared = ft_agree = 0
+    ta_include_rate_llm = ta_include_rate_human = 0.0
+    ft_include_rate_llm = ft_include_rate_human = 0.0
+
+    for res in llm_results:
+        rid = res.record_id
+        if rid is None:
+            continue
+
+        human_ta = human_map.get(rid, {}).get("TA")
+        human_ft = human_map.get(rid, {}).get("FT")
+        llm_ta = res.ta_decision
+        llm_ft = res.ft_decision
+
+        ta_agrees: Optional[bool] = None
+        if llm_ta and human_ta:
+            # Normalise uncertain → treat as exclude for kappa purposes
+            llm_ta_norm = "include" if llm_ta == "include" else "exclude"
+            ta_agrees = llm_ta_norm == human_ta
+            ta_compared += 1
+            if ta_agrees:
+                ta_agree += 1
+
+        ft_agrees: Optional[bool] = None
+        if llm_ft and human_ft:
+            llm_ft_norm = "include" if llm_ft == "include" else "exclude"
+            ft_agrees = llm_ft_norm == human_ft
+            ft_compared += 1
+            if ft_agrees:
+                ft_agree += 1
+
+        items.append(
+            {
+                "record_id": str(rid),
+                "title": record_title_map.get(rid, ""),
+                "llm_ta": llm_ta,
+                "human_ta": human_ta,
+                "ta_agrees": ta_agrees,
+                "llm_ft": llm_ft,
+                "human_ft": human_ft,
+                "ft_agrees": ft_agrees,
+            }
+        )
+
+    # Compute kappa — expected agreement under independence
+    def _p_e(n_agree: int, n_both: int, pA: float, pB: float) -> float:
+        return pA * pB + (1 - pA) * (1 - pB)
+
+    ta_pct: Optional[float] = None
+    kappa_ta: Optional[float] = None
+    if ta_compared > 0:
+        ta_pct = round(ta_agree / ta_compared * 100, 1)
+        # For kappa: both raters' include rate on the compared set
+        llm_ta_inc = sum(
+            1 for i in items if i["llm_ta"] == "include" and i["human_ta"] is not None
+        )
+        human_ta_inc = sum(
+            1 for i in items if i["human_ta"] == "include" and i["llm_ta"] is not None
+        )
+        p_llm = llm_ta_inc / ta_compared
+        p_human = human_ta_inc / ta_compared
+        p_e = _p_e(ta_agree, ta_compared, p_llm, p_human)
+        kappa_ta = _cohen_kappa_simple(ta_agree, ta_compared, p_e)
+        if kappa_ta is not None:
+            kappa_ta = round(kappa_ta, 3)
+
+    ft_pct: Optional[float] = None
+    kappa_ft: Optional[float] = None
+    if ft_compared > 0:
+        ft_pct = round(ft_agree / ft_compared * 100, 1)
+        llm_ft_inc = sum(
+            1 for i in items if i["llm_ft"] == "include" and i["human_ft"] is not None
+        )
+        human_ft_inc = sum(
+            1 for i in items if i["human_ft"] == "include" and i["llm_ft"] is not None
+        )
+        p_llm = llm_ft_inc / ft_compared
+        p_human = human_ft_inc / ft_compared
+        p_e = _p_e(ft_agree, ft_compared, p_llm, p_human)
+        kappa_ft = _cohen_kappa_simple(ft_agree, ft_compared, p_e)
+        if kappa_ft is not None:
+            kappa_ft = round(kappa_ft, 3)
+
+    return {
+        "stats": {
+            "n_compared_ta": ta_compared,
+            "ta_agreement_pct": ta_pct,
+            "kappa_ta": kappa_ta,
+            "kappa_ta_label": _kappa_label(kappa_ta),
+            "n_compared_ft": ft_compared,
+            "ft_agreement_pct": ft_pct,
+            "kappa_ft": kappa_ft,
+            "kappa_ft_label": _kappa_label(kappa_ft),
+        },
+        "items": items,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Send disagreements to consensus
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/send-to-consensus",
+    status_code=201,
+)
+async def send_to_consensus(
+    project_id: str,
+    run_id: str,
+    body: SendToConsensusBody,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Insert LLM decisions as synthetic ScreeningDecision rows (reviewer_id=NULL).
+
+    This triggers the existing ConsensusPage conflict detection, which looks for
+    items with multiple different decisions at the same stage.
+    """
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    run = await _require_run(run_id, project, db)
+
+    if body.stage not in ("TA", "FT"):
+        raise HTTPException(400, "stage must be 'TA' or 'FT'")
+
+    created = 0
+    for record_id_str in body.record_ids:
+        try:
+            rid = uuid.UUID(record_id_str)
+        except ValueError:
+            continue
+
+        # Find the LLM result for this record
+        llm_result = (
+            await db.execute(
+                select(LlmScreeningResult)
+                .where(
+                    LlmScreeningResult.run_id == run.id,
+                    LlmScreeningResult.record_id == rid,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if llm_result is None:
+            continue
+
+        llm_decision = llm_result.ta_decision if body.stage == "TA" else llm_result.ft_decision
+        if not llm_decision or llm_decision == "uncertain":
+            continue
+        # Normalise to include/exclude
+        decision = "include" if llm_decision == "include" else "exclude"
+
+        # Check no duplicate (same record, same stage, reviewer_id IS NULL already)
+        existing = (
+            await db.execute(
+                select(ScreeningDecision)
+                .where(
+                    ScreeningDecision.project_id == project.id,
+                    ScreeningDecision.record_id == rid,
+                    ScreeningDecision.stage == body.stage,
+                    ScreeningDecision.reviewer_id.is_(None),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if existing is not None:
+            # Update existing synthetic decision
+            existing.decision = decision
+            existing.notes = f"LLM: {run.model}"
+        else:
+            sd = ScreeningDecision(
+                project_id=project.id,
+                record_id=rid,
+                cluster_id=None,
+                stage=body.stage,
+                decision=decision,
+                reviewer_id=None,  # synthetic LLM reviewer
+                notes=f"LLM: {run.model}",
+            )
+            db.add(sd)
+            created += 1
+
+    await db.commit()
+    return {"created": created}
+
+
+# ---------------------------------------------------------------------------
+# Prompt preview
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/preview-prompt",
+)
+async def preview_prompt(
+    project_id: str,
+    record_id: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return the resolved system + user prompts for a sample record."""
+    project = await _require_project(project_id, db, user)
+
+    rid: Optional[uuid.UUID] = None
+    if record_id:
+        try:
+            rid = uuid.UUID(record_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid record_id")
+
+    preview = await svc.build_prompt_preview(db, project.id, record_id=rid)
+    return preview

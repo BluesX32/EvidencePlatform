@@ -25,3 +25,4 @@ class Project(Base):
         server_default='{"inclusion": [], "exclusion": []}',
     )
     extraction_template: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    llm_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

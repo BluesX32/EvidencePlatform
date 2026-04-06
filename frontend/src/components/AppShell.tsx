@@ -16,6 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
+  Menu, PanelLeftClose,
 } from "lucide-react";
 import { projectsApi, authApi, clearToken } from "../api/client";
 
@@ -289,7 +290,7 @@ function SidebarProfile() {
         onMouseLeave={e => (e.currentTarget.style.background = "none")}
       >
         <div style={avatarStyle}>{initials}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="sidebar-profile-text" style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {profile?.name ?? "Account"}
           </div>
@@ -343,16 +344,66 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
   });
 
+  // Responsive sidebar state
+  const [collapsed, setCollapsed] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < 1024
+  );
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    function handleResize() {
+      const w = window.innerWidth;
+      if (w >= 1024) {
+        setCollapsed(false);
+        setMobileOpen(false);
+      } else if (w >= 768) {
+        setCollapsed(true);
+        setMobileOpen(false);
+      } else {
+        setCollapsed(false); // on mobile, collapsed class not used; drawer controls visibility
+        setMobileOpen(false);
+      }
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+
+  // Compute margin-left for shell-main
+  const mainMarginLeft = isMobile
+    ? "0"
+    : collapsed
+      ? "64px"
+      : "220px";
+
+  // Sidebar class names
+  const sidebarClasses = [
+    "sidebar",
+    collapsed && !isMobile ? "sidebar--collapsed" : "",
+    mobileOpen ? "sidebar--mobile-open" : "",
+    isMobile ? "sidebar--mobile" : "",
+  ].filter(Boolean).join(" ");
+
   return (
     <div className="app-shell">
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      <aside className="sidebar">
+      <aside className={sidebarClasses}>
         {/* Logo */}
         <div className="sidebar-logo">
           <Link to="/projects">
             <span className="sidebar-logo-mark">E</span>
-            EvidencePlatform
+            <span className="sidebar-label">EvidencePlatform</span>
           </Link>
+          {/* Collapse toggle — only shown on desktop (>= 768px) */}
+          <button
+            className="sidebar-logo-toggle"
+            onClick={() => setCollapsed(v => !v)}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <PanelLeftClose size={15} />
+          </button>
         </div>
 
         {projectId ? (
@@ -360,7 +411,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="sidebar-section">
               <Link to="/projects" className="sidebar-back">
                 <ChevronLeft size={14} />
-                All projects
+                <span className="sidebar-label">All projects</span>
               </Link>
               <div className="sidebar-project-name" title={project?.name}>
                 <FolderOpen size={12} style={{ display: "inline", marginRight: 4, opacity: .7 }} />
@@ -388,9 +439,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     key={path}
                     to={fullPath}
                     className={`sidebar-link${isActive ? " active" : ""}`}
+                    onClick={() => { if (isMobile) setMobileOpen(false); }}
                   >
                     <span className="sidebar-icon"><Icon size={15} /></span>
-                    {label}
+                    <span className="sidebar-label">{label}</span>
                   </Link>
                 );
               })}
@@ -401,9 +453,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               to="/projects"
               className={`sidebar-link${location.pathname === "/projects" ? " active" : ""}`}
+              onClick={() => { if (isMobile) setMobileOpen(false); }}
             >
               <span className="sidebar-icon"><FolderOpen size={15} /></span>
-              Projects
+              <span className="sidebar-label">Projects</span>
             </Link>
           </nav>
         )}
@@ -414,8 +467,32 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
+      {/* Backdrop overlay for mobile drawer */}
+      {mobileOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Mobile top bar */}
+      <div className="mobile-topbar">
+        <button
+          className="icon-btn"
+          onClick={() => setMobileOpen(v => !v)}
+          aria-label="Open navigation"
+          style={{ border: "none", background: "transparent" }}
+        >
+          <Menu size={20} />
+        </button>
+        <span className="mobile-topbar-title">
+          {project?.name ?? "EvidencePlatform"}
+        </span>
+      </div>
+
       {/* ── Main content ────────────────────────────────────────────────── */}
-      <main className="shell-main">
+      <main className="shell-main" style={{ marginLeft: mainMarginLeft }}>
         {children}
       </main>
     </div>

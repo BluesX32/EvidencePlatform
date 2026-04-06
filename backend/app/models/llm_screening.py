@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -80,6 +80,31 @@ class LlmScreeningRun(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Mode fields (migration 025)
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="prisma_scr"
+    )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    seed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    saturation_threshold: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="5"
+    )
+    include_extraction: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    stopped_at_saturation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('prisma_scr', 'saturation')", name="ck_llm_run_mode"
+        ),
+    )
 
 
 class LlmScreeningResult(Base):
@@ -139,6 +164,8 @@ class LlmScreeningResult(Base):
     review_action: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True
     )  # accepted / rejected / merged
+    # Structured extraction (migration 025)
+    extracted_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

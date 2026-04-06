@@ -80,3 +80,17 @@ class ProjectRepo:
         await db.flush()
         await db.refresh(project)
         return project
+
+    @staticmethod
+    async def update_llm_config(
+        db: AsyncSession,
+        project_id: uuid.UUID,
+        llm_config: dict,
+    ) -> Optional[Project]:
+        project = await ProjectRepo.get_by_id(db, project_id)
+        if project is None:
+            return None
+        project.llm_config = llm_config
+        await db.flush()
+        await db.refresh(project)
+        return project

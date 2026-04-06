@@ -109,7 +109,89 @@ p  { margin: 0 0 .75rem; }
   height: 100vh;
   z-index: 100;
   overflow-y: auto;
+  transition: width 0.2s ease;
 }
+
+/* Collapsed sidebar (icon only) */
+.sidebar--collapsed {
+  width: 64px;
+  min-width: 64px;
+}
+.sidebar--collapsed .sidebar-label,
+.sidebar--collapsed .sidebar-profile-text,
+.sidebar--collapsed .sidebar-project-name,
+.sidebar--collapsed .sidebar-section-label,
+.sidebar--collapsed .sidebar-back .sidebar-label {
+  display: none;
+}
+.sidebar--collapsed .sidebar-link {
+  justify-content: center;
+  padding: .5rem;
+}
+.sidebar--collapsed .sidebar-logo a {
+  justify-content: center;
+}
+.sidebar--collapsed .sidebar-logo-toggle {
+  display: none;
+}
+.sidebar--collapsed .sidebar-back {
+  justify-content: center;
+  padding: .35rem .5rem;
+}
+.sidebar--collapsed .sidebar-section-toggle {
+  justify-content: center;
+}
+
+/* Mobile sidebar (drawer) */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(15,23,42,.5);
+  z-index: 98;
+  backdrop-filter: blur(2px);
+}
+
+/* Mobile top bar */
+.mobile-topbar {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: .6rem 1rem;
+  align-items: center;
+  gap: .75rem;
+  box-shadow: var(--shadow-sm);
+}
+.mobile-topbar-title {
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sidebar collapse toggle button */
+.sidebar-logo-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background .13s, color .13s;
+}
+.sidebar-logo-toggle:hover { background: rgba(255,255,255,.08); color: #94a3b8; }
 
 .sidebar-logo {
   padding: 1.1rem 1.1rem .9rem;
@@ -213,11 +295,12 @@ p  { margin: 0 0 .75rem; }
 
 /* ── Shell main content ──────────────────────────────────────────────────── */
 .shell-main {
-  margin-left: var(--sidebar-w);
+  margin-left: 220px; /* default; JS overrides via inline style */
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  transition: margin-left 0.2s ease;
 }
 
 /* ── Page containers ─────────────────────────────────────────────────────── */
@@ -227,11 +310,12 @@ p  { margin: 0 0 .75rem; }
   padding: 1.75rem 2rem 3rem;
 }
 
-/* Inside shell, pages don't need auto-centering — they're already offset */
+/* Inside shell, pages are centered on wide screens */
 .shell-main .page {
-  max-width: 1200px;
-  margin: 0;
-  padding: 1.75rem 2rem 3rem;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: clamp(1rem, 2.5vw, 1.75rem) clamp(1rem, 2.5vw, 2rem) 3rem;
+  width: 100%;
 }
 
 .page-header {
@@ -1086,3 +1170,54 @@ div:hover > .tree-row-actions { opacity: 1; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Responsive breakpoints ──────────────────────────────────────────────── */
+
+/* Tablet: tighter padding */
+@media (max-width: 1100px) {
+  .shell-main .page {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+  .stat-cards {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  }
+}
+
+/* Mobile: sidebar becomes drawer */
+@media (max-width: 767px) {
+  .mobile-topbar { display: flex; }
+  .sidebar-backdrop { display: block; }
+
+  .sidebar {
+    transform: translateX(-100%);
+    transition: width 0.2s ease, transform 0.22s ease;
+    z-index: 99;
+  }
+  .sidebar--mobile-open {
+    transform: translateX(0);
+  }
+  .sidebar-logo-toggle { display: none; }
+
+  .shell-main .page {
+    padding: 1rem 1rem 2.5rem;
+  }
+
+  .page-header {
+    flex-wrap: wrap;
+  }
+
+  .project-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-cards {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  }
+
+  .records-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .search-input { max-width: none; }
+}

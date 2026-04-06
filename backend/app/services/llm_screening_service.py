@@ -14,9 +14,11 @@ Workflow:
   1. estimate_run()         → cost/time preview (no DB side effects)
   2. create_and_launch_run() → creates LlmScreeningRun row, fires background task
   3. _execute_run()          → background task: screens every record in parallel
+     OR _execute_run_saturation() for corpus-by-corpus saturation mode
 
-Rate limiting: asyncio.Semaphore(CONCURRENT_REQUESTS = 8)
-Retry:         exponential backoff on rate-limit errors (max 3 retries)
+Rate limiting: asyncio.Semaphore(CONCURRENT_REQUESTS = 8) — PRISMA mode only
+Saturation mode processes records sequentially (order matters for saturation counter).
+Retry: exponential backoff on rate-limit errors (max 3 retries)
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -39,6 +42,7 @@ from app.models.ontology_node import OntologyNode
 from app.models.project import Project
 from app.models.record import Record
 from app.models.record_source import RecordSource
+from app.models.screening_queue import ScreeningQueue
 from app.utils.fulltext_fetcher import get_full_text
 
 logger = logging.getLogger(__name__)
@@ -164,13 +168,27 @@ async def estimate_run(
     db: AsyncSession,
     project_id: uuid.UUID,
     model: str,
+    source_id: Optional[uuid.UUID] = None,
 ) -> dict[str, Any]:
-    """Return cost/time preview for a screening run. No DB side effects."""
-    total: int = (
-        await db.execute(
+    """Return cost/time preview for a screening run. No DB side effects.
+
+    When source_id is provided, counts only records from that source.
+    """
+    if source_id is not None:
+        total_result = await db.execute(
+            select(func.count())
+            .select_from(Record)
+            .join(RecordSource, RecordSource.record_id == Record.id)
+            .where(
+                Record.project_id == project_id,
+                RecordSource.source_id == source_id,
+            )
+        )
+    else:
+        total_result = await db.execute(
             select(func.count()).select_from(Record).where(Record.project_id == project_id)
         )
-    ).scalar_one()
+    total: int = total_result.scalar_one()
 
     in_price, out_price = _cost_per_token(model)
     estimated_input_tokens = total * _AVG_INPUT_TOKENS
@@ -215,9 +233,14 @@ async def create_and_launch_run(
     background_tasks: BackgroundTasks,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    mode: str = "prisma_scr",
+    source_id: Optional[uuid.UUID] = None,
+    seed: Optional[int] = None,
+    saturation_threshold: int = 5,
+    include_extraction: bool = True,
 ) -> LlmScreeningRun:
     """Create an LlmScreeningRun row and enqueue the background execution."""
-    estimate = await estimate_run(db, project_id, model)
+    estimate = await estimate_run(db, project_id, model, source_id=source_id)
 
     run = LlmScreeningRun(
         project_id=project_id,
@@ -226,13 +249,34 @@ async def create_and_launch_run(
         total_records=estimate["total_records"],
         estimated_cost_usd=Decimal(str(estimate["estimated_cost_usd"])),
         triggered_by=triggered_by,
+        mode=mode,
+        source_id=source_id,
+        seed=seed,
+        saturation_threshold=saturation_threshold,
+        include_extraction=include_extraction,
     )
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
     run_id = run.id
-    background_tasks.add_task(_execute_run, project_id, run_id, model, anthropic_api_key, openrouter_api_key)
+    if mode == "saturation":
+        background_tasks.add_task(
+            _execute_run_saturation,
+            project_id,
+            run_id,
+            model,
+            source_id,
+            seed,
+            saturation_threshold,
+            include_extraction,
+            anthropic_api_key,
+            openrouter_api_key,
+        )
+    else:
+        background_tasks.add_task(
+            _execute_run, project_id, run_id, model, anthropic_api_key, openrouter_api_key
+        )
     return run
 
 
@@ -248,12 +292,53 @@ async def _execute_run(
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
 ) -> None:
-    """Background task: screen every record in the project using the LLM."""
+    """Background task: screen every record in the project using the LLM (PRISMA mode)."""
     async with SessionLocal() as db:
         try:
             await _do_execute_run(db, project_id, run_id, model, anthropic_api_key, openrouter_api_key)
         except Exception as exc:
             logger.exception("LLM screening run %s failed", run_id)
+            async with SessionLocal() as err_db:
+                await err_db.execute(
+                    update(LlmScreeningRun)
+                    .where(LlmScreeningRun.id == run_id)
+                    .values(
+                        status="failed",
+                        error_message=str(exc),
+                        completed_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+                await err_db.commit()
+
+
+async def _execute_run_saturation(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    source_id: Optional[uuid.UUID],
+    seed: Optional[int],
+    saturation_threshold: int,
+    include_extraction: bool,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+) -> None:
+    """Background task: screen a single corpus sequentially, stopping at saturation."""
+    async with SessionLocal() as db:
+        try:
+            await _do_execute_run_saturation(
+                db,
+                project_id,
+                run_id,
+                model,
+                source_id,
+                seed,
+                saturation_threshold,
+                include_extraction,
+                anthropic_api_key,
+                openrouter_api_key,
+            )
+        except Exception as exc:
+            logger.exception("LLM saturation run %s failed", run_id)
             async with SessionLocal() as err_db:
                 await err_db.execute(
                     update(LlmScreeningRun)
@@ -299,11 +384,21 @@ async def _do_execute_run(
     )
     await db.commit()
 
-    # Load project criteria
+    # Load project criteria, llm_config, extraction_template
     project: Optional[Project] = await db.get(Project, project_id)
     criteria: dict = {}
-    if project and project.criteria:
-        criteria = project.criteria
+    llm_config: Optional[dict] = None
+    extraction_template: Optional[dict] = None
+    include_extraction: bool = True
+    if project:
+        if project.criteria:
+            criteria = project.criteria
+        llm_config = project.llm_config
+        extraction_template = project.extraction_template
+    # Check whether the run wants extraction
+    run_row: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    if run_row is not None:
+        include_extraction = run_row.include_extraction
 
     # Load thematic framework (themes + codes)
     framework_nodes = (
@@ -341,6 +436,9 @@ async def _do_execute_run(
                     db=db,
                     anthropic_api_key=anthropic_api_key,
                     openrouter_api_key=openrouter_api_key,
+                    llm_config=llm_config,
+                    extraction_template=extraction_template,
+                    include_extraction=include_extraction,
                 )
                 if result is None:
                     return
@@ -408,6 +506,217 @@ async def _do_execute_run(
     await db.commit()
 
 
+async def _resolve_queue_order(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    source_id: uuid.UUID,
+    seed: Optional[int],
+) -> list[uuid.UUID]:
+    """Return ordered record IDs for saturation mode.
+
+    Prefers an existing human screening queue for the source (most recent).
+    Falls back to a seeded shuffle of all records in the source.
+    """
+    source_id_str = str(source_id)
+    queue_row = (
+        await db.execute(
+            select(ScreeningQueue)
+            .where(
+                ScreeningQueue.project_id == project_id,
+                ScreeningQueue.source_id == source_id_str,
+            )
+            .order_by(ScreeningQueue.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if queue_row is not None and queue_row.slots:
+        # Extract record IDs from the queue in slot order
+        record_ids = [
+            uuid.UUID(slot["id"])
+            for slot in queue_row.slots
+            if slot.get("type") == "record"
+        ]
+        return record_ids
+
+    # No queue found — load all records for the source and shuffle deterministically
+    rows = (
+        await db.execute(
+            select(Record.id)
+            .join(RecordSource, RecordSource.record_id == Record.id)
+            .where(
+                Record.project_id == project_id,
+                RecordSource.source_id == source_id,
+            )
+            .order_by(Record.id)  # stable base order before shuffle
+        )
+    ).scalars().all()
+
+    record_ids = [r for r in rows]
+    rng = random.Random(seed if seed is not None else 0)
+    rng.shuffle(record_ids)
+    return record_ids
+
+
+async def _do_execute_run_saturation(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    source_id: Optional[uuid.UUID],
+    seed: Optional[int],
+    saturation_threshold: int,
+    include_extraction: bool,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+) -> None:
+    """Screen a corpus sequentially, stopping when saturation is reached.
+
+    Saturation = saturation_threshold consecutive records with no new concepts.
+    Processes records in queue order (or seeded order) — NOT parallel.
+    """
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(status="running", started_at=datetime.now(tz=timezone.utc))
+    )
+    await db.commit()
+
+    project: Optional[Project] = await db.get(Project, project_id)
+    criteria: dict = {}
+    llm_config: Optional[dict] = None
+    extraction_template: Optional[dict] = None
+    if project:
+        if project.criteria:
+            criteria = project.criteria
+        llm_config = project.llm_config
+        extraction_template = project.extraction_template
+
+    framework_nodes = (
+        await db.execute(
+            select(OntologyNode)
+            .where(
+                OntologyNode.project_id == project_id,
+                OntologyNode.namespace.in_(["theme", "code"]),
+            )
+            .order_by(OntologyNode.namespace.desc(), OntologyNode.position)
+        )
+    ).scalars().all()
+
+    record_ids = []
+    if source_id is not None:
+        record_ids = await _resolve_queue_order(db, project_id, source_id, seed)
+
+    total = len(record_ids)
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(total_records=total)
+    )
+    await db.commit()
+
+    included = excluded = uncertain = new_concepts_total = 0
+    input_tok_total = output_tok_total = 0
+    actual_cost = 0.0
+    in_price, out_price = _cost_per_token(model)
+    consecutive_no_new = 0
+    stopped_early = False
+
+    for record_id in record_ids:
+        record: Optional[Record] = await db.get(Record, record_id)
+        if record is None:
+            continue
+
+        try:
+            result = await _screen_one_record(
+                record=record,
+                project_id=project_id,
+                run_id=run_id,
+                model=model,
+                criteria=criteria,
+                framework=framework_nodes,
+                db=db,
+                anthropic_api_key=anthropic_api_key,
+                openrouter_api_key=openrouter_api_key,
+                llm_config=llm_config,
+                extraction_template=extraction_template,
+                include_extraction=include_extraction,
+            )
+        except Exception:
+            logger.exception("Error screening record %s in saturation run", record_id)
+            continue
+
+        if result is None:
+            continue
+
+        db.add(result)
+        await db.flush()
+
+        if result.ta_decision == "include":
+            included += 1
+        elif result.ta_decision == "exclude":
+            excluded += 1
+        elif result.ta_decision == "uncertain":
+            uncertain += 1
+
+        # Saturation counter: track consecutive records with no new concepts
+        has_new_concepts = bool(result.new_concepts and len(result.new_concepts) > 0)
+        if has_new_concepts:
+            new_concepts_total += len(result.new_concepts)  # type: ignore[arg-type]
+            consecutive_no_new = 0
+        else:
+            consecutive_no_new += 1
+
+        itok = result.input_tokens or 0
+        otok = result.output_tokens or 0
+        input_tok_total += itok
+        output_tok_total += otok
+        actual_cost += itok * in_price + otok * out_price
+
+        await db.execute(
+            update(LlmScreeningRun)
+            .where(LlmScreeningRun.id == run_id)
+            .values(
+                processed_records=LlmScreeningRun.processed_records + 1,
+                included_count=included,
+                excluded_count=excluded,
+                uncertain_count=uncertain,
+                new_concepts_count=new_concepts_total,
+                input_tokens=input_tok_total,
+                output_tokens=output_tok_total,
+            )
+        )
+        await db.commit()
+
+        if consecutive_no_new >= saturation_threshold:
+            stopped_early = True
+            logger.info(
+                "Saturation reached after %d consecutive records with no new concepts "
+                "(run %s)",
+                consecutive_no_new,
+                run_id,
+            )
+            break
+
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(
+            status="completed",
+            completed_at=datetime.now(tz=timezone.utc),
+            actual_cost_usd=Decimal(str(round(actual_cost, 6))),
+            included_count=included,
+            excluded_count=excluded,
+            uncertain_count=uncertain,
+            new_concepts_count=new_concepts_total,
+            input_tokens=input_tok_total,
+            output_tokens=output_tok_total,
+            stopped_at_saturation=stopped_early,
+        )
+    )
+    await db.commit()
+
+
 async def _screen_one_record(
     record: Record,
     project_id: uuid.UUID,
@@ -418,6 +727,9 @@ async def _screen_one_record(
     db: AsyncSession,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    llm_config: Optional[dict] = None,
+    extraction_template: Optional[dict] = None,
+    include_extraction: bool = False,
 ) -> Optional[LlmScreeningResult]:
     """Screen a single record: fetch full text, call LLM, return result row."""
     # Extract pmid / pmcid from the first record_source for this record
@@ -457,13 +769,60 @@ async def _screen_one_record(
         db=db,
     )
 
-    prompt = _build_prompt(record, full_text, full_text_source, criteria, framework)
+    prompt = _build_prompt(
+        record,
+        full_text,
+        full_text_source,
+        criteria,
+        framework,
+        llm_config=llm_config,
+        extraction_template=extraction_template,
+        include_extraction=include_extraction,
+    )
+
+    # Build system prompt, allowing custom additions or full override
+    system_prompt: Optional[str] = None
+    if llm_config:
+        if llm_config.get("use_full_override") and llm_config.get("full_override_prompt"):
+            system_prompt = llm_config["full_override_prompt"]
+        elif llm_config.get("custom_system_additions"):
+            system_prompt = (
+                llm_config["custom_system_additions"] + "\n\n" + _SYSTEM_PROMPT
+            )
 
     try:
-        llm_output = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key)
+        llm_output = await _call_llm(
+            model,
+            prompt,
+            anthropic_api_key,
+            openrouter_api_key,
+            system_prompt_override=system_prompt,
+        )
     except Exception:
         logger.exception("LLM call failed for record %s", record.id)
         return None
+
+    # Optionally do a second extraction call for FT-included records
+    extracted_json: Optional[dict] = None
+    if (
+        include_extraction
+        and extraction_template
+        and extraction_template.get("rows")
+        and llm_output.get("ft_decision") == "include"
+    ):
+        try:
+            extracted_json = await _extract_one_record(
+                record=record,
+                full_text=full_text,
+                extraction_template=extraction_template,
+                llm_config=llm_config,
+                model=model,
+                anthropic_api_key=anthropic_api_key,
+                openrouter_api_key=openrouter_api_key,
+                system_prompt_override=system_prompt,
+            )
+        except Exception:
+            logger.exception("LLM extraction failed for record %s", record.id)
 
     return LlmScreeningResult(
         run_id=run_id,
@@ -480,6 +839,7 @@ async def _screen_one_record(
         input_tokens=llm_output.get("_input_tokens"),
         output_tokens=llm_output.get("_output_tokens"),
         model=model,
+        extracted_json=extracted_json,
     )
 
 
@@ -494,9 +854,18 @@ def _build_prompt(
     full_text_source: str,
     criteria: dict,
     framework: list,
+    llm_config: Optional[dict] = None,
+    extraction_template: Optional[dict] = None,
+    include_extraction: bool = False,
 ) -> str:
     """Build the structured screening prompt for the LLM."""
     lines: list[str] = []
+
+    # ── Research question (from llm_config) ───────────────────────────────
+    if llm_config and llm_config.get("research_question"):
+        lines.append("## Research Question\n")
+        lines.append(llm_config["research_question"])
+        lines.append("")
 
     # ── Criteria ──────────────────────────────────────────────────────────
     lines.append("## Inclusion / Exclusion Criteria\n")
@@ -584,6 +953,36 @@ def _build_prompt(
     else:
         lines.append("## Full Text\n")
         lines.append("(Full text not available — screening based on title/abstract only)")
+        lines.append("")
+
+    # ── Concept instructions (from llm_config) ───────────────────────────
+    if llm_config and llm_config.get("concept_instructions"):
+        lines.append("## Concepts and Extraction Guidance\n")
+        lines.append(llm_config["concept_instructions"])
+        lines.append("")
+
+    # ── Extraction template (when extraction is enabled) ──────────────────
+    if include_extraction and extraction_template and extraction_template.get("rows"):
+        lines.append("## Extraction Template\n")
+        lines.append(
+            "If this paper is included at the full-text stage, also provide structured "
+            "extraction data using the `submit_extraction` tool with these fields:"
+        )
+        for row in extraction_template["rows"]:
+            domain = row.get("domain", "")
+            item = row.get("item", "")
+            row_type = row.get("type", "string")
+            options = row.get("options") or []
+            field_label = f"  - **{domain}: {item}**" if domain else f"  - **{item}**"
+            if options:
+                field_label += f" ({row_type}: {', '.join(str(o) for o in options)})"
+            else:
+                field_label += f" ({row_type})"
+            lines.append(field_label)
+        if llm_config and llm_config.get("extraction_instructions"):
+            lines.append("")
+            lines.append("**Additional extraction instructions:**")
+            lines.append(llm_config["extraction_instructions"])
         lines.append("")
 
     # ── Instructions ──────────────────────────────────────────────────────
@@ -704,22 +1103,47 @@ async def _call_llm(
     prompt: str,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    system_prompt_override: Optional[str] = None,
+    tool_schema_override: Optional[list] = None,
 ) -> dict[str, Any]:
     """Dispatch to the correct provider backend based on model name + env keys.
 
     Returns the tool input dict plus '_input_tokens' / '_output_tokens' keys.
+    system_prompt_override replaces _SYSTEM_PROMPT when provided.
+    tool_schema_override replaces _TOOL_SCHEMA/_OAI_TOOLS when provided.
     """
     provider = _detect_provider(model)
     if provider == "anthropic":
-        return await _call_anthropic(model, prompt, api_key=anthropic_api_key)
-    return await _call_openrouter(model, prompt, api_key=openrouter_api_key)
+        return await _call_anthropic(
+            model,
+            prompt,
+            api_key=anthropic_api_key,
+            system_prompt_override=system_prompt_override,
+            tool_schema_override=tool_schema_override,
+        )
+    return await _call_openrouter(
+        model,
+        prompt,
+        api_key=openrouter_api_key,
+        system_prompt_override=system_prompt_override,
+        tool_schema_override=tool_schema_override,
+    )
 
 
-async def _call_anthropic(model: str, prompt: str, api_key: Optional[str] = None) -> dict[str, Any]:
+async def _call_anthropic(
+    model: str,
+    prompt: str,
+    api_key: Optional[str] = None,
+    system_prompt_override: Optional[str] = None,
+    tool_schema_override: Optional[list] = None,
+) -> dict[str, Any]:
     """Call Anthropic API directly using native tool_use."""
     import anthropic  # type: ignore
 
     client = anthropic.AsyncAnthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    effective_system = system_prompt_override or _SYSTEM_PROMPT
+    effective_tools = tool_schema_override or _TOOL_SCHEMA
+    tool_name = effective_tools[0]["name"]
 
     last_exc: Optional[Exception] = None
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
@@ -729,14 +1153,14 @@ async def _call_anthropic(model: str, prompt: str, api_key: Optional[str] = None
             response = await client.messages.create(
                 model=model,
                 max_tokens=1024,
-                system=_SYSTEM_PROMPT,
-                tools=_TOOL_SCHEMA,  # type: ignore[arg-type]
+                system=effective_system,
+                tools=effective_tools,  # type: ignore[arg-type]
                 tool_choice={"type": "any"},
                 messages=[{"role": "user", "content": prompt}],
             )
             result: dict[str, Any] = {}
             for block in response.content:
-                if block.type == "tool_use" and block.name == "submit_screening_result":
+                if block.type == "tool_use" and block.name == tool_name:
                     result = dict(block.input)
                     break
             result["_input_tokens"] = response.usage.input_tokens
@@ -757,7 +1181,13 @@ async def _call_anthropic(model: str, prompt: str, api_key: Optional[str] = None
     raise RuntimeError(f"Anthropic API rate-limit exceeded after retries: {last_exc}")
 
 
-async def _call_openrouter(model: str, prompt: str, api_key: Optional[str] = None) -> dict[str, Any]:
+async def _call_openrouter(
+    model: str,
+    prompt: str,
+    api_key: Optional[str] = None,
+    system_prompt_override: Optional[str] = None,
+    tool_schema_override: Optional[list] = None,
+) -> dict[str, Any]:
     """Call any model via OpenRouter using the OpenAI-compatible function-calling API.
 
     OpenRouter docs: https://openrouter.ai/docs
@@ -771,6 +1201,24 @@ async def _call_openrouter(model: str, prompt: str, api_key: Optional[str] = Non
             "OPENROUTER_API_KEY is not set. "
             "Get a key at https://openrouter.ai/keys and add it to your environment."
         )
+
+    effective_system = system_prompt_override or _SYSTEM_PROMPT
+    # Convert Anthropic-format tools to OpenAI format if custom schema provided
+    if tool_schema_override:
+        effective_oai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in tool_schema_override
+        ]
+    else:
+        effective_oai_tools = _OAI_TOOLS
+    tool_name = effective_oai_tools[0]["function"]["name"]
 
     client = AsyncOpenAI(
         api_key=resolved_key,
@@ -790,13 +1238,13 @@ async def _call_openrouter(model: str, prompt: str, api_key: Optional[str] = Non
                 model=model,
                 max_tokens=1024,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": effective_system},
                     {"role": "user", "content": prompt},
                 ],
-                tools=_OAI_TOOLS,  # type: ignore[arg-type]
+                tools=effective_oai_tools,  # type: ignore[arg-type]
                 tool_choice={
                     "type": "function",
-                    "function": {"name": "submit_screening_result"},
+                    "function": {"name": tool_name},
                 },
             )
             result: dict[str, Any] = {}
@@ -822,3 +1270,191 @@ async def _call_openrouter(model: str, prompt: str, api_key: Optional[str] = Non
             raise
 
     raise RuntimeError(f"OpenRouter rate-limit exceeded after retries: {last_exc}")
+
+
+# ---------------------------------------------------------------------------
+# Prompt preview (public helper for the preview endpoint)
+# ---------------------------------------------------------------------------
+
+
+async def build_prompt_preview(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    record_id: Optional[uuid.UUID] = None,
+) -> dict[str, Any]:
+    """Return the resolved system + user prompts for a sample record.
+
+    Uses the first record in the project if record_id is not specified.
+    """
+    project: Optional[Project] = await db.get(Project, project_id)
+    criteria: dict = {}
+    llm_config: Optional[dict] = None
+    extraction_template: Optional[dict] = None
+    if project:
+        criteria = project.criteria or {}
+        llm_config = project.llm_config
+        extraction_template = project.extraction_template
+
+    framework_nodes = (
+        await db.execute(
+            select(OntologyNode)
+            .where(
+                OntologyNode.project_id == project_id,
+                OntologyNode.namespace.in_(["theme", "code"]),
+            )
+            .order_by(OntologyNode.namespace.desc(), OntologyNode.position)
+        )
+    ).scalars().all()
+
+    if record_id is not None:
+        record: Optional[Record] = await db.get(Record, record_id)
+    else:
+        record = (
+            await db.execute(
+                select(Record)
+                .where(Record.project_id == project_id)
+                .order_by(Record.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if record is None:
+        return {"system_prompt": _SYSTEM_PROMPT, "user_prompt": "(No records in project)"}
+
+    include_extraction = bool(
+        extraction_template and extraction_template.get("rows")
+    )
+    user_prompt = _build_prompt(
+        record,
+        None,
+        "abstract_only",
+        criteria,
+        framework_nodes,
+        llm_config=llm_config,
+        extraction_template=extraction_template,
+        include_extraction=include_extraction,
+    )
+
+    system_prompt = _SYSTEM_PROMPT
+    if llm_config:
+        if llm_config.get("use_full_override") and llm_config.get("full_override_prompt"):
+            system_prompt = llm_config["full_override_prompt"]
+        elif llm_config.get("custom_system_additions"):
+            system_prompt = llm_config["custom_system_additions"] + "\n\n" + _SYSTEM_PROMPT
+
+    return {"system_prompt": system_prompt, "user_prompt": user_prompt}
+
+
+# ---------------------------------------------------------------------------
+# Structured extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_extraction_tool_schema(template: dict) -> list:
+    """Build an Anthropic-format tool schema from the project's extraction_template."""
+    rows = template.get("rows") or []
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for row in rows:
+        row_id = row.get("id", "")
+        if not row_id:
+            continue
+        domain = row.get("domain", "")
+        item = row.get("item", "")
+        row_type = row.get("type", "string")
+        options = row.get("options") or []
+        description = f"{domain}: {item}" if domain else item
+
+        prop: dict[str, Any] = {"description": description}
+        if row_type in ("single_select",) and options:
+            prop["type"] = "string"
+            prop["enum"] = [str(o) for o in options]
+        elif row_type == "multi_select" and options:
+            prop["type"] = "array"
+            prop["items"] = {"type": "string", "enum": [str(o) for o in options]}
+        else:
+            prop["type"] = "string"
+
+        properties[row_id] = prop
+        required.append(row_id)
+
+    return [
+        {
+            "name": "submit_extraction",
+            "description": "Submit structured data extraction for this paper",
+            "input_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
+    ]
+
+
+async def _extract_one_record(
+    record: Record,
+    full_text: Optional[str],
+    extraction_template: dict,
+    llm_config: Optional[dict],
+    model: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+    system_prompt_override: Optional[str] = None,
+) -> Optional[dict]:
+    """Second LLM call: structured extraction for an FT-included record.
+
+    Returns a dict keyed by extraction_template row id, or None on failure.
+    """
+    rows = extraction_template.get("rows") or []
+    if not rows:
+        return None
+
+    tool_schema = _build_extraction_tool_schema(extraction_template)
+
+    # Build a focused extraction prompt
+    lines: list[str] = []
+    lines.append("## Paper\n")
+    lines.append(f"**Title**: {record.title or '(no title)'}")
+    if record.abstract:
+        lines.append(f"\n**Abstract**: {record.abstract}")
+    if full_text:
+        lines.append(f"\n## Full Text\n{full_text[:8000]}")  # cap at 8k chars
+    lines.append("")
+    lines.append("## Extraction Fields\n")
+    for row in rows:
+        domain = row.get("domain", "")
+        item = row.get("item", "")
+        label = f"{domain}: {item}" if domain else item
+        lines.append(f"- **{label}**")
+    if llm_config and llm_config.get("extraction_instructions"):
+        lines.append(f"\n**Instructions**: {llm_config['extraction_instructions']}")
+    lines.append(
+        "\nUse the `submit_extraction` tool to return the extracted values for each field."
+    )
+
+    extraction_system = (
+        system_prompt_override
+        or (
+            "You are an expert evidence synthesis researcher performing structured data extraction. "
+            "Extract only what is explicitly stated in the paper. "
+            "You MUST use the submit_extraction tool to return your answer."
+        )
+    )
+
+    try:
+        result = await _call_llm(
+            model,
+            "\n".join(lines),
+            anthropic_api_key=anthropic_api_key,
+            openrouter_api_key=openrouter_api_key,
+            system_prompt_override=extraction_system,
+            tool_schema_override=tool_schema,
+        )
+        # Remove token-counting keys
+        result.pop("_input_tokens", None)
+        result.pop("_output_tokens", None)
+        return result if result else None
+    except Exception:
+        logger.exception("Extraction LLM call failed for record %s", record.id)
+        return None

@@ -1173,6 +1173,27 @@ export interface LlmRunResponse {
   created_at: string;
   triggered_by: string | null;
   progress_pct: number;
+  // Mode fields (migration 025)
+  mode: "prisma_scr" | "saturation";
+  source_id: string | null;
+  seed: number | null;
+  saturation_threshold: number;
+  include_extraction: boolean;
+  stopped_at_saturation: boolean;
+}
+
+export interface MatchedCode {
+  code_id: string;
+  code_name: string;
+  snippet?: string;
+  confidence: number;
+}
+
+export interface NewConcept {
+  name: string;
+  category_suggestion: string;
+  snippet?: string;
+  rationale: string;
 }
 
 export interface LlmResultResponse {
@@ -1185,8 +1206,8 @@ export interface LlmResultResponse {
   ta_reason: string | null;
   ft_decision: string | null;
   ft_reason: string | null;
-  matched_codes: string[] | null;
-  new_concepts: string[] | null;
+  matched_codes: MatchedCode[] | null;
+  new_concepts: NewConcept[] | null;
   full_text_source: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -1194,6 +1215,7 @@ export interface LlmResultResponse {
   reviewed_by: string | null;
   reviewed_at: string | null;
   review_action: string | null;
+  extracted_json: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -1204,20 +1226,68 @@ export interface PaginatedLlmResults {
   items: LlmResultResponse[];
 }
 
+export interface LlmConfig {
+  research_question?: string;
+  custom_system_additions?: string;
+  extraction_instructions?: string;
+  concept_instructions?: string;
+  use_full_override?: boolean;
+  full_override_prompt?: string | null;
+}
+
+export interface LlmComparisonStats {
+  n_compared_ta: number;
+  ta_agreement_pct: number | null;
+  kappa_ta: number | null;
+  kappa_ta_label: string;
+  n_compared_ft: number;
+  ft_agreement_pct: number | null;
+  kappa_ft: number | null;
+  kappa_ft_label: string;
+}
+
+export interface LlmComparisonItem {
+  record_id: string;
+  title: string | null;
+  llm_ta: string | null;
+  human_ta: string | null;
+  ta_agrees: boolean | null;
+  llm_ft: string | null;
+  human_ft: string | null;
+  ft_agrees: boolean | null;
+}
+
+export interface LlmComparisonResponse {
+  stats: LlmComparisonStats;
+  items: LlmComparisonItem[];
+}
+
+export interface LlmPromptPreview {
+  system_prompt: string;
+  user_prompt: string;
+}
+
 export const llmScreeningApi = {
-  estimate: (projectId: string, model = "claude-sonnet-4-6") =>
+  estimate: (projectId: string, model = "claude-sonnet-4-6", sourceId?: string) =>
     api.get<LlmEstimateResponse>(`/projects/${projectId}/llm-screening/estimate`, {
-      params: { model },
+      params: { model, ...(sourceId ? { source_id: sourceId } : {}) },
     }),
 
   createRun: (
     projectId: string,
-    model: string,
+    body: {
+      model: string;
+      mode?: "prisma_scr" | "saturation";
+      source_id?: string;
+      seed?: number;
+      saturation_threshold?: number;
+      include_extraction?: boolean;
+    },
     keys?: { anthropic?: string; openrouter?: string }
   ) =>
     api.post<LlmRunResponse>(
       `/projects/${projectId}/llm-screening/runs`,
-      { model },
+      body,
       {
         headers: {
           ...(keys?.anthropic ? { "X-Anthropic-Api-Key": keys.anthropic } : {}),
@@ -1251,6 +1321,39 @@ export const llmScreeningApi = {
     api.post<LlmResultResponse>(
       `/projects/${projectId}/llm-screening/runs/${runId}/results/${resultId}/review`,
       { action }
+    ),
+
+  exportCsv: (projectId: string, runId: string) =>
+    api.get(`/projects/${projectId}/llm-screening/runs/${runId}/export`, {
+      responseType: "blob",
+    }),
+
+  compareWithHumans: (projectId: string, runId: string) =>
+    api.get<LlmComparisonResponse>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/comparison`
+    ),
+
+  sendToConsensus: (
+    projectId: string,
+    runId: string,
+    record_ids: string[],
+    stage: "TA" | "FT"
+  ) =>
+    api.post<{ created: number }>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/send-to-consensus`,
+      { record_ids, stage }
+    ),
+
+  getLlmConfig: (projectId: string) =>
+    api.get<LlmConfig>(`/projects/${projectId}/llm-config`),
+
+  updateLlmConfig: (projectId: string, config: LlmConfig) =>
+    api.patch<LlmConfig>(`/projects/${projectId}/llm-config`, config),
+
+  previewPrompt: (projectId: string, record_id?: string) =>
+    api.get<LlmPromptPreview>(
+      `/projects/${projectId}/llm-screening/preview-prompt`,
+      { params: record_id ? { record_id } : {} }
     ),
 };
 

@@ -22,3 +22,7 @@ backend/uploads
 
 # Alembic
 backend/migrations/versions/__pycache__/
+
+# DB
+backups/*
+

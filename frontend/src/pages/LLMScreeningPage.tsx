@@ -1,19 +1,17 @@
 /**
- * LLMScreeningPage — Launch and review AI-assisted screening runs.
+ * LLMScreeningPage — AI-assisted screening and extraction.
  *
- * Layout:
- *   A. API Keys panel   — store Anthropic / OpenRouter keys in localStorage
- *   B. Model selection  — grouped select + model description card
- *   C. Estimate         — paper count, token estimates, time
- *   D. Model comparison — inline table for 3 representative models
- *   E. Launch button
- *   F. Run history      — list of past runs with status + progress
- *   G. Results panel    — paginated per-result table for the selected run
+ * Tab layout:
+ *   A. Run       — mode selection, model, estimate, launch, run history
+ *   B. Prompt    — research question, custom prompt additions, extraction instructions, glossary
+ *   C. Results   — paginated results table with export CSV
+ *   D. Compare   — LLM vs human agreement stats + disagreement table + send to consensus
  */
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   Bot,
   ChevronLeft,
   Play,
@@ -24,12 +22,19 @@ import {
   EyeOff,
   ChevronDown,
   ChevronUp,
+  Download,
+  GitCompare,
+  Wand2,
 } from "lucide-react";
 import {
   projectsApi,
+  sourcesApi,
   llmScreeningApi,
   type LlmRunResponse,
   type LlmResultResponse,
+  type LlmConfig,
+  type LlmComparisonResponse,
+  type Source,
 } from "../api/client";
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
@@ -209,24 +214,6 @@ const MODEL_CATALOG: ModelGroup[] = [
         ],
         best_for: "Flagship performance — complex, nuanced inclusion decisions",
       },
-      {
-        id: "openai/gpt-5.4-pro",
-        label: "GPT-5.4 Pro",
-        cost_per_1k: "~$117",
-        speed: "Slow",
-        context: "1M tokens",
-        tags: ["👑 Most Powerful", "📄 Ultra Long Context"],
-        pros: [
-          "1M token context — can process entire literature corpora at once",
-          "Highest academic reasoning quality available from OpenAI",
-          "Exceptional for multi-document synthesis tasks",
-        ],
-        cons: [
-          "Extremely expensive — $117/1k tokens; cost-prohibitive at scale",
-          "Only justified for very small, high-value paper sets",
-        ],
-        best_for: "Tiny high-value corpora where cost is no constraint",
-      },
     ],
   },
   {
@@ -243,7 +230,7 @@ const MODEL_CATALOG: ModelGroup[] = [
         pros: [
           "Massive 1M token context — excellent for full papers",
           "Very high throughput at very low cost",
-          "Good multimodal capabilities (PDF tables/figures)",
+          "Good multimodal capabilities",
         ],
         cons: [
           "Less consistent structured output than Claude",
@@ -269,66 +256,30 @@ const MODEL_CATALOG: ModelGroup[] = [
         ],
         best_for: "Full-text screening of long papers and technical reports",
       },
-      {
-        id: "google/gemini-3-flash-preview",
-        label: "Gemini 3 Flash",
-        cost_per_1k: "~$0.15",
-        speed: "Very Fast",
-        context: "1M tokens",
-        tags: ["🆕 New", "⚡ Very Fast", "📄 Long Context"],
-        pros: [
-          "Next-generation Gemini at Flash speed and price",
-          "Improved structured output over Gemini 2",
-          "1M token context at low cost",
-        ],
-        cons: [
-          "Preview — may have API stability issues",
-          "Less community testing than Gemini 2 series",
-        ],
-        best_for: "High-volume screening with latest Gemini capabilities",
-      },
-      {
-        id: "google/gemini-3.1-flash-lite-preview",
-        label: "Gemini 3.1 Flash Lite",
-        cost_per_1k: "~$0.05",
-        speed: "Very Fast",
-        context: "1M tokens",
-        tags: ["🆕 New", "💰 Cheapest", "⚡ Very Fast"],
-        pros: [
-          "Cheapest option with 1M token context",
-          "Excellent for ultra-high-volume first-pass screening",
-          "Fastest Gemini variant",
-        ],
-        cons: [
-          "Lite model — reduced capability for nuanced decisions",
-          "Preview stability concerns",
-        ],
-        best_for: "Massive-scale first-pass where cost and speed are paramount",
-      },
-      {
-        id: "google/gemini-3.1-pro-preview",
-        label: "Gemini 3.1 Pro",
-        cost_per_1k: "~$8",
-        speed: "Medium",
-        context: "1M tokens",
-        tags: ["🆕 New", "🧠 Frontier", "📄 Long Context"],
-        pros: [
-          "Google's most capable model with 1M context",
-          "State-of-the-art reasoning on academic tasks",
-          "Excellent multimodal comprehension for PDFs with figures",
-        ],
-        cons: [
-          "Preview — potential instability",
-          "Expensive relative to Gemini 3 Flash",
-        ],
-        best_for: "Complex full-text screening requiring frontier reasoning + long context",
-      },
     ],
   },
   {
     group: "Meta Llama — via OpenRouter",
     key: "openrouter",
     models: [
+      {
+        id: "meta-llama/llama-4-scout",
+        label: "Llama 4 Scout",
+        cost_per_1k: "~$0.15",
+        speed: "Fast",
+        context: "10M tokens",
+        tags: ["🆕 New", "🔓 Open Source", "📄 Ultra Long Context"],
+        pros: [
+          "Groundbreaking 10M token context — entire corpora in one call",
+          "Open-source with multimodal capabilities",
+          "Very competitive pricing",
+        ],
+        cons: [
+          "New model — less community validation on academic tasks",
+          "Ultra-long context may slow inference",
+        ],
+        best_for: "Full-corpus screening where entire literature fits in context",
+      },
       {
         id: "meta-llama/llama-3.3-70b-instruct",
         label: "Llama 3.3 70B",
@@ -347,137 +298,6 @@ const MODEL_CATALOG: ModelGroup[] = [
         ],
         best_for: "Transparency-focused research requiring open-source auditability",
       },
-      {
-        id: "meta-llama/llama-4-scout",
-        label: "Llama 4 Scout",
-        cost_per_1k: "~$0.15",
-        speed: "Fast",
-        context: "10M tokens",
-        tags: ["🆕 New", "🔓 Open Source", "📄 Ultra Long Context"],
-        pros: [
-          "Groundbreaking 10M token context — entire corpora in one call",
-          "Open-source with multimodal capabilities (images/PDFs)",
-          "Very competitive pricing for the context window size",
-        ],
-        cons: [
-          "New model — less community validation on academic tasks",
-          "Ultra-long context may slow inference for standard abstracts",
-        ],
-        best_for: "Full-corpus screening where the entire literature fits in context",
-      },
-      {
-        id: "meta-llama/llama-4-maverick",
-        label: "Llama 4 Maverick",
-        cost_per_1k: "~$0.90",
-        speed: "Medium",
-        context: "1M tokens",
-        tags: ["🆕 New", "🔓 Open Source", "🧠 MoE"],
-        pros: [
-          "128-expert mixture-of-experts architecture — strong reasoning",
-          "Open-source with 1M token context",
-          "Competitive with GPT-4o on academic benchmarks",
-        ],
-        cons: [
-          "More expensive than Scout",
-          "MoE overhead can add latency variance",
-        ],
-        best_for: "Open-source alternative to GPT-4o with long-context capability",
-      },
-      {
-        id: "meta-llama/llama-3.1-405b-instruct",
-        label: "Llama 3.1 405B",
-        cost_per_1k: "~$2.70",
-        speed: "Slow",
-        context: "128k tokens",
-        tags: ["🔓 Open Source", "🧠 Large Scale"],
-        pros: [
-          "Largest Llama 3 model — approaches GPT-4o quality",
-          "Fully auditable weights and training",
-          "Competitive with proprietary models on academic tasks",
-        ],
-        cons: [
-          "Slowest throughput",
-          "Expensive for open-source — Llama 4 is better value",
-        ],
-        best_for: "Open-source research requiring maximum Llama 3 capability",
-      },
-    ],
-  },
-  {
-    group: "Mistral — via OpenRouter",
-    key: "openrouter",
-    models: [
-      {
-        id: "mistralai/ministral-8b-2512",
-        label: "Ministral 8B (2512)",
-        cost_per_1k: "~$0.28",
-        speed: "Fast",
-        context: "128k tokens",
-        tags: ["⚡ Fast", "🇪🇺 EU-compliant", "💰 Budget"],
-        pros: [
-          "Very affordable EU-compliant option",
-          "Strong multilingual capabilities",
-          "Fast inference for high-volume runs",
-        ],
-        cons: [
-          "8B parameters — weaker reasoning than larger models",
-          "Less reliable structured output",
-        ],
-        best_for: "Multilingual EU-compliant screening on a budget",
-      },
-      {
-        id: "mistralai/mistral-small-3.1",
-        label: "Mistral Small 3.1",
-        cost_per_1k: "~$0.10",
-        speed: "Fast",
-        context: "128k tokens",
-        tags: ["⚡ Fast", "🇪🇺 EU-compliant"],
-        pros: [
-          "Strong multilingual capabilities for non-English literature",
-          "EU data residency options via Mistral API",
-          "Good instruction-following at low cost",
-        ],
-        cons: [
-          "Less tested on systematic review tasks vs Claude/GPT",
-          "Smaller model means weaker reasoning",
-        ],
-        best_for: "Multilingual reviews or EU data-residency requirements",
-      },
-      {
-        id: "mistralai/mistral-large-2512",
-        label: "Mistral Large (2512)",
-        cost_per_1k: "~$1.35",
-        speed: "Medium",
-        context: "262k tokens",
-        tags: ["🇪🇺 EU-compliant", "📄 Long Context"],
-        pros: [
-          "Extended 262k context — handles long full-text papers",
-          "Best Mistral reasoning at reasonable cost",
-          "EU-compliant with strong multilingual support",
-        ],
-        cons: [
-          "Claude Sonnet generally outperforms at similar price",
-          "Less widely benchmarked on systematic review tasks",
-        ],
-        best_for: "European research needing EU compliance + long-context capability",
-      },
-      {
-        id: "mistralai/mistral-large",
-        label: "Mistral Large 2",
-        cost_per_1k: "~$2",
-        speed: "Medium",
-        context: "128k tokens",
-        tags: ["🇪🇺 EU-compliant"],
-        pros: [
-          "Proven EU-compliant option for complex reasoning",
-          "Good structured output reliability",
-        ],
-        cons: [
-          "Superseded by Mistral Large 2512 at lower cost",
-          "Shorter context than the 2512 variant",
-        ],
-        best_for: "European research projects needing EU-compliant LLM processing",
-      },
     ],
   },
   {
@@ -485,101 +305,22 @@ const MODEL_CATALOG: ModelGroup[] = [
     key: "openrouter",
     models: [
       {
-        id: "deepseek/deepseek-v3.2",
-        label: "DeepSeek V3.2",
-        cost_per_1k: "~$0.55",
-        speed: "Fast",
-        context: "163k tokens",
-        tags: ["🆕 New", "💰 Budget", "🌏 Chinese AI"],
-        pros: [
-          "Significant upgrade over V3 — better reasoning at similar price",
-          "Extended 163k context fits most papers and abstracts",
-          "Strong academic task performance",
-        ],
-        cons: [
-          "Data processed via Chinese servers — check institutional policy",
-          "Less predictable structured output vs Claude",
-        ],
-        best_for: "Budget screening with improved context and reasoning over V3",
-      },
-      {
         id: "deepseek/deepseek-chat",
-        label: "DeepSeek V3",
+        label: "DeepSeek Chat",
         cost_per_1k: "~$0.14",
-        speed: "Fast",
-        context: "64k tokens",
-        tags: ["💰 Cheapest", "🌏 Chinese AI"],
-        pros: [
-          "Lowest cost per paper of any high-quality model",
-          "Good English and Chinese literature coverage",
-        ],
-        cons: [
-          "Smaller context window limits full-text use",
-          "Superseded by V3.2 for most use cases",
-          "Data processed via Chinese servers",
-        ],
-        best_for: "Ultra-budget screening of abstracts only",
-      },
-      {
-        id: "deepseek/deepseek-r1",
-        label: "DeepSeek R1 (Reasoning)",
-        cost_per_1k: "~$0.55",
-        speed: "Slow",
-        context: "64k tokens",
-        tags: ["🧠 Reasoning", "🌏 Chinese AI"],
-        pros: [
-          "Explicit chain-of-thought reasoning — highly transparent decisions",
-          "Strong academic benchmark performance",
-          "Low cost for a reasoning model",
-        ],
-        cons: [
-          "Data privacy concerns for sensitive research",
-          "Small context window",
-          "Verbose reasoning can be slow",
-        ],
-        best_for: "Transparent, step-by-step screening decisions on a budget",
-      },
-    ],
-  },
-  {
-    group: "Qwen (Alibaba) — via OpenRouter",
-    key: "openrouter",
-    models: [
-      {
-        id: "qwen/qwen3.5-plus-02-15",
-        label: "Qwen 3.5 Plus",
-        cost_per_1k: "~$0.50",
-        speed: "Fast",
+        speed: "Medium",
         context: "128k tokens",
-        tags: ["🌏 Chinese AI", "💰 Budget"],
+        tags: ["💰 Budget", "🌏 Chinese AI"],
         pros: [
-          "Excellent for Chinese-language and multilingual literature",
-          "Strong STEM reasoning — good for science/medicine domains",
-          "Competitive cost vs DeepSeek",
+          "Very competitive pricing",
+          "Strong STEM and medical literature reasoning",
+          "Good structured output",
         ],
         cons: [
-          "Data processed via Alibaba Cloud — check institutional policy",
-          "Less community validation on English-language systematic reviews",
+          "Data governance concerns for some institutions",
+          "Less tested on systematic review tasks",
         ],
-        best_for: "Multilingual reviews with Chinese-language literature",
-      },
-      {
-        id: "qwen/qwen3-max-thinking",
-        label: "Qwen 3 Max (Thinking)",
-        cost_per_1k: "~$1.80",
-        speed: "Slow",
-        context: "128k tokens",
-        tags: ["🧠 Reasoning", "🌏 Chinese AI"],
-        pros: [
-          "Extended reasoning mode — similar to o3 but from Alibaba",
-          "Strong on STEM and medical literature comprehension",
-          "Transparent chain-of-thought output",
-        ],
-        cons: [
-          "Slower due to reasoning overhead",
-          "Data governance concerns for Western institutions",
-        ],
-        best_for: "Step-by-step transparent screening of STEM/medical literature",
+        best_for: "Budget-conscious researchers comfortable with Chinese AI providers",
       },
     ],
   },
@@ -597,55 +338,23 @@ const MODEL_CATALOG: ModelGroup[] = [
         pros: [
           "Completely free — $0 cost for unlimited screening",
           "Open-source weights — fully auditable",
-          "Strong STEM reasoning trained on scientific literature",
+          "Strong STEM reasoning",
         ],
         cons: [
-          "Free tier has rate limits — may be slow for large corpora",
-          "Less tested on systematic review screening tasks",
-          "Quality below Claude/GPT-4o on nuanced criteria",
+          "Free tier has rate limits",
+          "Less tested on systematic review screening",
         ],
         best_for: "Zero-budget exploratory runs or researchers without API credits",
       },
     ],
   },
-  {
-    group: "Cohere — via OpenRouter",
-    key: "openrouter",
-    models: [
-      {
-        id: "cohere/command-a-03-2025",
-        label: "Command A (Mar 2025)",
-        cost_per_1k: "~$2.50",
-        speed: "Medium",
-        context: "256k tokens",
-        tags: ["🔓 Open Weights", "📄 Long Context"],
-        pros: [
-          "Open-weights model — can be self-hosted for data privacy",
-          "256k context — handles long papers well",
-          "Strong RAG and document comprehension capabilities",
-        ],
-        cons: [
-          "Less widely benchmarked on systematic review tasks",
-          "Claude/GPT-4o generally stronger on academic reasoning",
-        ],
-        best_for: "Privacy-sensitive research requiring open-weights with long context",
-      },
-    ],
-  },
 ];
 
-// Flat lookup for model metadata
 const MODEL_BY_ID: Record<string, ModelDef & { groupKey: string }> = Object.fromEntries(
   MODEL_CATALOG.flatMap((g) => g.models.map((m) => [m.id, { ...m, groupKey: g.key }]))
 );
 
-// Default comparison model IDs (user can change in the table)
 const DEFAULT_COMPARISON_IDS = ["claude-sonnet-4-6", "openai/gpt-4o", "google/gemini-2.0-flash-001"];
-
-// Flat list of all model options for comparison selects
-const ALL_MODEL_OPTIONS = MODEL_CATALOG.flatMap((g) =>
-  g.models.map((m) => ({ id: m.id, label: `${m.label} (${g.group.split(" —")[0]})` }))
-);
 
 const DECISION_FILTER_OPTIONS = [
   { value: "", label: "All decisions" },
@@ -656,7 +365,7 @@ const DECISION_FILTER_OPTIONS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function decisionBadge(decision: string | null) {
+function decisionBadge(decision: string | null, small?: boolean) {
   if (!decision) return <span style={{ color: "#9aa0a6" }}>—</span>;
   const colors: Record<string, { bg: string; fg: string }> = {
     include:   { bg: "#e6f4ea", fg: "#188038" },
@@ -670,9 +379,9 @@ function decisionBadge(decision: string | null) {
         background: c.bg,
         color: c.fg,
         fontWeight: 600,
-        padding: "0.15rem 0.55rem",
+        padding: small ? "0.1rem 0.4rem" : "0.15rem 0.55rem",
         borderRadius: "0.75rem",
-        fontSize: "0.78rem",
+        fontSize: small ? "0.72rem" : "0.78rem",
         textTransform: "capitalize",
         whiteSpace: "nowrap",
       }}
@@ -684,7 +393,7 @@ function decisionBadge(decision: string | null) {
 
 function statusBadge(status: string) {
   const map: Record<string, { label: string; color: string }> = {
-    pending:   { label: "Pending",   color: "#9aa0a6" },
+    queued:    { label: "Queued",    color: "#9aa0a6" },
     running:   { label: "Running…",  color: "#1a73e8" },
     completed: { label: "Completed", color: "#188038" },
     failed:    { label: "Failed",    color: "#c5221f" },
@@ -793,40 +502,16 @@ function ApiKeysPanel({
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-        {/* Anthropic */}
         <div>
-          <label
-            style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}
-          >
+          <label style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}>
             Anthropic API Key
           </label>
           {anthropicKey ? (
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <code
-                style={{
-                  background: "#e8f0fe",
-                  color: "#1a73e8",
-                  padding: "0.3rem 0.6rem",
-                  borderRadius: "0.3rem",
-                  fontSize: "0.82rem",
-                  flex: 1,
-                }}
-              >
+              <code style={{ background: "#e8f0fe", color: "#1a73e8", padding: "0.3rem 0.6rem", borderRadius: "0.3rem", fontSize: "0.82rem", flex: 1 }}>
                 {maskKey(anthropicKey)}
               </code>
-              <button
-                title="Remove key"
-                onClick={() => onSaveAnthropic("")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#c5221f",
-                  padding: "0.2rem",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
+              <button title="Remove key" onClick={() => onSaveAnthropic("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", padding: "0.2rem", display: "flex", alignItems: "center" }}>
                 <X size={14} />
               </button>
             </div>
@@ -838,87 +523,30 @@ function ApiKeysPanel({
                   placeholder="sk-ant-…"
                   value={anthropicInput}
                   onChange={(e) => setAnthropicInput(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.4rem 2rem 0.4rem 0.6rem",
-                    borderRadius: "0.375rem",
-                    border: "1px solid #dadce0",
-                    fontSize: "0.85rem",
-                    boxSizing: "border-box",
-                  }}
+                  style={{ width: "100%", padding: "0.4rem 2rem 0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowAnthropic((v) => !v)}
-                  style={{
-                    position: "absolute",
-                    right: "0.4rem",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "#9aa0a6",
-                    padding: 0,
-                    display: "flex",
-                    alignItems: "center",
-                  }}
-                >
+                <button type="button" onClick={() => setShowAnthropic((v) => !v)} style={{ position: "absolute", right: "0.4rem", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9aa0a6", padding: 0, display: "flex", alignItems: "center" }}>
                   {showAnthropic ? <EyeOff size={13} /> : <Eye size={13} />}
                 </button>
               </div>
-              <button
-                className="btn-primary"
-                style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }}
-                onClick={() => {
-                  onSaveAnthropic(anthropicInput);
-                  setAnthropicInput("");
-                }}
-                disabled={!anthropicInput.trim()}
-              >
+              <button className="btn-primary" style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }} onClick={() => { onSaveAnthropic(anthropicInput); setAnthropicInput(""); }} disabled={!anthropicInput.trim()}>
                 Save
               </button>
             </div>
           )}
-          <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.3rem" }}>
-            For Claude models (direct)
-          </p>
+          <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.3rem" }}>For Claude models (direct)</p>
         </div>
 
-        {/* OpenRouter */}
         <div>
-          <label
-            style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}
-          >
+          <label style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}>
             OpenRouter API Key
           </label>
           {openrouterKey ? (
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <code
-                style={{
-                  background: "#e8f0fe",
-                  color: "#1a73e8",
-                  padding: "0.3rem 0.6rem",
-                  borderRadius: "0.3rem",
-                  fontSize: "0.82rem",
-                  flex: 1,
-                }}
-              >
+              <code style={{ background: "#e8f0fe", color: "#1a73e8", padding: "0.3rem 0.6rem", borderRadius: "0.3rem", fontSize: "0.82rem", flex: 1 }}>
                 {maskKey(openrouterKey)}
               </code>
-              <button
-                title="Remove key"
-                onClick={() => onSaveOpenrouter("")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#c5221f",
-                  padding: "0.2rem",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
+              <button title="Remove key" onClick={() => onSaveOpenrouter("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", padding: "0.2rem", display: "flex", alignItems: "center" }}>
                 <X size={14} />
               </button>
             </div>
@@ -930,72 +558,26 @@ function ApiKeysPanel({
                   placeholder="sk-or-…"
                   value={openrouterInput}
                   onChange={(e) => setOpenrouterInput(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "0.4rem 2rem 0.4rem 0.6rem",
-                    borderRadius: "0.375rem",
-                    border: "1px solid #dadce0",
-                    fontSize: "0.85rem",
-                    boxSizing: "border-box",
-                  }}
+                  style={{ width: "100%", padding: "0.4rem 2rem 0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowOpenrouter((v) => !v)}
-                  style={{
-                    position: "absolute",
-                    right: "0.4rem",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "#9aa0a6",
-                    padding: 0,
-                    display: "flex",
-                    alignItems: "center",
-                  }}
-                >
+                <button type="button" onClick={() => setShowOpenrouter((v) => !v)} style={{ position: "absolute", right: "0.4rem", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9aa0a6", padding: 0, display: "flex", alignItems: "center" }}>
                   {showOpenrouter ? <EyeOff size={13} /> : <Eye size={13} />}
                 </button>
               </div>
-              <button
-                className="btn-primary"
-                style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }}
-                onClick={() => {
-                  onSaveOpenrouter(openrouterInput);
-                  setOpenrouterInput("");
-                }}
-                disabled={!openrouterInput.trim()}
-              >
+              <button className="btn-primary" style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }} onClick={() => { onSaveOpenrouter(openrouterInput); setOpenrouterInput(""); }} disabled={!openrouterInput.trim()}>
                 Save
               </button>
             </div>
           )}
           <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.3rem" }}>
             For all models via{" "}
-            <a
-              href="https://openrouter.ai/keys"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: "#6366f1" }}
-            >
-              openrouter.ai
-            </a>
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#6366f1" }}>openrouter.ai</a>
           </p>
         </div>
       </div>
 
-      <p
-        style={{
-          fontSize: "0.75rem",
-          color: "#9aa0a6",
-          marginTop: "0.85rem",
-          marginBottom: 0,
-        }}
-      >
-        Keys are stored in your browser's local storage and sent only to our backend when
-        making LLM calls.
+      <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.85rem", marginBottom: 0 }}>
+        Keys are stored in your browser's local storage and sent only to our backend when making LLM calls.
       </p>
     </section>
   );
@@ -1006,91 +588,36 @@ function ApiKeysPanel({
 function ModelDescriptionCard({ modelId }: { modelId: string }) {
   const m = MODEL_BY_ID[modelId];
   if (!m) return null;
-
   return (
-    <div
-      style={{
-        background: "#fff",
-        border: "1px solid #e8eaed",
-        borderRadius: "0.5rem",
-        padding: "1rem",
-        marginTop: "0.75rem",
-      }}
-    >
+    <div style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.5rem", padding: "1rem", marginTop: "0.75rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem", flexWrap: "wrap" }}>
         <span style={{ fontWeight: 600, fontSize: "0.9rem", color: "#3c4043" }}>{m.label}</span>
         {m.tags.map((tag) => (
-          <span
-            key={tag}
-            style={{
-              background: "#ede9fe",
-              color: "#6366f1",
-              padding: "0.1rem 0.5rem",
-              borderRadius: "0.75rem",
-              fontSize: "0.72rem",
-              fontWeight: 600,
-            }}
-          >
-            {tag}
-          </span>
+          <span key={tag} style={{ background: "#ede9fe", color: "#6366f1", padding: "0.1rem 0.5rem", borderRadius: "0.75rem", fontSize: "0.72rem", fontWeight: 600 }}>{tag}</span>
         ))}
       </div>
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", fontSize: "0.82rem" }}>
         <div>
-          <p style={{ margin: "0 0 0.35rem", fontWeight: 600, color: "#188038", fontSize: "0.78rem" }}>
-            Strengths
-          </p>
+          <p style={{ margin: "0 0 0.35rem", fontWeight: 600, color: "#188038", fontSize: "0.78rem" }}>Strengths</p>
           <ul style={{ margin: 0, paddingLeft: "1.2rem", color: "#3c4043" }}>
-            {m.pros.map((p) => (
-              <li key={p} style={{ marginBottom: "0.15rem" }}>
-                {p}
-              </li>
-            ))}
+            {m.pros.map((p) => <li key={p} style={{ marginBottom: "0.15rem" }}>{p}</li>)}
           </ul>
         </div>
         <div>
-          <p style={{ margin: "0 0 0.35rem", fontWeight: 600, color: "#c5221f", fontSize: "0.78rem" }}>
-            Limitations
-          </p>
+          <p style={{ margin: "0 0 0.35rem", fontWeight: 600, color: "#c5221f", fontSize: "0.78rem" }}>Limitations</p>
           <ul style={{ margin: 0, paddingLeft: "1.2rem", color: "#3c4043" }}>
-            {m.cons.map((c) => (
-              <li key={c} style={{ marginBottom: "0.15rem" }}>
-                {c}
-              </li>
-            ))}
+            {m.cons.map((c) => <li key={c} style={{ marginBottom: "0.15rem" }}>{c}</li>)}
           </ul>
         </div>
       </div>
-
-      <div
-        style={{
-          marginTop: "0.65rem",
-          display: "flex",
-          gap: "1.5rem",
-          fontSize: "0.78rem",
-          color: "#5f6368",
-          flexWrap: "wrap",
-        }}
-      >
-        <span>
-          <strong>Context:</strong> {m.context}
-        </span>
-        <span>
-          <strong>Cost/1k:</strong> {m.cost_per_1k}
-        </span>
-        <span>
-          <strong>Speed:</strong> {m.speed}
-        </span>
-        <span>
-          <strong>Best for:</strong> {m.best_for}
-        </span>
+      <div style={{ marginTop: "0.65rem", display: "flex", gap: "1.5rem", fontSize: "0.78rem", color: "#5f6368", flexWrap: "wrap" }}>
+        <span><strong>Context:</strong> {m.context}</span>
+        <span><strong>Cost/1k:</strong> {m.cost_per_1k}</span>
+        <span><strong>Speed:</strong> {m.speed}</span>
+        <span><strong>Best for:</strong> {m.best_for}</span>
       </div>
-
       <p style={{ margin: "0.5rem 0 0", fontSize: "0.75rem", color: "#9aa0a6" }}>
-        {m.groupKey === "anthropic_or_openrouter"
-          ? "Requires Anthropic API key or OpenRouter API key"
-          : "Requires OpenRouter API key"}
+        {m.groupKey === "anthropic_or_openrouter" ? "Requires Anthropic API key or OpenRouter API key" : "Requires OpenRouter API key"}
       </p>
     </div>
   );
@@ -1099,77 +626,30 @@ function ModelDescriptionCard({ modelId }: { modelId: string }) {
 // ── Model Comparison Table ────────────────────────────────────────────────────
 
 const selectStyle: React.CSSProperties = {
-  fontSize: "0.78rem",
-  padding: "0.3rem 0.5rem",
-  borderRadius: "0.3rem",
-  border: "1px solid #dadce0",
-  background: "#fff",
-  color: "#3c4043",
-  width: "100%",
-  cursor: "pointer",
+  fontSize: "0.78rem", padding: "0.3rem 0.5rem", borderRadius: "0.3rem",
+  border: "1px solid #dadce0", background: "#fff", color: "#3c4043", width: "100%", cursor: "pointer",
 };
 
-function ModelComparisonTable({
-  onSelectModel,
-}: {
-  onSelectModel: (id: string) => void;
-}) {
-  const [selected, setSelected] = useState<[string, string, string]>(
-    DEFAULT_COMPARISON_IDS as [string, string, string]
-  );
-
+function ModelComparisonTable({ onSelectModel }: { onSelectModel: (id: string) => void }) {
+  const [selected, setSelected] = useState<[string, string, string]>(DEFAULT_COMPARISON_IDS as [string, string, string]);
   const models = selected.map((id) => MODEL_BY_ID[id]).filter(Boolean);
 
   function changeSlot(slotIdx: number, newId: string) {
-    setSelected((prev) => {
-      const next = [...prev] as [string, string, string];
-      next[slotIdx] = newId;
-      return next;
-    });
+    setSelected((prev) => { const next = [...prev] as [string, string, string]; next[slotIdx] = newId; return next; });
   }
 
   return (
-    <div
-      style={{
-        marginTop: "1rem",
-        border: "1px solid #dadce0",
-        borderRadius: "0.5rem",
-        overflow: "hidden",
-        fontSize: "0.82rem",
-      }}
-    >
+    <div style={{ marginTop: "1rem", border: "1px solid #dadce0", borderRadius: "0.5rem", overflow: "hidden", fontSize: "0.82rem" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ background: "#f1f3f4" }}>
-            <th
-              style={{
-                padding: "0.6rem 0.85rem",
-                textAlign: "left",
-                fontWeight: 600,
-                fontSize: "0.75rem",
-                color: "#5f6368",
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-                width: 130,
-              }}
-            >
-              Attribute
-            </th>
+            <th style={{ padding: "0.6rem 0.85rem", textAlign: "left", fontWeight: 600, fontSize: "0.75rem", color: "#5f6368", textTransform: "uppercase", letterSpacing: "0.04em", width: 130 }}>Attribute</th>
             {selected.map((id, slotIdx) => (
               <th key={slotIdx} style={{ padding: "0.5rem 0.85rem", verticalAlign: "bottom" }}>
-                <select
-                  value={id}
-                  onChange={(e) => changeSlot(slotIdx, e.target.value)}
-                  style={selectStyle}
-                  title="Change model for this column"
-                >
+                <select value={id} onChange={(e) => changeSlot(slotIdx, e.target.value)} style={selectStyle} title="Change model">
                   {MODEL_CATALOG.map((g) => (
                     <optgroup key={g.group} label={g.group}>
-                      {g.models.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label}
-                        </option>
-                      ))}
+                      {g.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                     </optgroup>
                   ))}
                 </select>
@@ -1178,39 +658,17 @@ function ModelComparisonTable({
           </tr>
         </thead>
         <tbody>
-          {(
-            [
-              ["Speed", (m: ModelDef) => m.speed],
-              ["Context", (m: ModelDef) => m.context],
-              ["Cost/1k tokens", (m: ModelDef) => m.cost_per_1k],
-              ["Best for", (m: ModelDef) => m.best_for],
-              [
-                "Limitations",
-                (m: ModelDef) => m.cons[0] + (m.cons.length > 1 ? ` (+${m.cons.length - 1})` : ""),
-              ],
-            ] as [string, (m: ModelDef) => string][]
-          ).map(([label, getter], rowIdx) => (
-            <tr
-              key={label}
-              style={{ background: rowIdx % 2 === 0 ? "#fff" : "#f8f9fa" }}
-            >
-              <td
-                style={{
-                  padding: "0.55rem 0.85rem",
-                  fontWeight: 600,
-                  color: "#5f6368",
-                  verticalAlign: "top",
-                }}
-              >
-                {label}
-              </td>
+          {([
+            ["Speed", (m: ModelDef) => m.speed],
+            ["Context", (m: ModelDef) => m.context],
+            ["Cost/1k tokens", (m: ModelDef) => m.cost_per_1k],
+            ["Best for", (m: ModelDef) => m.best_for],
+            ["Limitations", (m: ModelDef) => m.cons[0] + (m.cons.length > 1 ? ` (+${m.cons.length - 1})` : "")],
+          ] as [string, (m: ModelDef) => string][]).map(([label, getter], rowIdx) => (
+            <tr key={label} style={{ background: rowIdx % 2 === 0 ? "#fff" : "#f8f9fa" }}>
+              <td style={{ padding: "0.55rem 0.85rem", fontWeight: 600, color: "#5f6368", verticalAlign: "top" }}>{label}</td>
               {models.map((m) => (
-                <td
-                  key={m.id}
-                  style={{ padding: "0.55rem 0.85rem", color: "#3c4043", verticalAlign: "top" }}
-                >
-                  {getter(m)}
-                </td>
+                <td key={m.id} style={{ padding: "0.55rem 0.85rem", color: "#3c4043", verticalAlign: "top" }}>{getter(m)}</td>
               ))}
             </tr>
           ))}
@@ -1218,11 +676,7 @@ function ModelComparisonTable({
             <td style={{ padding: "0.6rem 0.85rem" }} />
             {models.map((m) => (
               <td key={m.id} style={{ padding: "0.6rem 0.85rem" }}>
-                <button
-                  className="btn-primary"
-                  style={{ fontSize: "0.78rem", padding: "0.3rem 0.7rem" }}
-                  onClick={() => onSelectModel(m.id)}
-                >
+                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "0.3rem 0.7rem" }} onClick={() => onSelectModel(m.id)}>
                   Use this model
                 </button>
               </td>
@@ -1236,213 +690,79 @@ function ModelComparisonTable({
 
 // ── Review Actions ────────────────────────────────────────────────────────────
 
-function ReviewActions({
-  result,
-  projectId,
-  runId,
-  onReviewed,
-}: {
-  result: LlmResultResponse;
-  projectId: string;
-  runId: string;
-  onReviewed: () => void;
-}) {
+function ReviewActions({ result, projectId, runId, onReviewed }: { result: LlmResultResponse; projectId: string; runId: string; onReviewed: () => void }) {
   const [pending, setPending] = useState(false);
 
   async function handle(action: "accepted" | "rejected" | "merged") {
     setPending(true);
-    try {
-      await llmScreeningApi.reviewResult(projectId, runId, result.id, action);
-      onReviewed();
-    } finally {
-      setPending(false);
-    }
+    try { await llmScreeningApi.reviewResult(projectId, runId, result.id, action); onReviewed(); }
+    finally { setPending(false); }
   }
 
   if (result.review_action) {
-    const colors: Record<string, string> = {
-      accepted: "#188038",
-      rejected: "#c5221f",
-      merged:   "#1a73e8",
-    };
-    return (
-      <span
-        style={{
-          fontSize: "0.78rem",
-          color: colors[result.review_action] ?? "#5f6368",
-          fontWeight: 600,
-          textTransform: "capitalize",
-        }}
-      >
-        {result.review_action}
-      </span>
-    );
+    const colors: Record<string, string> = { accepted: "#188038", rejected: "#c5221f", merged: "#1a73e8" };
+    return <span style={{ fontSize: "0.78rem", color: colors[result.review_action] ?? "#5f6368", fontWeight: 600, textTransform: "capitalize" }}>{result.review_action}</span>;
   }
 
   return (
     <div style={{ display: "flex", gap: "0.3rem" }}>
-      <button
-        title="Accept — LLM finding confirmed"
-        disabled={pending}
-        onClick={() => handle("accepted")}
-        style={{
-          padding: "0.2rem 0.5rem",
-          fontSize: "0.72rem",
-          borderRadius: "0.3rem",
-          border: "1px solid #b7dfc4",
-          background: "#e6f4ea",
-          color: "#188038",
-          cursor: "pointer",
-          fontWeight: 600,
-        }}
-      >
-        Accept
-      </button>
-      <button
-        title="Reject — LLM result not useful"
-        disabled={pending}
-        onClick={() => handle("rejected")}
-        style={{
-          padding: "0.2rem 0.5rem",
-          fontSize: "0.72rem",
-          borderRadius: "0.3rem",
-          border: "1px solid #f28b82",
-          background: "#fce8e6",
-          color: "#c5221f",
-          cursor: "pointer",
-          fontWeight: 600,
-        }}
-      >
-        Reject
-      </button>
-      <button
-        title="Merge — incorporate into human extraction"
-        disabled={pending}
-        onClick={() => handle("merged")}
-        style={{
-          padding: "0.2rem 0.5rem",
-          fontSize: "0.72rem",
-          borderRadius: "0.3rem",
-          border: "1px solid #c5d9f7",
-          background: "#e8f0fe",
-          color: "#1a73e8",
-          cursor: "pointer",
-          fontWeight: 600,
-        }}
-      >
-        Merge
-      </button>
+      {(["accepted", "rejected", "merged"] as const).map((action) => (
+        <button key={action} disabled={pending} onClick={() => handle(action)} style={{ padding: "0.2rem 0.5rem", fontSize: "0.72rem", borderRadius: "0.3rem", border: "1px solid #dadce0", background: "#f8f9fa", cursor: "pointer", fontWeight: 600, textTransform: "capitalize" }}>
+          {action.slice(0, 1).toUpperCase() + action.slice(1)}
+        </button>
+      ))}
     </div>
   );
 }
 
 // ── Result Row ────────────────────────────────────────────────────────────────
 
-function ResultRow({
-  result,
-  projectId,
-  runId,
-  onReviewed,
-}: {
+function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }: {
   result: LlmResultResponse;
   projectId: string;
   runId: string;
+  extractionTemplate?: { rows: Array<{ id: string; domain?: string; item: string }> } | null;
   onReviewed: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isNew = (result.new_concepts?.length ?? 0) > 0;
+  const hasExtraction = result.extracted_json && Object.keys(result.extracted_json).length > 0;
 
   return (
     <>
-      <tr
-        style={{
-          background: isNew ? "rgba(79,70,229,0.04)" : undefined,
-          cursor: "pointer",
-        }}
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <td
-          style={{
-            fontSize: "0.8rem",
-            color: "#9aa0a6",
-            maxWidth: 120,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            padding: "0.5rem 0.75rem",
-          }}
-        >
+      <tr style={{ background: isNew ? "rgba(79,70,229,0.04)" : undefined, cursor: "pointer" }} onClick={() => setExpanded((v) => !v)}>
+        <td style={{ fontSize: "0.8rem", color: "#9aa0a6", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "0.5rem 0.75rem" }}>
           {result.record_id?.slice(-8) ?? result.cluster_id?.slice(-8) ?? "—"}
         </td>
         <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(result.ta_decision)}</td>
         <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(result.ft_decision)}</td>
-        <td
-          style={{
-            padding: "0.5rem 0.75rem",
-            fontSize: "0.8rem",
-            maxWidth: 200,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
+        <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {result.ta_reason ?? "—"}
         </td>
         <td style={{ padding: "0.5rem 0.75rem" }}>
-          {isNew ? (
-            <span style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.78rem" }}>
-              +{result.new_concepts!.length} new
-            </span>
-          ) : (
-            <span style={{ color: "#9aa0a6", fontSize: "0.78rem" }}>—</span>
-          )}
+          {isNew ? <span style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.78rem" }}>+{result.new_concepts!.length} new</span> : <span style={{ color: "#9aa0a6", fontSize: "0.78rem" }}>—</span>}
         </td>
-        <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem", color: "#5f6368" }}>
-          {result.full_text_source ?? "abstract"}
+        <td style={{ padding: "0.5rem 0.75rem" }}>
+          {hasExtraction ? <span style={{ color: "#188038", fontSize: "0.78rem" }}>✓</span> : <span style={{ color: "#9aa0a6", fontSize: "0.78rem" }}>—</span>}
         </td>
+        <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem", color: "#5f6368" }}>{result.full_text_source ?? "abstract"}</td>
         <td style={{ padding: "0.5rem 0.75rem" }} onClick={(e) => e.stopPropagation()}>
-          <ReviewActions
-            result={result}
-            projectId={projectId}
-            runId={runId}
-            onReviewed={onReviewed}
-          />
+          <ReviewActions result={result} projectId={projectId} runId={runId} onReviewed={onReviewed} />
         </td>
       </tr>
       {expanded && (
         <tr style={{ background: "#f8f9fa" }}>
-          <td colSpan={7} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
+          <td colSpan={8} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-              {result.ta_reason && (
-                <div>
-                  <strong style={{ color: "#3c4043" }}>TA reason:</strong>
-                  <p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ta_reason}</p>
-                </div>
-              )}
-              {result.ft_reason && (
-                <div>
-                  <strong style={{ color: "#3c4043" }}>FT reason:</strong>
-                  <p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ft_reason}</p>
-                </div>
-              )}
+              {result.ta_reason && <div><strong style={{ color: "#3c4043" }}>TA reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ta_reason}</p></div>}
+              {result.ft_reason && <div><strong style={{ color: "#3c4043" }}>FT reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ft_reason}</p></div>}
               {(result.matched_codes?.length ?? 0) > 0 && (
                 <div>
                   <strong style={{ color: "#3c4043" }}>Matched concepts:</strong>
-                  <div
-                    style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", marginTop: "0.35rem" }}
-                  >
+                  <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", marginTop: "0.35rem" }}>
                     {result.matched_codes!.map((c) => (
-                      <span
-                        key={c}
-                        style={{
-                          background: "#e8f0fe",
-                          color: "#1a73e8",
-                          padding: "0.15rem 0.55rem",
-                          borderRadius: "0.75rem",
-                          fontSize: "0.78rem",
-                        }}
-                      >
-                        {c}
+                      <span key={c.code_id} style={{ background: "#e8f0fe", color: "#1a73e8", padding: "0.15rem 0.55rem", borderRadius: "0.75rem", fontSize: "0.78rem" }}>
+                        {c.code_name}
                       </span>
                     ))}
                   </div>
@@ -1451,24 +771,30 @@ function ResultRow({
               {(result.new_concepts?.length ?? 0) > 0 && (
                 <div>
                   <strong style={{ color: "#6366f1" }}>New concepts suggested:</strong>
-                  <div
-                    style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", marginTop: "0.35rem" }}
-                  >
+                  <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", marginTop: "0.35rem" }}>
                     {result.new_concepts!.map((c) => (
-                      <span
-                        key={c}
-                        style={{
-                          background: "#ede9fe",
-                          color: "#6366f1",
-                          padding: "0.15rem 0.55rem",
-                          borderRadius: "0.75rem",
-                          fontSize: "0.78rem",
-                          fontWeight: 600,
-                        }}
-                      >
-                        + {c}
+                      <span key={c.name} style={{ background: "#ede9fe", color: "#6366f1", padding: "0.15rem 0.55rem", borderRadius: "0.75rem", fontSize: "0.78rem", fontWeight: 600 }}>
+                        + {c.name}
                       </span>
                     ))}
+                  </div>
+                </div>
+              )}
+              {hasExtraction && extractionTemplate && (
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <strong style={{ color: "#3c4043" }}>Extracted data:</strong>
+                  <div style={{ marginTop: "0.35rem", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.5rem" }}>
+                    {extractionTemplate.rows.map((row) => {
+                      const val = result.extracted_json?.[row.id];
+                      if (!val) return null;
+                      const label = row.domain ? `${row.domain}: ${row.item}` : row.item;
+                      return (
+                        <div key={row.id} style={{ background: "#f1f3f4", borderRadius: "0.3rem", padding: "0.4rem 0.6rem", fontSize: "0.8rem" }}>
+                          <div style={{ fontWeight: 600, color: "#5f6368", fontSize: "0.72rem", marginBottom: "0.15rem" }}>{label}</div>
+                          <div style={{ color: "#3c4043" }}>{Array.isArray(val) ? val.join(", ") : String(val)}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1482,198 +808,564 @@ function ResultRow({
 
 // ── Results Panel ─────────────────────────────────────────────────────────────
 
-function ResultsPanel({
-  projectId,
-  run,
-}: {
+function ResultsPanel({ projectId, run, extractionTemplate }: {
   projectId: string;
   run: LlmRunResponse;
+  extractionTemplate?: { rows: Array<{ id: string; domain?: string; item: string }> } | null;
 }) {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [decisionFilter, setDecisionFilter] = useState("");
+  const [exporting, setExporting] = useState(false);
   const PAGE_SIZE = 50;
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["llm-results", run.id, page, decisionFilter],
     queryFn: () =>
-      llmScreeningApi
-        .listResults(projectId, run.id, {
-          page,
-          page_size: PAGE_SIZE,
-          ta_decision: decisionFilter || undefined,
-        })
-        .then((r) => r.data),
+      llmScreeningApi.listResults(projectId, run.id, { page, page_size: PAGE_SIZE, ta_decision: decisionFilter || undefined }).then((r) => r.data),
     enabled: run.status === "completed" || run.processed_records > 0,
     staleTime: 30_000,
   });
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 1;
 
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const res = await llmScreeningApi.exportCsv(projectId, run.id);
+      const url = URL.createObjectURL(new Blob([res.data as BlobPart]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `llm_results_${run.id.slice(-8)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
-    <section style={{ marginTop: "2rem" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "1rem",
-          marginBottom: "1rem",
-          flexWrap: "wrap",
-        }}
-      >
-        <h3 style={{ margin: 0 }}>Results</h3>
+    <section>
+      <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem", flexWrap: "wrap" }}>
+        <h3 style={{ margin: 0 }}>Results — {MODEL_BY_ID[run.model]?.label ?? run.model}</h3>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           {DECISION_FILTER_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => {
-                setDecisionFilter(opt.value);
-                setPage(1);
-              }}
-              style={{
-                padding: "0.2rem 0.65rem",
-                borderRadius: "0.75rem",
-                border: `1.5px solid ${decisionFilter === opt.value ? "#1a73e8" : "#dadce0"}`,
-                background: decisionFilter === opt.value ? "#e8f0fe" : "#f8f9fa",
-                color: decisionFilter === opt.value ? "#1a73e8" : "#5f6368",
-                fontSize: "0.8rem",
-                fontWeight: decisionFilter === opt.value ? 600 : 400,
-                cursor: "pointer",
-              }}
-            >
+            <button key={opt.value} onClick={() => { setDecisionFilter(opt.value); setPage(1); }}
+              style={{ padding: "0.2rem 0.65rem", borderRadius: "0.75rem", border: `1.5px solid ${decisionFilter === opt.value ? "#1a73e8" : "#dadce0"}`, background: decisionFilter === opt.value ? "#e8f0fe" : "#f8f9fa", color: decisionFilter === opt.value ? "#1a73e8" : "#5f6368", fontSize: "0.8rem", fontWeight: decisionFilter === opt.value ? 600 : 400, cursor: "pointer" }}>
               {opt.label}
             </button>
           ))}
         </div>
-        <button
-          onClick={() => {
-            void refetch();
-          }}
-          className="btn-ghost"
-          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.35rem" }}
-        >
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+          <button onClick={handleExport} disabled={exporting || run.status !== "completed"} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem" }}>
+            <Download size={13} /> {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+          <button onClick={() => void refetch()} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary stats */}
-      <div
-        style={{
-          display: "flex",
-          gap: "1.5rem",
-          background: "#f8f9fa",
-          border: "1px solid #dadce0",
-          borderRadius: "0.5rem",
-          padding: "0.65rem 1rem",
-          marginBottom: "1rem",
-          fontSize: "0.85rem",
-          flexWrap: "wrap",
-        }}
-      >
-        <span>
-          <strong style={{ color: "#188038" }}>{run.included_count}</strong>{" "}
-          <span style={{ color: "#5f6368" }}>included</span>
-        </span>
-        <span>
-          <strong style={{ color: "#c5221f" }}>{run.excluded_count}</strong>{" "}
-          <span style={{ color: "#5f6368" }}>excluded</span>
-        </span>
-        <span>
-          <strong style={{ color: "#b06000" }}>{run.uncertain_count}</strong>{" "}
-          <span style={{ color: "#5f6368" }}>uncertain</span>
-        </span>
-        {run.new_concepts_count > 0 && (
-          <span>
-            <strong style={{ color: "#6366f1" }}>{run.new_concepts_count}</strong>{" "}
-            <span style={{ color: "#5f6368" }}>new concepts suggested</span>
-          </span>
-        )}
-        <span style={{ marginLeft: "auto", color: "#5f6368" }}>
-          {fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} actual cost ·{" "}
-          {(run.input_tokens + run.output_tokens).toLocaleString()} tokens
-        </span>
+      <div style={{ display: "flex", gap: "1.5rem", background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.65rem 1rem", marginBottom: "1rem", fontSize: "0.85rem", flexWrap: "wrap" }}>
+        <span><strong style={{ color: "#188038" }}>{run.included_count}</strong> <span style={{ color: "#5f6368" }}>included</span></span>
+        <span><strong style={{ color: "#c5221f" }}>{run.excluded_count}</strong> <span style={{ color: "#5f6368" }}>excluded</span></span>
+        <span><strong style={{ color: "#b06000" }}>{run.uncertain_count}</strong> <span style={{ color: "#5f6368" }}>uncertain</span></span>
+        {run.new_concepts_count > 0 && <span><strong style={{ color: "#6366f1" }}>{run.new_concepts_count}</strong> <span style={{ color: "#5f6368" }}>new concepts</span></span>}
+        {run.stopped_at_saturation && <span style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.82rem" }}>⬡ Stopped at saturation</span>}
+        <span style={{ marginLeft: "auto", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} · {(run.input_tokens + run.output_tokens).toLocaleString()} tokens</span>
       </div>
 
       {isLoading ? (
         <p style={{ color: "#5f6368" }}>Loading results…</p>
       ) : !data || data.items.length === 0 ? (
         <p style={{ color: "#9aa0a6", fontStyle: "italic" }}>
-          {run.status === "running"
-            ? "Processing — results will appear as they complete."
-            : "No results match the current filter."}
+          {run.status === "running" ? "Processing — results will appear as they complete." : "No results match the current filter."}
         </p>
       ) : (
         <>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
               <thead>
-                <tr
-                  style={{
-                    background: "#f1f3f4",
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: "#5f6368",
-                  }}
-                >
+                <tr style={{ background: "#f1f3f4", fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#5f6368" }}>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Record ID</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>TA</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>FT</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Reason</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>New Concepts</th>
+                  <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Extracted</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Full Text</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Review</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((result) => (
-                  <ResultRow
-                    key={result.id}
-                    result={result}
-                    projectId={projectId}
-                    runId={run.id}
-                    onReviewed={() => {
-                      qc.invalidateQueries({ queryKey: ["llm-results", run.id] });
-                    }}
-                  />
+                  <ResultRow key={result.id} result={result} projectId={projectId} runId={run.id} extractionTemplate={extractionTemplate} onReviewed={() => qc.invalidateQueries({ queryKey: ["llm-results", run.id] })} />
                 ))}
               </tbody>
             </table>
           </div>
-
           {totalPages > 1 && (
-            <div
-              style={{
-                display: "flex",
-                gap: "0.5rem",
-                alignItems: "center",
-                justifyContent: "center",
-                marginTop: "1rem",
-                fontSize: "0.85rem",
-              }}
-            >
-              <button
-                className="btn-ghost"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                ← Prev
-              </button>
-              <span style={{ color: "#5f6368" }}>
-                Page {page} of {totalPages} ({data.total.toLocaleString()} results)
-              </span>
-              <button
-                className="btn-ghost"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next →
-              </button>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "center", marginTop: "1rem", fontSize: "0.85rem" }}>
+              <button className="btn-ghost" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>← Prev</button>
+              <span style={{ color: "#5f6368" }}>Page {page} of {totalPages} ({data.total.toLocaleString()} results)</span>
+              <button className="btn-ghost" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next →</button>
             </div>
           )}
         </>
       )}
     </section>
+  );
+}
+
+// ── Prompt Config Panel ────────────────────────────────────────────────────────
+
+const DEFAULT_SYSTEM_PROMPT =
+  "You are an expert systematic review researcher. " +
+  "Your task is to screen academic papers for inclusion in an evidence synthesis. " +
+  "You MUST use the submit_screening_result tool to return your answer — " +
+  "do not produce any other output.";
+
+function PromptConfigPanel({ projectId }: { projectId: string }) {
+  const qc = useQueryClient();
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const [config, setConfig] = useState<LlmConfig>({});
+  const [dirty, setDirty] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<{ system_prompt: string; user_prompt: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [defaultPromptOpen, setDefaultPromptOpen] = useState(false);
+
+  const { data: savedConfig } = useQuery({
+    queryKey: ["llm-config", projectId],
+    queryFn: () => llmScreeningApi.getLlmConfig(projectId).then((r) => r.data),
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    if (savedConfig) { setConfig(savedConfig); setDirty(false); }
+  }, [savedConfig]);
+
+  function update(patch: Partial<LlmConfig>) {
+    setConfig((c) => ({ ...c, ...patch }));
+    setDirty(true);
+  }
+
+  async function handleSave() {
+    setSaveStatus("saving");
+    try {
+      await llmScreeningApi.updateLlmConfig(projectId, config);
+      qc.invalidateQueries({ queryKey: ["llm-config", projectId] });
+      setDirty(false);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch {
+      setSaveStatus("error");
+    }
+  }
+
+  async function handlePreview() {
+    setPreviewLoading(true);
+    try {
+      const res = await llmScreeningApi.previewPrompt(projectId);
+      setPreviewData(res.data);
+      setPreviewOpen(true);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  const taStyle: React.CSSProperties = {
+    width: "100%", padding: "0.5rem 0.75rem", borderRadius: "0.375rem",
+    border: "1px solid #dadce0", fontSize: "0.85rem", fontFamily: "inherit",
+    boxSizing: "border-box", resize: "vertical",
+  };
+
+  return (
+    <section style={{ maxWidth: 720 }}>
+      <p className="muted" style={{ marginBottom: "1.5rem" }}>
+        Configure the prompts used when the LLM screens and extracts data. Your inclusion/exclusion
+        criteria and thematic framework are automatically included — add supplementary instructions here.
+      </p>
+
+      {/* Research question */}
+      <div style={{ marginBottom: "1.25rem" }}>
+        <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Research question / review scope</label>
+        <textarea rows={2} style={taStyle} placeholder="e.g. What is the effect of mindfulness interventions on burnout in healthcare workers?" value={config.research_question ?? ""} onChange={(e) => update({ research_question: e.target.value })} />
+        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Prepended to the prompt as context for the LLM.</p>
+      </div>
+
+      {/* Basic / Advanced toggle */}
+      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
+        {["Basic", "Advanced"].map((mode) => (
+          <button key={mode} onClick={() => setAdvancedMode(mode === "Advanced")}
+            style={{ padding: "0.3rem 1rem", borderRadius: "0.375rem", border: `1.5px solid ${advancedMode === (mode === "Advanced") ? "#6366f1" : "#dadce0"}`, background: advancedMode === (mode === "Advanced") ? "#ede9fe" : "#f8f9fa", color: advancedMode === (mode === "Advanced") ? "#6366f1" : "#5f6368", fontWeight: 600, cursor: "pointer", fontSize: "0.85rem" }}>
+            {mode}
+          </button>
+        ))}
+      </div>
+
+      {!advancedMode ? (
+        <>
+          {/* Additional context */}
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Additional screening context</label>
+            <textarea rows={3} style={taStyle} placeholder="Any additional context or instructions for screening decisions…" value={config.custom_system_additions ?? ""} onChange={(e) => update({ custom_system_additions: e.target.value })} />
+          </div>
+
+          {/* Extraction instructions */}
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Extraction instructions</label>
+            <textarea rows={3} style={taStyle} placeholder="Instructions for how to fill in the extraction template fields…" value={config.extraction_instructions ?? ""} onChange={(e) => update({ extraction_instructions: e.target.value })} />
+          </div>
+
+          {/* Concept and extraction guidance */}
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Concepts &amp; what to extract</label>
+            <textarea rows={5} style={taStyle}
+              placeholder={"Describe what the agent should look for and extract. For example:\n- Focus on studies that measure burnout using validated scales (e.g. MBI, OLBI).\n- Extract the intervention type, duration, and primary outcome measure.\n- 'Mindfulness' includes MBSR, MBCT, and informal mindfulness practices."}
+              value={config.concept_instructions ?? ""}
+              onChange={(e) => update({ concept_instructions: e.target.value })}
+            />
+            <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>
+              Injected into the prompt as a "Concepts and Extraction Guidance" section. Write in plain language — bullet points work well.
+            </p>
+          </div>
+
+          {/* Default system prompt (collapsible reference) */}
+          <div style={{ marginBottom: "1.25rem", border: "1px solid #e8eaed", borderRadius: "0.375rem" }}>
+            <button
+              onClick={() => setDefaultPromptOpen((o) => !o)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.6rem 0.75rem", background: "#f8f9fa", border: "none", cursor: "pointer", borderRadius: defaultPromptOpen ? "0.375rem 0.375rem 0 0" : "0.375rem", fontSize: "0.82rem", color: "#5f6368", fontWeight: 600 }}
+            >
+              <span>Default system prompt (built-in)</span>
+              <ChevronDown size={14} style={{ transform: defaultPromptOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+            </button>
+            {defaultPromptOpen && (
+              <pre style={{ margin: 0, padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#fff", borderTop: "1px solid #e8eaed", borderRadius: "0 0 0.375rem 0.375rem" }}>
+                {DEFAULT_SYSTEM_PROMPT}
+              </pre>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Default system prompt — always visible in advanced mode */}
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>
+              Default system prompt
+              <span style={{ fontWeight: 400, fontSize: "0.78rem", color: "#9aa0a6", marginLeft: "0.5rem" }}>(read-only)</span>
+            </label>
+            <pre style={{ margin: 0, padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem", lineHeight: 1.5 }}>
+              {DEFAULT_SYSTEM_PROMPT}
+            </pre>
+          </div>
+
+          {/* Advanced: full system prompt override */}
+          <div style={{ marginBottom: "1.25rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.4rem" }}>
+              <label style={{ fontWeight: 600 }}>
+                {config.use_full_override ? "Full replacement prompt" : "Additional instructions (prepended)"}
+              </label>
+              <label style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
+                <input type="checkbox" checked={config.use_full_override ?? false} onChange={(e) => update({ use_full_override: e.target.checked })} />
+                Full override (replace entire system prompt)
+              </label>
+            </div>
+            {!config.use_full_override && (
+              <p style={{ fontSize: "0.78rem", color: "#5f6368", margin: "0 0 0.4rem" }}>
+                Your text will be prepended to the default prompt above.
+              </p>
+            )}
+            <textarea rows={8} style={{ ...taStyle, fontFamily: "monospace", fontSize: "0.83rem" }} placeholder={config.use_full_override ? "Write the complete replacement system prompt…" : "Additional instructions prepended to the default system prompt…"} value={(config.use_full_override ? config.full_override_prompt : config.custom_system_additions) ?? ""} onChange={(e) => update(config.use_full_override ? { full_override_prompt: e.target.value } : { custom_system_additions: e.target.value })} />
+            <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>
+              Available variables: <code style={{ fontSize: "0.78rem" }}>{"{title}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{abstract}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{criteria}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{framework}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{extraction_template}"}</code>
+            </p>
+          </div>
+
+          <div style={{ marginBottom: "1.25rem" }}>
+            <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Extraction instructions</label>
+            <textarea rows={3} style={taStyle} placeholder="Additional instructions for the extraction step…" value={config.extraction_instructions ?? ""} onChange={(e) => update({ extraction_instructions: e.target.value })} />
+          </div>
+        </>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+        <button className="btn-primary" disabled={!dirty || saveStatus === "saving"} onClick={() => void handleSave()} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          {saveStatus === "saving" ? "Saving…" : saveStatus === "saved" ? "Saved ✓" : "Save prompt config"}
+        </button>
+        <button className="btn-ghost" disabled={previewLoading} onClick={() => void handlePreview()} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <Wand2 size={13} /> {previewLoading ? "Loading…" : "Preview prompt"}
+        </button>
+        {saveStatus === "error" && <span style={{ color: "#c5221f", fontSize: "0.83rem" }}>Save failed</span>}
+      </div>
+
+      {/* Preview modal */}
+      {previewOpen && previewData && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setPreviewOpen(false)}>
+          <div style={{ background: "#fff", borderRadius: "0.5rem", padding: "1.5rem", maxWidth: 780, width: "90vw", maxHeight: "80vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h3 style={{ margin: 0 }}>Prompt preview (sample record)</h3>
+              <button onClick={() => setPreviewOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#5f6368" }}><X size={18} /></button>
+            </div>
+            <div style={{ marginBottom: "1rem" }}>
+              <p style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>System prompt:</p>
+              <pre style={{ background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflow: "auto" }}>{previewData.system_prompt}</pre>
+            </div>
+            <div>
+              <p style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.4rem" }}>User prompt:</p>
+              <pre style={{ background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 350, overflow: "auto" }}>{previewData.user_prompt}</pre>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── Compare Panel ─────────────────────────────────────────────────────────────
+
+function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResponse[] }) {
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<LlmComparisonResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [selectedForConsensus, setSelectedForConsensus] = useState<Set<string>>(new Set());
+  const [consensusStage, setConsensusStage] = useState<"TA" | "FT">("TA");
+  const [sendingConsensus, setSendingConsensus] = useState(false);
+  const [sendResult, setSendResult] = useState<{ created: number } | null>(null);
+
+  const completedRuns = runs.filter((r) => r.status === "completed");
+  const hasRunningRun = runs.some((r) => r.status === "running" || r.status === "queued");
+
+  async function loadComparison(runId: string) {
+    setLoading(true);
+    setComparison(null);
+    setSelectedForConsensus(new Set());
+    setSendResult(null);
+    try {
+      const res = await llmScreeningApi.compareWithHumans(projectId, runId);
+      setComparison(res.data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function toggleConsensus(recordId: string) {
+    setSelectedForConsensus((prev) => {
+      const next = new Set(prev);
+      if (next.has(recordId)) next.delete(recordId);
+      else next.add(recordId);
+      return next;
+    });
+  }
+
+  function toggleAll(ids: string[]) {
+    setSelectedForConsensus((prev) => {
+      if (ids.every((id) => prev.has(id))) return new Set();
+      return new Set(ids);
+    });
+  }
+
+  async function handleSendToConsensus() {
+    if (!selectedRunId || selectedForConsensus.size === 0) return;
+    setSendingConsensus(true);
+    try {
+      const res = await llmScreeningApi.sendToConsensus(projectId, selectedRunId, Array.from(selectedForConsensus), consensusStage);
+      setSendResult(res.data);
+      setSelectedForConsensus(new Set());
+    } finally {
+      setSendingConsensus(false);
+    }
+  }
+
+  const disagreeItems = comparison?.items.filter((i) => i.ta_agrees === false || i.ft_agrees === false) ?? [];
+
+  function kappaColor(kappa: number | null) {
+    if (kappa === null) return "#9aa0a6";
+    if (kappa >= 0.61) return "#188038";
+    if (kappa >= 0.41) return "#b06000";
+    return "#c5221f";
+  }
+
+  return (
+    <section style={{ maxWidth: 900 }}>
+      <p className="muted" style={{ marginBottom: "1.5rem" }}>
+        Compare LLM screening decisions with human reviewer decisions. Flag disagreements to the
+        consensus queue for senior review.
+      </p>
+
+      {hasRunningRun && (
+        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.65rem 0.9rem", marginBottom: "1.25rem", background: "#fff8e1", border: "1px solid #f9ab00", borderRadius: "0.375rem", fontSize: "0.83rem", color: "#5f4a00" }}>
+          <AlertCircle size={15} style={{ flexShrink: 0, color: "#f9ab00" }} />
+          A run is in progress. Comparison is only available for completed runs — the LLM operates independently and its results are not influenced by human decisions.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: "1rem", alignItems: "flex-end", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+        <div>
+          <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem", fontSize: "0.85rem" }}>Select run</label>
+          <select value={selectedRunId ?? ""} onChange={(e) => setSelectedRunId(e.target.value || null)}
+            style={{ padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", minWidth: 260 }}>
+            <option value="">— choose a completed run —</option>
+            {completedRuns.map((r) => (
+              <option key={r.id} value={r.id}>{fmtDate(r.started_at ?? r.created_at)} — {MODEL_BY_ID[r.model]?.label ?? r.model} ({r.mode})</option>
+            ))}
+          </select>
+        </div>
+        <button className="btn-primary" disabled={!selectedRunId || loading || hasRunningRun} onClick={() => selectedRunId && void loadComparison(selectedRunId)} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <GitCompare size={14} /> {loading ? "Loading…" : "Compare with Human Reviewers"}
+        </button>
+      </div>
+
+      {comparison && (
+        <>
+          {/* Stats */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem", maxWidth: 540 }}>
+            {[
+              { stage: "TA", pct: comparison.stats.ta_agreement_pct, kappa: comparison.stats.kappa_ta, label: comparison.stats.kappa_ta_label, n: comparison.stats.n_compared_ta },
+              { stage: "FT", pct: comparison.stats.ft_agreement_pct, kappa: comparison.stats.kappa_ft, label: comparison.stats.kappa_ft_label, n: comparison.stats.n_compared_ft },
+            ].map(({ stage, pct, kappa, label, n }) => (
+              <div key={stage} style={{ background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "1rem" }}>
+                <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>{stage} Stage</div>
+                <div style={{ fontSize: "1.4rem", fontWeight: 700, color: kappaColor(kappa) }}>{pct != null ? `${pct}%` : "—"}</div>
+                <div style={{ fontSize: "0.78rem", color: "#5f6368" }}>agreement ({n} compared)</div>
+                {kappa != null && <div style={{ fontSize: "0.82rem", marginTop: "0.25rem" }}>κ = {kappa.toFixed(2)} · <em>{label}</em></div>}
+                {n === 0 && <div style={{ fontSize: "0.8rem", color: "#9aa0a6", fontStyle: "italic" }}>No human decisions to compare</div>}
+              </div>
+            ))}
+          </div>
+
+          {/* Disagreements */}
+          {disagreeItems.length === 0 ? (
+            <p style={{ color: "#188038", fontWeight: 600 }}>No disagreements found — perfect agreement with human reviewers.</p>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+                <h4 style={{ margin: 0 }}>Disagreements ({disagreeItems.length})</h4>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.83rem", color: "#5f6368" }}>Stage:</span>
+                  {(["TA", "FT"] as const).map((s) => (
+                    <button key={s} onClick={() => setConsensusStage(s)} style={{ padding: "0.2rem 0.6rem", borderRadius: "0.375rem", border: `1.5px solid ${consensusStage === s ? "#6366f1" : "#dadce0"}`, background: consensusStage === s ? "#ede9fe" : "#f8f9fa", color: consensusStage === s ? "#6366f1" : "#5f6368", fontWeight: 600, cursor: "pointer", fontSize: "0.83rem" }}>{s}</button>
+                  ))}
+                </div>
+                {selectedForConsensus.size > 0 && (
+                  <button className="btn-primary" disabled={sendingConsensus} onClick={() => void handleSendToConsensus()} style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.83rem" }}>
+                    Flag {selectedForConsensus.size} for consensus
+                  </button>
+                )}
+                {sendResult && <span style={{ color: "#188038", fontSize: "0.83rem" }}>✓ {sendResult.created} flagged</span>}
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+                  <thead>
+                    <tr style={{ background: "#f1f3f4", fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#5f6368" }}>
+                      <th style={{ padding: "0.5rem 0.75rem" }}>
+                        <input type="checkbox" checked={selectedForConsensus.size === disagreeItems.length && disagreeItems.length > 0} onChange={() => toggleAll(disagreeItems.map((i) => i.record_id))} />
+                      </th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Title</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>LLM TA</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Human TA</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>TA Match</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>LLM FT</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Human FT</th>
+                      <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>FT Match</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {disagreeItems.map((item) => {
+                      const taDisagree = item.ta_agrees === false;
+                      const ftDisagree = item.ft_agrees === false;
+                      return (
+                        <tr key={item.record_id} style={{ background: selectedForConsensus.has(item.record_id) ? "#e8f0fe" : undefined }}>
+                          <td style={{ padding: "0.5rem 0.75rem" }}>
+                            <input type="checkbox" checked={selectedForConsensus.has(item.record_id)} onChange={() => toggleConsensus(item.record_id)} />
+                          </td>
+                          <td style={{ padding: "0.5rem 0.75rem", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.83rem" }}>
+                            {item.title || <span style={{ color: "#9aa0a6" }}>{item.record_id.slice(-8)}</span>}
+                          </td>
+                          <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(item.llm_ta, true)}</td>
+                          <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(item.human_ta, true)}</td>
+                          <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem" }}>
+                            {item.ta_agrees === null ? <span style={{ color: "#9aa0a6" }}>—</span> : taDisagree ? <span style={{ color: "#c5221f", fontWeight: 600 }}>✗</span> : <span style={{ color: "#188038" }}>✓</span>}
+                          </td>
+                          <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(item.llm_ft, true)}</td>
+                          <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(item.human_ft, true)}</td>
+                          <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem" }}>
+                            {item.ft_agrees === null ? <span style={{ color: "#9aa0a6" }}>—</span> : ftDisagree ? <span style={{ color: "#c5221f", fontWeight: 600 }}>✗</span> : <span style={{ color: "#188038" }}>✓</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+// ── Run History Table ─────────────────────────────────────────────────────────
+
+function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void }) {
+  if (runs.length === 0) return <p className="muted">No runs yet. Launch your first LLM run above.</p>;
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+        <thead>
+          <tr style={{ background: "#f1f3f4", fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#5f6368" }}>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Started</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Model</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Mode</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Status</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Progress</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Include</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Exclude</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>New Concepts</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => {
+            const isSelected = selectedRunId === run.id;
+            const modelLabel = MODEL_BY_ID[run.model]?.label ?? run.model.split("/").pop()?.replace(/-\d{10}$/, "") ?? run.model;
+            return (
+              <tr key={run.id} onClick={() => onSelect(isSelected ? null : run)} style={{ cursor: "pointer", background: isSelected ? "#e8f0fe" : undefined, borderLeft: isSelected ? "3px solid #1a73e8" : "3px solid transparent" }}>
+                <td style={{ padding: "0.55rem 0.75rem" }}>{fmtDate(run.started_at ?? run.created_at)}</td>
+                <td style={{ padding: "0.55rem 0.75rem", color: "#5f6368", fontSize: "0.78rem" }}>{modelLabel}</td>
+                <td style={{ padding: "0.55rem 0.75rem" }}>
+                  <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : "#5f6368" }}>
+                    {run.mode === "saturation" ? "Saturation" : "PRISMA-ScR"}
+                    {run.stopped_at_saturation && " ⬡"}
+                  </span>
+                </td>
+                <td style={{ padding: "0.55rem 0.75rem" }}>{statusBadge(run.status)}{run.error_message && <span title={run.error_message} style={{ marginLeft: "0.35rem", cursor: "help" }}>⚠</span>}</td>
+                <td style={{ padding: "0.55rem 0.75rem" }}>
+                  {run.status === "running" || run.status === "queued" ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <ProgressBar pct={run.progress_pct} />
+                      <span style={{ fontSize: "0.78rem", color: "#5f6368" }}>{run.progress_pct.toFixed(1)}%</span>
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: "0.78rem", color: "#5f6368" }}>{run.processed_records.toLocaleString()} / {(run.total_records ?? 0).toLocaleString()}</span>
+                  )}
+                </td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#188038", fontWeight: 600 }}>{run.included_count}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#c5221f", fontWeight: 600 }}>{run.excluded_count}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#6366f1", fontWeight: 600 }}>{run.new_concepts_count > 0 ? `+${run.new_concepts_count}` : "—"}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.82rem", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1683,31 +1375,34 @@ export default function LLMScreeningPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
 
+  type Tab = "run" | "prompt" | "results" | "compare";
+  const [activeTab, setActiveTab] = useState<Tab>("run");
+
   // ── Persistent API keys ────────────────────────────────────────────────────
-  const [anthropicKey, setAnthropicKey] = useState(
-    () => localStorage.getItem("ep_llm_anthropic_key") ?? ""
-  );
-  const [openrouterKey, setOpenrouterKey] = useState(
-    () => localStorage.getItem("ep_llm_openrouter_key") ?? ""
-  );
+  const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem("ep_llm_anthropic_key") ?? "");
+  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem("ep_llm_openrouter_key") ?? "");
 
   function saveKey(type: "anthropic" | "openrouter", value: string) {
-    if (value.trim()) {
-      localStorage.setItem(`ep_llm_${type}_key`, value.trim());
-    } else {
-      localStorage.removeItem(`ep_llm_${type}_key`);
-    }
+    if (value.trim()) localStorage.setItem(`ep_llm_${type}_key`, value.trim());
+    else localStorage.removeItem(`ep_llm_${type}_key`);
     if (type === "anthropic") setAnthropicKey(value.trim());
     else setOpenrouterKey(value.trim());
   }
 
-  // ── UI state ───────────────────────────────────────────────────────────────
+  // ── Run config state ───────────────────────────────────────────────────────
   const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-6");
-  const [selectedRun, setSelectedRun] = useState<LlmRunResponse | null>(null);
-  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"prisma_scr" | "saturation">("prisma_scr");
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [seed, setSeed] = useState<string>("");
+  const [saturationThreshold, setSaturationThreshold] = useState(5);
+  const [includeExtraction, setIncludeExtraction] = useState(true);
   const [showComparison, setShowComparison] = useState(false);
 
-  // ── Project ────────────────────────────────────────────────────────────────
+  // ── Results state ──────────────────────────────────────────────────────────
+  const [selectedRun, setSelectedRun] = useState<LlmRunResponse | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+
+  // ── Data queries ───────────────────────────────────────────────────────────
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId!).then((r) => r.data),
@@ -1715,16 +1410,21 @@ export default function LLMScreeningPage() {
     staleTime: 60_000,
   });
 
-  // ── Estimate ───────────────────────────────────────────────────────────────
-  const { data: estimate, isLoading: estimateLoading } = useQuery({
-    queryKey: ["llm-estimate", projectId, selectedModel],
-    queryFn: () =>
-      llmScreeningApi.estimate(projectId!, selectedModel).then((r) => r.data),
+  const { data: sources } = useQuery({
+    queryKey: ["sources", projectId],
+    queryFn: () => sourcesApi.list(projectId!).then((r) => r.data),
     enabled: !!projectId,
     staleTime: 60_000,
   });
 
-  // ── Run list ───────────────────────────────────────────────────────────────
+  const { data: estimate, isLoading: estimateLoading } = useQuery({
+    queryKey: ["llm-estimate", projectId, selectedModel, mode === "saturation" ? selectedSourceId : null],
+    queryFn: () =>
+      llmScreeningApi.estimate(projectId!, selectedModel, mode === "saturation" && selectedSourceId ? selectedSourceId : undefined).then((r) => r.data),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+
   const { data: runs, refetch: refetchRuns } = useQuery({
     queryKey: ["llm-runs", projectId],
     queryFn: () => llmScreeningApi.listRuns(projectId!).then((r) => r.data),
@@ -1732,9 +1432,7 @@ export default function LLMScreeningPage() {
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return 5000;
-      return data.some((r) => r.status === "running" || r.status === "pending")
-        ? 3000
-        : false;
+      return data.some((r) => r.status === "running" || r.status === "queued") ? 3000 : false;
     },
   });
 
@@ -1747,26 +1445,31 @@ export default function LLMScreeningPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs]);
 
-  // ── Poll running run ───────────────────────────────────────────────────────
-  const runningRun = runs?.find((r) => r.status === "running" || r.status === "pending");
-
+  // Poll running runs
+  const runningRun = runs?.find((r) => r.status === "running" || r.status === "queued");
   const { data: liveRun } = useQuery({
     queryKey: ["llm-run-live", runningRun?.id],
-    queryFn: () =>
-      llmScreeningApi.getRun(projectId!, runningRun!.id).then((r) => r.data),
+    queryFn: () => llmScreeningApi.getRun(projectId!, runningRun!.id).then((r) => r.data),
     enabled: !!runningRun,
     refetchInterval: 3000,
   });
+  const displayRuns = runs?.map((r) => (liveRun && r.id === liveRun.id ? liveRun : r)) ?? [];
 
-  const displayRuns = runs?.map((r) => (liveRun && r.id === liveRun.id ? liveRun : r));
-
-  // ── Launch mutation ────────────────────────────────────────────────────────
+  // ── Launch ─────────────────────────────────────────────────────────────────
   const launch = useMutation({
     mutationFn: () =>
-      llmScreeningApi.createRun(projectId!, selectedModel, {
-        anthropic: anthropicKey || undefined,
-        openrouter: openrouterKey || undefined,
-      }),
+      llmScreeningApi.createRun(
+        projectId!,
+        {
+          model: selectedModel,
+          mode,
+          source_id: mode === "saturation" && selectedSourceId ? selectedSourceId : undefined,
+          seed: mode === "saturation" && seed ? parseInt(seed, 10) : undefined,
+          saturation_threshold: saturationThreshold,
+          include_extraction: includeExtraction,
+        },
+        { anthropic: anthropicKey || undefined, openrouter: openrouterKey || undefined }
+      ),
     onSuccess: (res) => {
       setLaunchError(null);
       qc.invalidateQueries({ queryKey: ["llm-runs", projectId] });
@@ -1780,8 +1483,15 @@ export default function LLMScreeningPage() {
   });
 
   const hasRunningRun = !!runningRun;
+  const canLaunch = !hasRunningRun && (estimate?.total_records ?? 0) > 0 && (mode === "prisma_scr" || !!selectedSourceId);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Tab definitions ────────────────────────────────────────────────────────
+  const TABS: { id: Tab; label: string }[] = [
+    { id: "run",     label: "Run" },
+    { id: "prompt",  label: "Prompt" },
+    { id: "results", label: "Results" },
+    { id: "compare", label: "Compare" },
+  ];
 
   return (
     <div className="page">
@@ -1792,400 +1502,185 @@ export default function LLMScreeningPage() {
       </header>
 
       <main>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.75rem",
-            marginBottom: "0.5rem",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.5rem" }}>
           <Bot size={22} style={{ color: "#6366f1" }} />
           <h2 style={{ margin: 0 }}>LLM Screening</h2>
         </div>
-        <p className="muted" style={{ marginBottom: "2rem", maxWidth: 640 }}>
-          Run an AI screening pass over all papers in parallel with the human workflow.
-          The LLM reads each paper (using full text where available), applies your
-          inclusion/exclusion criteria, and flags any themes or concepts not yet in your
-          codebook. Human decisions remain primary — use this panel to review and
-          selectively incorporate LLM findings.
+        <p className="muted" style={{ marginBottom: "1.5rem", maxWidth: 640 }}>
+          AI-assisted screening and extraction. Configure prompts, run the LLM, then compare with human decisions.
         </p>
 
-        {/* ── A. API Keys ─────────────────────────────────────────────────── */}
-        <ApiKeysPanel
-          anthropicKey={anthropicKey}
-          openrouterKey={openrouterKey}
-          onSaveAnthropic={(v) => saveKey("anthropic", v)}
-          onSaveOpenrouter={(v) => saveKey("openrouter", v)}
-        />
+        {/* Tab nav */}
+        <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e8eaed", marginBottom: "1.75rem" }}>
+          {TABS.map((tab) => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              style={{ padding: "0.5rem 1.25rem", background: "none", border: "none", borderBottom: activeTab === tab.id ? "2px solid #6366f1" : "2px solid transparent", marginBottom: "-2px", fontWeight: activeTab === tab.id ? 700 : 400, color: activeTab === tab.id ? "#6366f1" : "#5f6368", cursor: "pointer", fontSize: "0.9rem" }}>
+              {tab.label}
+              {tab.id === "results" && selectedRun && (
+                <span style={{ marginLeft: "0.35rem", background: "#ede9fe", color: "#6366f1", borderRadius: "0.75rem", padding: "0 0.4rem", fontSize: "0.72rem", fontWeight: 700 }}>
+                  {selectedRun.processed_records}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
 
-        {/* ── B + C + D + E: Model selection, estimate, compare, launch ────── */}
-        <section
-          style={{
-            background: "#f8f9fa",
-            border: "1px solid #dadce0",
-            borderRadius: "0.5rem",
-            padding: "1.25rem",
-            marginBottom: "2rem",
-            maxWidth: 680,
-          }}
-        >
-          <h3 style={{ marginTop: 0, marginBottom: "1rem" }}>Model & Estimate</h3>
+        {/* ── Tab: Run ─────────────────────────────────────────────────────── */}
+        {activeTab === "run" && (
+          <>
+            <ApiKeysPanel anthropicKey={anthropicKey} openrouterKey={openrouterKey} onSaveAnthropic={(v) => saveKey("anthropic", v)} onSaveOpenrouter={(v) => saveKey("openrouter", v)} />
 
-          {/* Model select + Compare button */}
-          <div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-                marginBottom: "0.35rem",
-                flexWrap: "wrap",
-              }}
-            >
-              <label style={{ fontSize: "0.85rem", fontWeight: 500, color: "#3c4043" }}>
-                Model
-              </label>
-              <button
-                className="btn-ghost"
-                style={{
-                  fontSize: "0.78rem",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.25rem",
-                }}
-                onClick={() => setShowComparison((v) => !v)}
-              >
-                {showComparison ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                Compare models
-              </button>
-            </div>
+            <section style={{ background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "1.25rem", marginBottom: "2rem", maxWidth: 700 }}>
+              <h3 style={{ marginTop: 0, marginBottom: "1rem" }}>Screening Mode</h3>
 
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              style={{
-                fontSize: "0.9rem",
-                padding: "0.4rem 0.65rem",
-                borderRadius: "0.375rem",
-                border: "1px solid #dadce0",
-                minWidth: 320,
-              }}
-            >
-              {MODEL_CATALOG.map((group) => (
-                <optgroup key={group.group} label={group.group}>
-                  {group.models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                      {m.recommended ? " ★" : ""} — {m.cost_per_1k} · {m.speed}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1.25rem" }}>
+                {[
+                  { id: "prisma_scr" as const, label: "PRISMA-ScR Mode", desc: "Screen all records in parallel: TA → FT → Extract. Standard systematic review workflow." },
+                  { id: "saturation" as const, label: "Saturation Mode", desc: "Process one corpus sequentially in queue order. Stop when no new concepts are found (mirrors human saturation)." },
+                ].map(({ id, label, desc }) => (
+                  <div key={id} onClick={() => setMode(id)} style={{ padding: "0.85rem", border: `2px solid ${mode === id ? "#6366f1" : "#dadce0"}`, borderRadius: "0.5rem", cursor: "pointer", background: mode === id ? "#ede9fe" : "#fff" }}>
+                    <div style={{ fontWeight: 700, color: mode === id ? "#6366f1" : "#3c4043", marginBottom: "0.25rem" }}>{label}</div>
+                    <div style={{ fontSize: "0.8rem", color: "#5f6368" }}>{desc}</div>
+                  </div>
+                ))}
+              </div>
 
-            {/* Model description card */}
-            <ModelDescriptionCard modelId={selectedModel} />
-
-            {/* Comparison table */}
-            {showComparison && (
-              <ModelComparisonTable
-                onSelectModel={(id) => {
-                  setSelectedModel(id);
-                  setShowComparison(false);
-                }}
-              />
-            )}
-          </div>
-
-          {/* Estimate stats */}
-          <div style={{ marginTop: "1.25rem" }}>
-            {estimateLoading ? (
-              <p style={{ color: "#9aa0a6", fontSize: "0.88rem" }}>Calculating estimate…</p>
-            ) : estimate ? (
-              <>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(5, 1fr)",
-                    gap: "0.75rem",
-                  }}
-                >
-                  {(
-                    [
-                      {
-                        value: estimate.total_records.toLocaleString(),
-                        label: "papers to screen",
-                        color: "#3c4043",
-                      },
-                      {
-                        value: estimate.estimated_input_tokens.toLocaleString(),
-                        label: "est. input tokens",
-                        color: "#3c4043",
-                      },
-                      {
-                        value: estimate.estimated_output_tokens.toLocaleString(),
-                        label: "est. output tokens",
-                        color: "#3c4043",
-                      },
-                      {
-                        value: `$${estimate.estimated_cost_usd.toFixed(2)}`,
-                        label: "est. total cost",
-                        color: estimate.estimated_cost_usd === 0 ? "#188038" : "#b06000",
-                      },
-                      {
-                        value: fmtMinutes(estimate.estimated_minutes),
-                        label: "est. time",
-                        color: "#1a73e8",
-                      },
-                    ] as { value: string; label: string; color: string }[]
-                  ).map(({ value, label, color }) => (
-                    <div
-                      key={label}
-                      style={{
-                        background: "#fff",
-                        border: "1px solid #e8eaed",
-                        borderRadius: "0.375rem",
-                        padding: "0.75rem",
-                      }}
-                    >
-                      <div style={{ fontSize: "1.2rem", fontWeight: 700, color }}>
-                        {value}
-                      </div>
-                      <div style={{ fontSize: "0.75rem", color: "#5f6368", marginTop: "0.15rem" }}>
-                        {label}
-                      </div>
+              {mode === "saturation" && (
+                <div style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "1rem", marginBottom: "1rem" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                    <div>
+                      <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>Corpus (required)</label>
+                      <select value={selectedSourceId} onChange={(e) => setSelectedSourceId(e.target.value)}
+                        style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: `1px solid ${!selectedSourceId ? "#c5221f" : "#dadce0"}`, fontSize: "0.85rem" }}>
+                        <option value="">— select corpus —</option>
+                        {(sources ?? []).map((s: Source) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                      {!selectedSourceId && <p style={{ fontSize: "0.75rem", color: "#c5221f", margin: "0.2rem 0 0" }}>Required for saturation mode</p>}
                     </div>
-                  ))}
+                    <div>
+                      <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>Seed (optional)</label>
+                      <input type="number" placeholder="Random" value={seed} onChange={(e) => setSeed(e.target.value)} style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }} />
+                      <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Match a human reviewer's seed for identical queue order</p>
+                    </div>
+                    <div>
+                      <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>Saturation threshold: {saturationThreshold}</label>
+                      <input type="range" min={3} max={10} value={saturationThreshold} onChange={(e) => setSaturationThreshold(parseInt(e.target.value, 10))} style={{ width: "100%" }} />
+                      <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Stop after N consecutive records with no new concepts</p>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <input type="checkbox" id="include-extraction" checked={includeExtraction} onChange={(e) => setIncludeExtraction(e.target.checked)} />
+                      <label htmlFor="include-extraction" style={{ fontSize: "0.85rem", cursor: "pointer" }}>Include structured extraction</label>
+                    </div>
+                  </div>
                 </div>
-              </>
-            ) : null}
-          </div>
+              )}
 
-          {/* Launch button */}
-          <div style={{ marginTop: "1.25rem", display: "flex", gap: "0.75rem", alignItems: "center" }}>
-            <button
-              className="btn-primary"
-              disabled={
-                launch.isPending ||
-                hasRunningRun ||
-                (estimate?.total_records ?? 0) === 0
-              }
-              onClick={() => launch.mutate()}
-              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
-            >
-              <Play size={15} />
-              {launch.isPending ? "Launching…" : "Launch LLM screening run"}
-            </button>
-            {hasRunningRun && (
-              <span style={{ color: "#1a73e8", fontSize: "0.85rem" }}>
-                A run is already in progress.
-              </span>
-            )}
-            {(estimate?.total_records ?? 0) === 0 && !hasRunningRun && (
-              <span style={{ color: "#9aa0a6", fontSize: "0.85rem" }}>
-                Import records first.
-              </span>
-            )}
-          </div>
-          {launchError && (
-            <p className="error" style={{ marginTop: "0.5rem" }}>
-              {launchError}
-            </p>
-          )}
-        </section>
+              {mode === "prisma_scr" && (
+                <div style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                    <label style={{ fontWeight: 600, fontSize: "0.83rem" }}>Filter to corpus (optional)</label>
+                    <select value={selectedSourceId} onChange={(e) => setSelectedSourceId(e.target.value)} style={{ padding: "0.35rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.83rem" }}>
+                      <option value="">All corpora</option>
+                      {(sources ?? []).map((s: Source) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.75rem" }}>
+                    <input type="checkbox" id="include-extraction-prisma" checked={includeExtraction} onChange={(e) => setIncludeExtraction(e.target.checked)} />
+                    <label htmlFor="include-extraction-prisma" style={{ fontSize: "0.85rem", cursor: "pointer" }}>Include structured extraction for FT-included records</label>
+                  </div>
+                </div>
+              )}
 
-        {/* ── F. Run history ─────────────────────────────────────────────────── */}
-        <section style={{ marginBottom: "2rem" }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "1rem",
-              marginBottom: "0.75rem",
-            }}
-          >
-            <h3 style={{ margin: 0 }}>Run history</h3>
-            <button
-              className="btn-ghost"
-              onClick={() => void refetchRuns()}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.35rem",
-                fontSize: "0.8rem",
-              }}
-            >
-              <RefreshCw size={12} /> Refresh
-            </button>
-          </div>
+              {/* Model + Estimate */}
+              <h3 style={{ margin: "1.25rem 0 0.75rem" }}>Model & Estimate</h3>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.35rem" }}>
+                  <label style={{ fontSize: "0.85rem", fontWeight: 500, color: "#3c4043" }}>Model</label>
+                  <button className="btn-ghost" style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "0.25rem" }} onClick={() => setShowComparison((v) => !v)}>
+                    {showComparison ? <ChevronUp size={12} /> : <ChevronDown size={12} />} Compare models
+                  </button>
+                </div>
+                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} style={{ fontSize: "0.9rem", padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", minWidth: 320 }}>
+                  {MODEL_CATALOG.map((group) => (
+                    <optgroup key={group.group} label={group.group}>
+                      {group.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.recommended ? " ★" : ""} — {m.cost_per_1k} · {m.speed}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+                <ModelDescriptionCard modelId={selectedModel} />
+                {showComparison && <ModelComparisonTable onSelectModel={(id) => { setSelectedModel(id); setShowComparison(false); }} />}
+              </div>
 
-          {!displayRuns || displayRuns.length === 0 ? (
-            <p className="muted">No runs yet. Launch your first LLM screening run above.</p>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
-                <thead>
-                  <tr
-                    style={{
-                      background: "#f1f3f4",
-                      fontSize: "0.78rem",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.04em",
-                      color: "#5f6368",
-                    }}
-                  >
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>
-                      Started
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>
-                      Model
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>
-                      Status
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>
-                      Progress
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>
-                      Include
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>
-                      Exclude
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>
-                      Uncertain
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>
-                      New Concepts
-                    </th>
-                    <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>
-                      Cost
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayRuns.map((run) => {
-                    const isSelected = selectedRun?.id === run.id;
-                    const modelLabel =
-                      MODEL_BY_ID[run.model]?.label ??
-                      run.model.split("/").pop()?.replace(/-\d{10}$/, "") ??
-                      run.model;
-                    return (
-                      <tr
-                        key={run.id}
-                        onClick={() => setSelectedRun(isSelected ? null : run)}
-                        style={{
-                          cursor: "pointer",
-                          background: isSelected ? "#e8f0fe" : undefined,
-                          borderLeft: isSelected
-                            ? "3px solid #1a73e8"
-                            : "3px solid transparent",
-                        }}
-                      >
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {fmtDate(run.started_at ?? run.created_at)}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            color: "#5f6368",
-                            fontSize: "0.78rem",
-                          }}
-                        >
-                          {modelLabel}
-                        </td>
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {statusBadge(run.status)}
-                          {run.error_message && (
-                            <span
-                              title={run.error_message}
-                              style={{ marginLeft: "0.35rem", cursor: "help" }}
-                            >
-                              ⚠
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {run.status === "running" || run.status === "pending" ? (
-                            <span
-                              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
-                            >
-                              <ProgressBar pct={run.progress_pct} />
-                              <span style={{ fontSize: "0.78rem", color: "#5f6368" }}>
-                                {run.progress_pct.toFixed(1)}%
-                              </span>
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: "0.78rem", color: "#5f6368" }}>
-                              {run.processed_records.toLocaleString()} /{" "}
-                              {(run.total_records ?? 0).toLocaleString()}
-                            </span>
-                          )}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            textAlign: "right",
-                            color: "#188038",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {run.included_count}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            textAlign: "right",
-                            color: "#c5221f",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {run.excluded_count}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            textAlign: "right",
-                            color: "#b06000",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {run.uncertain_count}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            textAlign: "right",
-                            color: "#6366f1",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {run.new_concepts_count > 0 ? `+${run.new_concepts_count}` : "—"}
-                        </td>
-                        <td
-                          style={{
-                            padding: "0.55rem 0.75rem",
-                            textAlign: "right",
-                            fontSize: "0.82rem",
-                            color: "#5f6368",
-                          }}
-                        >
-                          {fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+              <div style={{ marginTop: "1.25rem" }}>
+                {estimateLoading ? (
+                  <p style={{ color: "#9aa0a6", fontSize: "0.88rem" }}>Calculating estimate…</p>
+                ) : estimate ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "0.75rem" }}>
+                    {[
+                      { value: estimate.total_records.toLocaleString(), label: "papers to screen", color: "#3c4043" },
+                      { value: estimate.estimated_input_tokens.toLocaleString(), label: "est. input tokens", color: "#3c4043" },
+                      { value: estimate.estimated_output_tokens.toLocaleString(), label: "est. output tokens", color: "#3c4043" },
+                      { value: `$${estimate.estimated_cost_usd.toFixed(2)}`, label: "est. total cost", color: estimate.estimated_cost_usd === 0 ? "#188038" : "#b06000" },
+                      { value: fmtMinutes(estimate.estimated_minutes), label: "est. time", color: "#1a73e8" },
+                    ].map(({ value, label, color }) => (
+                      <div key={label} style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "0.75rem" }}>
+                        <div style={{ fontSize: "1.2rem", fontWeight: 700, color }}>{value}</div>
+                        <div style={{ fontSize: "0.75rem", color: "#5f6368", marginTop: "0.15rem" }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
 
-        {/* ── G. Results for selected run ─────────────────────────────────── */}
-        {selectedRun && projectId && (
-          <ResultsPanel projectId={projectId} run={selectedRun} />
+              <div style={{ marginTop: "1.25rem", display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                <button className="btn-primary" disabled={launch.isPending || !canLaunch} onClick={() => launch.mutate()} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <Play size={15} /> {launch.isPending ? "Launching…" : "Launch LLM run"}
+                </button>
+                {hasRunningRun && <span style={{ color: "#1a73e8", fontSize: "0.85rem" }}>A run is already in progress.</span>}
+                {(estimate?.total_records ?? 0) === 0 && !hasRunningRun && <span style={{ color: "#9aa0a6", fontSize: "0.85rem" }}>Import records first.</span>}
+                {mode === "saturation" && !selectedSourceId && !hasRunningRun && <span style={{ color: "#c5221f", fontSize: "0.85rem" }}>Select a corpus to launch in saturation mode.</span>}
+              </div>
+              {launchError && <p className="error" style={{ marginTop: "0.5rem" }}>{launchError}</p>}
+            </section>
+
+            <section>
+              <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "0.75rem" }}>
+                <h3 style={{ margin: 0 }}>Run history</h3>
+                <button className="btn-ghost" onClick={() => void refetchRuns()} style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.8rem" }}>
+                  <RefreshCw size={12} /> Refresh
+                </button>
+              </div>
+              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} />
+            </section>
+          </>
         )}
+
+        {/* ── Tab: Prompt ────────────────────────────────────────────────── */}
+        {activeTab === "prompt" && projectId && <PromptConfigPanel projectId={projectId} />}
+
+        {/* ── Tab: Results ────────────────────────────────────────────────── */}
+        {activeTab === "results" && (
+          <>
+            {displayRuns.length > 0 && (
+              <div style={{ marginBottom: "1rem" }}>
+                <label style={{ fontWeight: 600, fontSize: "0.85rem", marginRight: "0.75rem" }}>Run:</label>
+                <select value={selectedRun?.id ?? ""} onChange={(e) => { const r = displayRuns.find((x) => x.id === e.target.value); setSelectedRun(r ?? null); }}
+                  style={{ padding: "0.35rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", minWidth: 260 }}>
+                  <option value="">— select run —</option>
+                  {displayRuns.map((r) => <option key={r.id} value={r.id}>{fmtDate(r.started_at ?? r.created_at)} — {MODEL_BY_ID[r.model]?.label ?? r.model} ({r.status})</option>)}
+                </select>
+              </div>
+            )}
+            {selectedRun && projectId ? (
+              <ResultsPanel projectId={projectId} run={selectedRun} extractionTemplate={project?.extraction_template as { rows: Array<{ id: string; domain?: string; item: string }> } | null} />
+            ) : (
+              <p className="muted">Select a run from the dropdown or click a row in the Run tab.</p>
+            )}
+          </>
+        )}
+
+        {/* ── Tab: Compare ───────────────────────────────────────────────── */}
+        {activeTab === "compare" && projectId && <ComparePanel projectId={projectId} runs={displayRuns} />}
       </main>
     </div>
   );
