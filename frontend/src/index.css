@@ -889,6 +889,31 @@ select {
   padding: 1.5rem;
 }
 
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .9rem 1.25rem .75rem;
+  border-bottom: 1px solid var(--border);
+  gap: 1rem;
+}
+
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: .9rem;
+  cursor: pointer;
+  border-radius: var(--radius);
+  transition: background .13s, color .13s;
+}
+.modal-close:hover { background: var(--surface-2); color: var(--text); }
+
 .modal-card {
   background: var(--surface);
   border-radius: var(--radius-xl);

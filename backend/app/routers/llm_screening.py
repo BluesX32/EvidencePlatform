@@ -94,6 +94,15 @@ async def _require_run(
 # ---------------------------------------------------------------------------
 
 
+class EstimateStage(BaseModel):
+    role: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    reach_pct: float  # 0-100 — what fraction of records reach this stage
+
+
 class EstimateResponse(BaseModel):
     total_records: int
     estimated_input_tokens: int
@@ -102,6 +111,7 @@ class EstimateResponse(BaseModel):
     estimated_minutes: float
     model: str
     cost_breakdown: dict[str, float]
+    stages: list[EstimateStage] = []
 
 
 class LlmRunResponse(BaseModel):
@@ -132,6 +142,9 @@ class LlmRunResponse(BaseModel):
     saturation_threshold: int
     include_extraction: bool
     stopped_at_saturation: bool
+    # Agent fields (migration 027)
+    agent_mode: str
+    agent_pipeline: Optional[Any]
 
 
 class LlmResultResponse(BaseModel):
@@ -164,6 +177,8 @@ class CreateRunBody(BaseModel):
     seed: Optional[int] = None
     saturation_threshold: int = 5
     include_extraction: bool = True
+    agent_mode: str = "single"
+    pipeline: Optional[list] = None
 
 
 class ReviewBody(BaseModel):
@@ -227,6 +242,8 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
         saturation_threshold=run.saturation_threshold or 5,
         include_extraction=run.include_extraction if run.include_extraction is not None else True,
         stopped_at_saturation=run.stopped_at_saturation or False,
+        agent_mode=run.agent_mode or "single",
+        agent_pipeline=run.agent_pipeline,
     )
 
 
@@ -289,6 +306,25 @@ async def update_llm_config(
 
 
 # ---------------------------------------------------------------------------
+# Default pipeline definitions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{project_id}/llm-screening/default-pipelines")
+async def get_default_pipelines(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return the built-in single-agent and multi-agent pipeline definitions."""
+    await _require_project(project_id, db, user)
+    return {
+        "single": svc.DEFAULT_SINGLE_PIPELINE,
+        "multi": svc.DEFAULT_MULTI_PIPELINE,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Screening endpoints
 # ---------------------------------------------------------------------------
 
@@ -301,6 +337,7 @@ async def estimate(
     project_id: str,
     model: str = Query(default="claude-sonnet-4-6"),
     source_id: Optional[str] = Query(default=None),
+    agent_mode: str = Query(default="single"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> EstimateResponse:
@@ -312,8 +349,19 @@ async def estimate(
             sid = uuid.UUID(source_id)
         except ValueError:
             raise HTTPException(400, "Invalid source_id")
-    data = await svc.estimate_run(db, project.id, model, source_id=sid)
-    return EstimateResponse(model=model, **data)
+    data = await svc.estimate_run(db, project.id, model, source_id=sid, agent_mode=agent_mode)
+    stages = [
+        EstimateStage(
+            role=s["role"],
+            model=s["model"],
+            input_tokens=s["input_tokens"],
+            output_tokens=s["output_tokens"],
+            cost_usd=s["cost_usd"],
+            reach_pct=round(s["reach"] * 100, 1),
+        )
+        for s in data.get("stages", [])
+    ]
+    return EstimateResponse(model=model, stages=stages, **{k: v for k, v in data.items() if k != "stages"})
 
 
 @router.post(
@@ -339,22 +387,30 @@ async def create_run(
     if body.mode == "saturation" and not body.source_id:
         raise HTTPException(422, "source_id is required for saturation mode")
 
-    # Require at least one LLM provider key (header key OR env var).
-    effective_anthropic = x_anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-    effective_openrouter = x_openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
+    # Resolve API keys: header override → user profile → env var
+    profile_keys = user.api_keys or {}
+    effective_anthropic = (
+        x_anthropic_api_key
+        or profile_keys.get("anthropic")
+        or os.environ.get("ANTHROPIC_API_KEY")
+    )
+    effective_openrouter = (
+        x_openrouter_api_key
+        or profile_keys.get("openrouter")
+        or os.environ.get("OPENROUTER_API_KEY")
+    )
     is_claude = body.model.startswith("claude-")
 
     if is_claude and not effective_anthropic and not effective_openrouter:
         raise HTTPException(
             400,
-            "No API key configured. Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY, "
-            "or enter a key in the LLM Screening settings.",
+            "No API key configured. Add an Anthropic or OpenRouter key in your account profile.",
         )
     if not is_claude and not effective_openrouter:
         raise HTTPException(
             400,
-            "OPENROUTER_API_KEY is required for non-Claude models. "
-            "Get a key at https://openrouter.ai/keys",
+            "An OpenRouter API key is required for non-Claude models. "
+            "Add one in your account profile.",
         )
 
     source_id_uuid: Optional[uuid.UUID] = None
@@ -370,13 +426,15 @@ async def create_run(
         model=body.model,
         triggered_by=user.id,
         background_tasks=background_tasks,
-        anthropic_api_key=x_anthropic_api_key,
-        openrouter_api_key=x_openrouter_api_key,
+        anthropic_api_key=effective_anthropic,
+        openrouter_api_key=effective_openrouter,
         mode=body.mode,
         source_id=source_id_uuid,
         seed=body.seed,
         saturation_threshold=body.saturation_threshold,
         include_extraction=body.include_extraction,
+        agent_mode=body.agent_mode,
+        pipeline=body.pipeline,
     )
     return _run_to_response(run)
 

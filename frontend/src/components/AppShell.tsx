@@ -18,7 +18,7 @@ import {
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
   Menu, PanelLeftClose,
 } from "lucide-react";
-import { projectsApi, authApi, clearToken } from "../api/client";
+import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 
@@ -145,6 +145,98 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 const labelSt: React.CSSProperties = { display: "block", fontSize: "0.78rem", fontWeight: 600, color: "#475569", marginBottom: "0.3rem" };
 const inputSt: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "0.45rem 0.6rem", border: "1px solid #cbd5e1", borderRadius: "0.375rem", fontSize: "0.88rem", outline: "none" };
 
+// ── API Keys Modal ────────────────────────────────────────────────────────
+
+function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | null; onClose: () => void; onSaved: (p: UserProfile) => void }) {
+  const [anthropic, setAnthropic] = useState("");
+  const [openrouter, setOpenrouter] = useState("");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const mut = useMutation({
+    mutationFn: () => authApi.updateApiKeys({
+      ...(anthropic !== "" ? { anthropic } : {}),
+      ...(openrouter !== "" ? { openrouter } : {}),
+    }),
+    onSuccess: (res) => {
+      onSaved(res.data);
+      setAnthropic("");
+      setOpenrouter("");
+      setStatus("saved");
+      setTimeout(() => setStatus("idle"), 2000);
+    },
+    onError: () => setStatus("error"),
+  });
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setStatus("saving");
+    mut.mutate();
+  }
+
+  function clearKey(type: "anthropic" | "openrouter") {
+    authApi.updateApiKeys({ [type]: "" }).then(res => onSaved(res.data));
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3 style={{ margin: 0, fontSize: "1rem" }}>API keys</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding: "1rem 1.25rem 1.25rem" }}>
+          <p style={{ fontSize: "0.82rem", color: "#475569", margin: "0 0 1rem" }}>
+            Keys are stored in your account and used automatically for LLM screening runs.
+            They are never shared with other users.
+          </p>
+          <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {/* Anthropic */}
+            <div>
+              <label style={labelSt}>Anthropic API key</label>
+              {profile?.anthropic_key_hint ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
+                  <span style={{ fontSize: "0.82rem", fontFamily: "monospace", color: "#16a34a", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "0.25rem", padding: "0.2rem 0.5rem" }}>
+                    {profile.anthropic_key_hint}
+                  </span>
+                  <button type="button" onClick={() => clearKey("anthropic")} style={{ fontSize: "0.75rem", color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: 0 }}>Remove</button>
+                </div>
+              ) : (
+                <p style={{ fontSize: "0.75rem", color: "#9aa0a6", margin: "0 0 0.4rem" }}>Not set</p>
+              )}
+              <input type="password" value={anthropic} onChange={e => setAnthropic(e.target.value)} style={inputSt} placeholder="sk-ant-…  (leave blank to keep current)" autoComplete="off" />
+            </div>
+
+            {/* OpenRouter */}
+            <div>
+              <label style={labelSt}>OpenRouter API key</label>
+              {profile?.openrouter_key_hint ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.4rem" }}>
+                  <span style={{ fontSize: "0.82rem", fontFamily: "monospace", color: "#16a34a", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "0.25rem", padding: "0.2rem 0.5rem" }}>
+                    {profile.openrouter_key_hint}
+                  </span>
+                  <button type="button" onClick={() => clearKey("openrouter")} style={{ fontSize: "0.75rem", color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: 0 }}>Remove</button>
+                </div>
+              ) : (
+                <p style={{ fontSize: "0.75rem", color: "#9aa0a6", margin: "0 0 0.4rem" }}>Not set</p>
+              )}
+              <input type="password" value={openrouter} onChange={e => setOpenrouter(e.target.value)} style={inputSt} placeholder="sk-or-…  (leave blank to keep current)" autoComplete="off" />
+            </div>
+
+            {status === "error" && <p style={{ margin: 0, fontSize: "0.8rem", color: "#dc2626" }}>Save failed — please try again</p>}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.25rem" }}>
+              <button type="button" className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+              <button type="submit" className="btn-primary btn-sm" disabled={status === "saving" || (!anthropic && !openrouter)}>
+                {status === "saving" ? "Saving…" : status === "saved" ? "Saved ✓" : "Save keys"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Sidebar profile card + popover ────────────────────────────────────────
 
 function SidebarProfile() {
@@ -154,6 +246,7 @@ function SidebarProfile() {
   const [nameDraft, setNameDraft] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showApiKeys, setShowApiKeys] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const { data: profile } = useQuery({
@@ -204,7 +297,7 @@ function SidebarProfile() {
     window.location.href = "/projects";
   }
 
-  const MI = (icon: React.ReactNode, label: string, onClick: () => void, color?: string) => (
+  const MI = (icon: React.ReactNode, label: React.ReactNode, onClick: () => void, color?: string) => (
     <button
       onClick={() => { onClick(); setOpen(false); }}
       style={{ ...miBtnStyle, color: color ?? "#cbd5e1" }}
@@ -262,6 +355,15 @@ function SidebarProfile() {
           <div style={{ padding: "0.3rem 0" }}>
             <div style={sectionLabel}>Account</div>
             {MI(<KeyRound size={14} />, "Change password", () => { setShowPw(true); })}
+            {MI(<KeyRound size={14} />,
+              <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                API keys
+                {(profile?.anthropic_key_hint || profile?.openrouter_key_hint) && (
+                  <span style={{ fontSize: "0.65rem", background: "#166534", color: "#bbf7d0", borderRadius: "0.25rem", padding: "0.05rem 0.3rem", fontWeight: 700 }}>set</span>
+                )}
+              </span>,
+              () => { setShowApiKeys(true); }
+            )}
           </div>
 
           <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "0.3rem 0" }}>
@@ -303,6 +405,7 @@ function SidebarProfile() {
 
       {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+      {showApiKeys && <ApiKeysModal profile={profile ?? null} onClose={() => setShowApiKeys(false)} onSaved={(updated) => qc.setQueryData(["auth-me"], updated)} />}
     </div>
   );
 }

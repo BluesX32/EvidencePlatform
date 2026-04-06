@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Annotated
+from typing import Annotated, Optional
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -74,6 +74,11 @@ class UpdateProfileRequest(BaseModel):
         return v.strip()
 
 
+class UpdateApiKeysRequest(BaseModel):
+    anthropic: Optional[str] = None   # None = no change; "" = clear; value = set
+    openrouter: Optional[str] = None
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: Annotated[AsyncSession, Depends(get_db)]):
     try:
@@ -102,10 +107,28 @@ async def login(body: LoginRequest, db: Annotated[AsyncSession, Depends(get_db)]
     return TokenResponse(access_token=token)
 
 
+def _api_key_hint(key: Optional[str]) -> Optional[str]:
+    """Return the first 8 characters of a key for display, or None if unset."""
+    if not key:
+        return None
+    return key[:8] + "…"
+
+
+def _user_response(user: User) -> dict:
+    keys = user.api_keys or {}
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "name": user.name,
+        "anthropic_key_hint": _api_key_hint(keys.get("anthropic")),
+        "openrouter_key_hint": _api_key_hint(keys.get("openrouter")),
+    }
+
+
 @router.get("/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     """Return the authenticated user's profile."""
-    return {"id": str(current_user.id), "email": current_user.email, "name": current_user.name}
+    return _user_response(current_user)
 
 
 @router.patch("/me")
@@ -118,7 +141,35 @@ async def update_profile(
     current_user.name = body.name
     db.add(current_user)
     await db.commit()
-    return {"id": str(current_user.id), "email": current_user.email, "name": current_user.name}
+    return _user_response(current_user)
+
+
+@router.patch("/me/api-keys", status_code=200)
+async def update_api_keys(
+    body: UpdateApiKeysRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save or clear LLM API keys on the user's profile.
+
+    Pass an empty string to clear a key. Pass None to leave it unchanged.
+    Keys are stored in plaintext in the users.api_keys JSONB column.
+    """
+    keys: dict = dict(current_user.api_keys or {})
+    if body.anthropic is not None:
+        if body.anthropic.strip():
+            keys["anthropic"] = body.anthropic.strip()
+        else:
+            keys.pop("anthropic", None)
+    if body.openrouter is not None:
+        if body.openrouter.strip():
+            keys["openrouter"] = body.openrouter.strip()
+        else:
+            keys.pop("openrouter", None)
+    current_user.api_keys = keys
+    db.add(current_user)
+    await db.commit()
+    return _user_response(current_user)
 
 
 @router.patch("/me/password", status_code=204)

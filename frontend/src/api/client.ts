@@ -46,6 +46,8 @@ export interface UserProfile {
   id: string;
   email: string;
   name: string;
+  anthropic_key_hint: string | null;
+  openrouter_key_hint: string | null;
 }
 
 export const authApi = {
@@ -59,6 +61,8 @@ export const authApi = {
     api.patch<UserProfile>("/auth/me", { name }),
   changePassword: (current_password: string, new_password: string) =>
     api.patch("/auth/me/password", { current_password, new_password }),
+  updateApiKeys: (keys: { anthropic?: string; openrouter?: string }) =>
+    api.patch<UserProfile>("/auth/me/api-keys", keys),
 };
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -1142,6 +1146,26 @@ export const thematicApi = {
 
 // ── LLM Screening ─────────────────────────────────────────────────────────────
 
+export interface AgentSpec {
+  id: string;                        // unique within pipeline (e.g. "ta", "ft", "extract", "verify")
+  role: string;                      // "ta_screener" | "ft_screener" | "extractor" | "verifier" | "custom" | "single"
+  model: string;
+  enabled: boolean;
+  name?: string;                     // display name (matches service field)
+  label?: string;                    // frontend display alias (same as name)
+  system_prompt_additions?: string;  // appended to built-in system prompt (matches service field)
+  system_prompt_override?: string;   // replaces built-in system prompt entirely (matches service field)
+}
+
+export interface EstimateStage {
+  role: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  reach_pct: number;  // 0-100 — fraction of records reaching this stage
+}
+
 export interface LlmEstimateResponse {
   total_records: number;
   estimated_input_tokens: number;
@@ -1150,6 +1174,7 @@ export interface LlmEstimateResponse {
   estimated_minutes: number;
   model: string;
   cost_breakdown: Record<string, number>;
+  stages: EstimateStage[];
 }
 
 export interface LlmRunResponse {
@@ -1180,6 +1205,9 @@ export interface LlmRunResponse {
   saturation_threshold: number;
   include_extraction: boolean;
   stopped_at_saturation: boolean;
+  // Agent fields (migration 027)
+  agent_mode: "single" | "multi";
+  agent_pipeline: AgentSpec[] | null;
 }
 
 export interface MatchedCode {
@@ -1268,9 +1296,14 @@ export interface LlmPromptPreview {
 }
 
 export const llmScreeningApi = {
-  estimate: (projectId: string, model = "claude-sonnet-4-6", sourceId?: string) =>
+  estimate: (
+    projectId: string,
+    model = "claude-sonnet-4-6",
+    sourceId?: string,
+    agentMode: "single" | "multi" = "single"
+  ) =>
     api.get<LlmEstimateResponse>(`/projects/${projectId}/llm-screening/estimate`, {
-      params: { model, ...(sourceId ? { source_id: sourceId } : {}) },
+      params: { model, agent_mode: agentMode, ...(sourceId ? { source_id: sourceId } : {}) },
     }),
 
   createRun: (
@@ -1282,18 +1315,15 @@ export const llmScreeningApi = {
       seed?: number;
       saturation_threshold?: number;
       include_extraction?: boolean;
-    },
-    keys?: { anthropic?: string; openrouter?: string }
+      agent_mode?: "single" | "multi";
+      pipeline?: AgentSpec[];
+    }
   ) =>
-    api.post<LlmRunResponse>(
-      `/projects/${projectId}/llm-screening/runs`,
-      body,
-      {
-        headers: {
-          ...(keys?.anthropic ? { "X-Anthropic-Api-Key": keys.anthropic } : {}),
-          ...(keys?.openrouter ? { "X-Openrouter-Api-Key": keys.openrouter } : {}),
-        },
-      }
+    api.post<LlmRunResponse>(`/projects/${projectId}/llm-screening/runs`, body),
+
+  getDefaultPipelines: (projectId: string) =>
+    api.get<{ single: AgentSpec[]; multi: AgentSpec[] }>(
+      `/projects/${projectId}/llm-screening/default-pipelines`
     ),
 
   listRuns: (projectId: string) =>

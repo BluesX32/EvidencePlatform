@@ -141,6 +141,106 @@ _DEFAULT_MODEL = "claude-sonnet-4-6"
 _AVG_INPUT_TOKENS = 1500
 _AVG_OUTPUT_TOKENS = 400
 
+# Per-stage token estimates (used for adaptive cost estimation)
+_STAGE_AVG_INPUT: dict[str, int] = {
+    "ta":       800,   # title + abstract + criteria only
+    "ft":      3200,   # criteria + full text (when available)
+    "extract": 2800,   # extraction template + full text
+    "verify":  1200,   # record summary + previous decisions
+    "single":  1500,   # combined TA+FT in one call (current baseline)
+}
+_STAGE_AVG_OUTPUT: dict[str, int] = {
+    "ta":      200,
+    "ft":      280,
+    "extract": 320,
+    "verify":  180,
+    "single":  400,
+}
+# Fraction of records expected to reach each stage (rough priors)
+_STAGE_REACH: dict[str, float] = {
+    "ta":      1.00,   # all records go through TA
+    "ft":      0.30,   # ~30% pass TA
+    "extract": 0.15,   # ~50% of FT-included get extracted → 15% total
+    "verify":  1.00,   # verifier sees all (or all TA-included)
+    "single":  1.00,   # single agent sees all records
+}
+
+# ---------------------------------------------------------------------------
+# Default agent pipelines
+# ---------------------------------------------------------------------------
+
+DEFAULT_SINGLE_PIPELINE: list[dict] = [
+    {
+        "id": "main",
+        "role": "single",
+        "name": "Screening & Extraction Agent",
+        "description": (
+            "One agent handles all stages: evaluates title/abstract, then full text "
+            "if available, then extracts structured data from included papers. "
+            "Uses a single model and prompt for the entire workflow."
+        ),
+        "model": "claude-sonnet-4-6",
+        "enabled": True,
+        "system_prompt_override": None,
+        "system_prompt_additions": None,
+    }
+]
+
+DEFAULT_MULTI_PIPELINE: list[dict] = [
+    {
+        "id": "ta",
+        "role": "ta_screener",
+        "name": "Title/Abstract Screener",
+        "description": (
+            "Reviews only the title and abstract to make a fast initial "
+            "include/exclude decision. Use a fast, cost-efficient model here."
+        ),
+        "model": "claude-haiku-4-5-20251001",
+        "enabled": True,
+        "system_prompt_override": None,
+        "system_prompt_additions": None,
+    },
+    {
+        "id": "ft",
+        "role": "ft_screener",
+        "name": "Full-Text Screener",
+        "description": (
+            "Reads the full text (if available) for papers that passed TA screening. "
+            "Makes the final include/exclude decision. Use a capable model here."
+        ),
+        "model": "claude-sonnet-4-6",
+        "enabled": True,
+        "system_prompt_override": None,
+        "system_prompt_additions": None,
+    },
+    {
+        "id": "extract",
+        "role": "extractor",
+        "name": "Data Extractor",
+        "description": (
+            "Extracts structured data from papers that passed full-text screening, "
+            "filling in the project's extraction template fields."
+        ),
+        "model": "claude-sonnet-4-6",
+        "enabled": True,
+        "system_prompt_override": None,
+        "system_prompt_additions": None,
+    },
+    {
+        "id": "verify",
+        "role": "verifier",
+        "name": "Verification Agent",
+        "description": (
+            "Independently reviews the TA and FT decisions made by the other agents "
+            "and flags disagreements for human review. Disabled by default."
+        ),
+        "model": "claude-haiku-4-5-20251001",
+        "enabled": False,
+        "system_prompt_override": None,
+        "system_prompt_additions": None,
+    },
+]
+
 
 def _cost_per_token(model: str) -> tuple[float, float]:
     """Return (input_price_per_token, output_price_per_token) in USD."""
@@ -169,9 +269,13 @@ async def estimate_run(
     project_id: uuid.UUID,
     model: str,
     source_id: Optional[uuid.UUID] = None,
+    agent_mode: str = "single",
+    pipeline: Optional[list] = None,
 ) -> dict[str, Any]:
-    """Return cost/time preview for a screening run. No DB side effects.
+    """Return adaptive cost/time preview for a screening run. No DB side effects.
 
+    When agent_mode='single', uses a flat per-record estimate.
+    When agent_mode='multi', uses stage-by-stage estimates per enabled agent.
     When source_id is provided, counts only records from that source.
     """
     if source_id is not None:
@@ -190,15 +294,18 @@ async def estimate_run(
         )
     total: int = total_result.scalar_one()
 
-    in_price, out_price = _cost_per_token(model)
-    estimated_input_tokens = total * _AVG_INPUT_TOKENS
-    estimated_output_tokens = total * _AVG_OUTPUT_TOKENS
-    cost = estimated_input_tokens * in_price + estimated_output_tokens * out_price
+    # Resolve effective pipeline
+    if agent_mode == "multi":
+        effective_pipeline: list[dict] = pipeline or DEFAULT_MULTI_PIPELINE
+    else:
+        effective_pipeline = pipeline or [{"id": "main", "role": "single", "model": model, "enabled": True}]
+        # Ensure model is set on single-agent pipeline
+        if effective_pipeline and effective_pipeline[0].get("role") == "single":
+            effective_pipeline[0]["model"] = model
 
-    mins_per = _MINUTES_PER_RECORD.get(model, 0.015)
-    estimated_minutes = max(5.0, total * mins_per)
+    pipeline_estimate = estimate_pipeline_cost(total, agent_mode, effective_pipeline)
 
-    # Representative per-model cost comparison (subset for UI display)
+    # Per-model cost comparison using same stage logic as the selected agent_mode
     _COMPARISON_MODELS = [
         "claude-haiku-4-5-20251001",
         "claude-sonnet-4-6",
@@ -210,18 +317,18 @@ async def estimate_run(
     ]
     cost_breakdown: dict[str, float] = {}
     for m in _COMPARISON_MODELS:
-        ip, op = _PRICING[m]
-        cost_breakdown[m] = round(
-            estimated_input_tokens * ip + estimated_output_tokens * op, 4
-        )
+        single_pl = [{"id": "main", "role": "single", "model": m, "enabled": True}]
+        est = estimate_pipeline_cost(total, "single", single_pl)
+        cost_breakdown[m] = est["estimated_cost_usd"]
 
     return {
-        "total_records": total,
-        "estimated_input_tokens": estimated_input_tokens,
-        "estimated_output_tokens": estimated_output_tokens,
-        "estimated_cost_usd": round(cost, 4),
-        "estimated_minutes": round(estimated_minutes, 1),
-        "cost_breakdown": cost_breakdown,
+        "total_records":           total,
+        "estimated_input_tokens":  pipeline_estimate["estimated_input_tokens"],
+        "estimated_output_tokens": pipeline_estimate["estimated_output_tokens"],
+        "estimated_cost_usd":      pipeline_estimate["estimated_cost_usd"],
+        "estimated_minutes":       pipeline_estimate["estimated_minutes"],
+        "cost_breakdown":          cost_breakdown,
+        "stages":                  pipeline_estimate["stages"],
     }
 
 
@@ -238,9 +345,21 @@ async def create_and_launch_run(
     seed: Optional[int] = None,
     saturation_threshold: int = 5,
     include_extraction: bool = True,
+    agent_mode: str = "single",
+    pipeline: Optional[list] = None,
 ) -> LlmScreeningRun:
     """Create an LlmScreeningRun row and enqueue the background execution."""
-    estimate = await estimate_run(db, project_id, model, source_id=source_id)
+    # Resolve effective pipeline and store a snapshot
+    if agent_mode == "multi":
+        effective_pipeline: list[dict] = pipeline or DEFAULT_MULTI_PIPELINE
+    else:
+        effective_pipeline = pipeline or [{"id": "main", "role": "single", "model": model, "enabled": True}]
+        effective_pipeline[0]["model"] = model
+
+    estimate = await estimate_run(
+        db, project_id, model, source_id=source_id,
+        agent_mode=agent_mode, pipeline=effective_pipeline,
+    )
 
     run = LlmScreeningRun(
         project_id=project_id,
@@ -254,6 +373,8 @@ async def create_and_launch_run(
         seed=seed,
         saturation_threshold=saturation_threshold,
         include_extraction=include_extraction,
+        agent_mode=agent_mode,
+        agent_pipeline=effective_pipeline,
     )
     db.add(run)
     await db.commit()
@@ -263,19 +384,15 @@ async def create_and_launch_run(
     if mode == "saturation":
         background_tasks.add_task(
             _execute_run_saturation,
-            project_id,
-            run_id,
-            model,
-            source_id,
-            seed,
-            saturation_threshold,
-            include_extraction,
-            anthropic_api_key,
-            openrouter_api_key,
+            project_id, run_id, model, source_id, seed,
+            saturation_threshold, include_extraction,
+            anthropic_api_key, openrouter_api_key,
+            effective_pipeline,
         )
     else:
         background_tasks.add_task(
-            _execute_run, project_id, run_id, model, anthropic_api_key, openrouter_api_key
+            _execute_run, project_id, run_id, model,
+            anthropic_api_key, openrouter_api_key, effective_pipeline,
         )
     return run
 
@@ -291,11 +408,12 @@ async def _execute_run(
     model: str,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
 ) -> None:
     """Background task: screen every record in the project using the LLM (PRISMA mode)."""
     async with SessionLocal() as db:
         try:
-            await _do_execute_run(db, project_id, run_id, model, anthropic_api_key, openrouter_api_key)
+            await _do_execute_run(db, project_id, run_id, model, anthropic_api_key, openrouter_api_key, pipeline)
         except Exception as exc:
             logger.exception("LLM screening run %s failed", run_id)
             async with SessionLocal() as err_db:
@@ -321,6 +439,7 @@ async def _execute_run_saturation(
     include_extraction: bool,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
 ) -> None:
     """Background task: screen a single corpus sequentially, stopping at saturation."""
     async with SessionLocal() as db:
@@ -336,6 +455,7 @@ async def _execute_run_saturation(
                 include_extraction,
                 anthropic_api_key,
                 openrouter_api_key,
+                pipeline,
             )
         except Exception as exc:
             logger.exception("LLM saturation run %s failed", run_id)
@@ -359,6 +479,7 @@ async def _do_execute_run(
     model: str,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
 ) -> None:
     # Mark as running
     await db.execute(
@@ -412,6 +533,14 @@ async def _do_execute_run(
         )
     ).scalars().all()
 
+    # Resolve agent mode from run row
+    agent_mode: str = "single"
+    effective_pipeline: list[dict] = pipeline or []
+    if run_row is not None:
+        agent_mode = run_row.agent_mode or "single"
+        if not effective_pipeline and run_row.agent_pipeline:
+            effective_pipeline = run_row.agent_pipeline
+
     # Accumulate counters
     included = excluded = uncertain = new_concepts_total = 0
     input_tok_total = output_tok_total = 0
@@ -426,20 +555,41 @@ async def _do_execute_run(
 
         async with semaphore:
             try:
-                result = await _screen_one_record(
-                    record=record,
-                    project_id=project_id,
-                    run_id=run_id,
-                    model=model,
-                    criteria=criteria,
-                    framework=framework_nodes,
-                    db=db,
-                    anthropic_api_key=anthropic_api_key,
-                    openrouter_api_key=openrouter_api_key,
-                    llm_config=llm_config,
-                    extraction_template=extraction_template,
-                    include_extraction=include_extraction,
-                )
+                if agent_mode == "multi" and effective_pipeline:
+                    full_text, full_text_source = await _fetch_fulltext_for_record(
+                        record, project_id, db
+                    )
+                    result = await _run_multi_agent_pipeline(
+                        record=record,
+                        full_text=full_text,
+                        full_text_source=full_text_source,
+                        pipeline=effective_pipeline,
+                        criteria=criteria,
+                        framework=framework_nodes,
+                        project_id=project_id,
+                        run_id=run_id,
+                        db=db,
+                        extraction_template=extraction_template,
+                        include_extraction=include_extraction,
+                        llm_config=llm_config,
+                        anthropic_api_key=anthropic_api_key,
+                        openrouter_api_key=openrouter_api_key,
+                    )
+                else:
+                    result = await _screen_one_record(
+                        record=record,
+                        project_id=project_id,
+                        run_id=run_id,
+                        model=model,
+                        criteria=criteria,
+                        framework=framework_nodes,
+                        db=db,
+                        anthropic_api_key=anthropic_api_key,
+                        openrouter_api_key=openrouter_api_key,
+                        llm_config=llm_config,
+                        extraction_template=extraction_template,
+                        include_extraction=include_extraction,
+                    )
                 if result is None:
                     return
 
@@ -569,6 +719,7 @@ async def _do_execute_run_saturation(
     include_extraction: bool,
     anthropic_api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
 ) -> None:
     """Screen a corpus sequentially, stopping when saturation is reached.
 
@@ -615,6 +766,15 @@ async def _do_execute_run_saturation(
     )
     await db.commit()
 
+    # Resolve agent mode from run row
+    run_row_sat: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    agent_mode_sat: str = "single"
+    effective_pipeline_sat: list[dict] = pipeline or []
+    if run_row_sat is not None:
+        agent_mode_sat = run_row_sat.agent_mode or "single"
+        if not effective_pipeline_sat and run_row_sat.agent_pipeline:
+            effective_pipeline_sat = run_row_sat.agent_pipeline
+
     included = excluded = uncertain = new_concepts_total = 0
     input_tok_total = output_tok_total = 0
     actual_cost = 0.0
@@ -628,20 +788,41 @@ async def _do_execute_run_saturation(
             continue
 
         try:
-            result = await _screen_one_record(
-                record=record,
-                project_id=project_id,
-                run_id=run_id,
-                model=model,
-                criteria=criteria,
-                framework=framework_nodes,
-                db=db,
-                anthropic_api_key=anthropic_api_key,
-                openrouter_api_key=openrouter_api_key,
-                llm_config=llm_config,
-                extraction_template=extraction_template,
-                include_extraction=include_extraction,
-            )
+            if agent_mode_sat == "multi" and effective_pipeline_sat:
+                full_text, full_text_source = await _fetch_fulltext_for_record(
+                    record, project_id, db
+                )
+                result = await _run_multi_agent_pipeline(
+                    record=record,
+                    full_text=full_text,
+                    full_text_source=full_text_source,
+                    pipeline=effective_pipeline_sat,
+                    criteria=criteria,
+                    framework=framework_nodes,
+                    project_id=project_id,
+                    run_id=run_id,
+                    db=db,
+                    extraction_template=extraction_template,
+                    include_extraction=include_extraction,
+                    llm_config=llm_config,
+                    anthropic_api_key=anthropic_api_key,
+                    openrouter_api_key=openrouter_api_key,
+                )
+            else:
+                result = await _screen_one_record(
+                    record=record,
+                    project_id=project_id,
+                    run_id=run_id,
+                    model=model,
+                    criteria=criteria,
+                    framework=framework_nodes,
+                    db=db,
+                    anthropic_api_key=anthropic_api_key,
+                    openrouter_api_key=openrouter_api_key,
+                    llm_config=llm_config,
+                    extraction_template=extraction_template,
+                    include_extraction=include_extraction,
+                )
         except Exception:
             logger.exception("Error screening record %s in saturation run", record_id)
             continue
@@ -717,6 +898,44 @@ async def _do_execute_run_saturation(
     await db.commit()
 
 
+async def _fetch_fulltext_for_record(
+    record: Record,
+    project_id: uuid.UUID,
+    db: AsyncSession,
+) -> tuple[Optional[str], str]:
+    """Fetch full text and source label for a record. Shared by single and multi-agent paths."""
+    rs_row = (
+        await db.execute(
+            select(RecordSource).where(RecordSource.record_id == record.id).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    pmid: Optional[str] = None
+    pmcid: Optional[str] = None
+    if rs_row and rs_row.raw_data:
+        raw = rs_row.raw_data
+        pmid = raw.get("pmid") or raw.get("accession_number") or raw.get("pubmed_id")
+        lid = raw.get("LID") or raw.get("lid") or ""
+        if isinstance(lid, list):
+            for entry in lid:
+                if isinstance(entry, str) and "[pmc]" in entry.lower():
+                    pmcid = entry.split()[0]
+                    break
+        elif isinstance(lid, str) and "[pmc]" in lid.lower():
+            pmcid = lid.split()[0]
+        if not pmcid:
+            pmcid = raw.get("pmcid") or raw.get("pmc")
+
+    return await get_full_text(
+        record_id=record.id,
+        project_id=project_id,
+        doi=record.doi,
+        pmid=str(pmid) if pmid else None,
+        pmcid=str(pmcid) if pmcid else None,
+        db=db,
+    )
+
+
 async def _screen_one_record(
     record: Record,
     project_id: uuid.UUID,
@@ -732,42 +951,7 @@ async def _screen_one_record(
     include_extraction: bool = False,
 ) -> Optional[LlmScreeningResult]:
     """Screen a single record: fetch full text, call LLM, return result row."""
-    # Extract pmid / pmcid from the first record_source for this record
-    rs_row = (
-        await db.execute(
-            select(RecordSource).where(RecordSource.record_id == record.id).limit(1)
-        )
-    ).scalar_one_or_none()
-
-    pmid: Optional[str] = None
-    pmcid: Optional[str] = None
-    if rs_row and rs_row.raw_data:
-        raw = rs_row.raw_data
-        pmid = (
-            raw.get("pmid")
-            or raw.get("accession_number")
-            or raw.get("pubmed_id")
-        )
-        # PMCID may be a LID list entry containing "[pmc]"
-        lid = raw.get("LID") or raw.get("lid") or ""
-        if isinstance(lid, list):
-            for entry in lid:
-                if isinstance(entry, str) and "[pmc]" in entry.lower():
-                    pmcid = entry.split()[0]
-                    break
-        elif isinstance(lid, str) and "[pmc]" in lid.lower():
-            pmcid = lid.split()[0]
-        if not pmcid:
-            pmcid = raw.get("pmcid") or raw.get("pmc")
-
-    full_text, full_text_source = await get_full_text(
-        record_id=record.id,
-        project_id=project_id,
-        doi=record.doi,
-        pmid=str(pmid) if pmid else None,
-        pmcid=str(pmcid) if pmcid else None,
-        db=db,
-    )
+    full_text, full_text_source = await _fetch_fulltext_for_record(record, project_id, db)
 
     prompt = _build_prompt(
         record,
@@ -1096,6 +1280,513 @@ _OAI_TOOLS = [
         },
     }
 ]
+
+
+# ---------------------------------------------------------------------------
+# Per-stage tool schemas for multi-agent mode
+# ---------------------------------------------------------------------------
+
+_CODE_MATCH_ITEMS = {
+    "type": "object",
+    "properties": {
+        "code_id":    {"type": "string"},
+        "code_name":  {"type": "string"},
+        "snippet":    {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["code_id", "code_name", "confidence"],
+}
+_NEW_CONCEPT_ITEMS = {
+    "type": "object",
+    "properties": {
+        "name":                {"type": "string"},
+        "category_suggestion": {"type": "string"},
+        "snippet":             {"type": "string"},
+        "rationale":           {"type": "string"},
+    },
+    "required": ["name", "category_suggestion", "rationale"],
+}
+
+_TA_TOOL_SCHEMA: list[dict] = [
+    {
+        "name": "submit_ta_decision",
+        "description": "Submit your title/abstract screening decision.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ta_decision": {
+                    "type": "string",
+                    "enum": ["include", "exclude", "uncertain"],
+                    "description": "include=passes TA; exclude=does not meet criteria; uncertain=borderline",
+                },
+                "ta_reason":    {"type": "string", "description": "1-2 sentence justification"},
+                "matched_codes": {"type": "array", "items": _CODE_MATCH_ITEMS},
+                "new_concepts":  {"type": "array", "items": _NEW_CONCEPT_ITEMS},
+            },
+            "required": ["ta_decision", "ta_reason"],
+        },
+    }
+]
+
+_FT_TOOL_SCHEMA: list[dict] = [
+    {
+        "name": "submit_ft_decision",
+        "description": "Submit your full-text screening decision.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ft_decision": {
+                    "type": "string",
+                    "enum": ["include", "exclude", "uncertain"],
+                    "description": "include=confirmed included; exclude=excluded after full review",
+                },
+                "ft_reason":    {"type": "string", "description": "1-2 sentence justification"},
+                "matched_codes": {"type": "array", "items": _CODE_MATCH_ITEMS},
+                "new_concepts":  {"type": "array", "items": _NEW_CONCEPT_ITEMS},
+            },
+            "required": ["ft_decision", "ft_reason"],
+        },
+    }
+]
+
+_VERIFY_TOOL_SCHEMA: list[dict] = [
+    {
+        "name": "submit_verification",
+        "description": "Review and verify the screening decisions made by the screening agents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ta_assessment": {
+                    "type": "string",
+                    "enum": ["agree", "disagree", "uncertain"],
+                    "description": "Do you agree with the TA decision?",
+                },
+                "ft_assessment": {
+                    "type": "string",
+                    "enum": ["agree", "disagree", "uncertain", "not_applicable"],
+                    "description": "Do you agree with the FT decision? Use not_applicable if no FT screening was done.",
+                },
+                "override_recommendation": {
+                    "type": "string",
+                    "enum": ["include", "exclude", "uncertain", "no_change"],
+                    "description": "If you disagree, what decision do you recommend? Use no_change if you agree.",
+                },
+                "verification_notes": {
+                    "type": "string",
+                    "description": "Reasoning for your assessment.",
+                },
+            },
+            "required": ["ta_assessment", "ft_assessment", "override_recommendation", "verification_notes"],
+        },
+    }
+]
+
+_SYSTEM_PROMPT_TA = (
+    "You are an expert systematic review researcher performing title/abstract screening. "
+    "Evaluate ONLY the title and abstract — do NOT make full-text decisions. "
+    "You MUST use the submit_ta_decision tool to return your answer — do not produce any other output."
+)
+
+_SYSTEM_PROMPT_FT = (
+    "You are an expert systematic review researcher performing full-text screening. "
+    "The paper passed title/abstract screening. Evaluate the full text to make a final decision. "
+    "You MUST use the submit_ft_decision tool to return your answer — do not produce any other output."
+)
+
+_SYSTEM_PROMPT_VERIFY = (
+    "You are an expert systematic review methodologist performing quality control. "
+    "Your task is to independently verify screening decisions made by other reviewers. "
+    "Review the record and the decisions provided, then give your assessment. "
+    "You MUST use the submit_verification tool to return your answer — do not produce any other output."
+)
+
+
+def _build_ta_prompt(record: "Record", criteria: dict, framework: list, llm_config: Optional[dict] = None) -> str:
+    """Build a TA-only screening prompt (abstract only, no full text)."""
+    lines: list[str] = []
+
+    if llm_config and llm_config.get("research_question"):
+        lines += ["## Research Question\n", llm_config["research_question"], ""]
+
+    lines.append("## Inclusion / Exclusion Criteria\n")
+    for item in (criteria.get("inclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (include) {text}")
+    for item in (criteria.get("exclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (exclude) {text}")
+    lines.append("")
+
+    if framework:
+        themes = [n for n in framework if n.namespace == "theme"]
+        codes  = [n for n in framework if n.namespace == "code"]
+        lines.append("## Thematic Framework\n")
+        for theme in themes:
+            lines.append(f"**{theme.name}**")
+            for code in codes:
+                if code.parent_id == theme.id:
+                    lines.append(f"  - [{code.id}] {code.name}")
+            lines.append("")
+
+    if llm_config and llm_config.get("concept_instructions"):
+        lines += ["## Concepts and Extraction Guidance\n", llm_config["concept_instructions"], ""]
+
+    lines += [
+        "## Paper\n",
+        f"**Title**: {record.title or '(no title)'}",
+    ]
+    if record.year:    lines.append(f"**Year**: {record.year}")
+    if record.authors: lines.append(f"**Authors**: {'; '.join((record.authors or [])[:5])}")
+    if record.journal: lines.append(f"**Journal**: {record.journal}")
+    lines += ["", "**Abstract**:", record.abstract or "(no abstract)", ""]
+    lines += ["## Task\n", "Use submit_ta_decision based on the title and abstract only."]
+    return "\n".join(lines)
+
+
+def _build_ft_prompt(
+    record: "Record",
+    full_text: Optional[str],
+    full_text_source: str,
+    criteria: dict,
+    framework: list,
+    ta_decision: str,
+    ta_reason: str,
+    llm_config: Optional[dict] = None,
+) -> str:
+    """Build a FT-only screening prompt, including context from TA decision."""
+    lines: list[str] = []
+
+    if llm_config and llm_config.get("research_question"):
+        lines += ["## Research Question\n", llm_config["research_question"], ""]
+
+    lines.append("## Inclusion / Exclusion Criteria\n")
+    for item in (criteria.get("inclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (include) {text}")
+    for item in (criteria.get("exclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (exclude) {text}")
+    lines.append("")
+
+    if llm_config and llm_config.get("concept_instructions"):
+        lines += ["## Concepts and Extraction Guidance\n", llm_config["concept_instructions"], ""]
+
+    lines += [
+        "## Previous TA Decision\n",
+        f"The title/abstract screener marked this paper as **{ta_decision}**.",
+        f"Reason: {ta_reason}",
+        "",
+        "## Paper Metadata\n",
+        f"**Title**: {record.title or '(no title)'}",
+    ]
+    if record.year:    lines.append(f"**Year**: {record.year}")
+    if record.authors: lines.append(f"**Authors**: {'; '.join((record.authors or [])[:5])}")
+    lines.append("")
+
+    if full_text and full_text_source != "abstract_only":
+        lines += [f"## Full Text (source: {full_text_source})\n", full_text, ""]
+    else:
+        lines += ["## Full Text\n", "(Not available — screening based on abstract only)", ""]
+
+    lines.append("Use submit_ft_decision to give your final inclusion decision.")
+    return "\n".join(lines)
+
+
+def _build_verify_prompt(
+    record: "Record",
+    ta_decision: str,
+    ta_reason: str,
+    ft_decision: Optional[str],
+    ft_reason: Optional[str],
+    criteria: dict,
+    llm_config: Optional[dict] = None,
+) -> str:
+    """Build a verification prompt summarising previous agent decisions."""
+    lines: list[str] = []
+
+    if llm_config and llm_config.get("research_question"):
+        lines += ["## Research Question\n", llm_config["research_question"], ""]
+
+    lines.append("## Criteria (summary)\n")
+    for item in (criteria.get("inclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (include) {text}")
+    for item in (criteria.get("exclusion") or []):
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        lines.append(f"  - (exclude) {text}")
+    lines.append("")
+
+    lines += [
+        "## Record\n",
+        f"**Title**: {record.title or '(no title)'}",
+        f"**Abstract**: {record.abstract or '(no abstract)'}",
+        "",
+        "## Decisions to Verify\n",
+        f"**TA decision**: {ta_decision} — {ta_reason}",
+    ]
+    if ft_decision:
+        lines.append(f"**FT decision**: {ft_decision} — {ft_reason or ''}")
+    lines.append("")
+    lines.append("Use submit_verification to give your independent assessment.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent pipeline runner
+# ---------------------------------------------------------------------------
+
+
+async def _run_multi_agent_pipeline(
+    record: "Record",
+    full_text: Optional[str],
+    full_text_source: str,
+    pipeline: list[dict],
+    criteria: dict,
+    framework: list,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    db: AsyncSession,
+    extraction_template: Optional[dict],
+    include_extraction: bool,
+    llm_config: Optional[dict],
+    anthropic_api_key: Optional[str],
+    openrouter_api_key: Optional[str],
+) -> Optional[LlmScreeningResult]:
+    """Run a record through the multi-agent pipeline.
+
+    Agents run in pipeline order. Each agent's model/prompt is used for its stage.
+    Conditional logic: FT screener only runs if TA includes; extractor only runs if FT includes.
+    Verifier runs after TA+FT (if enabled).
+    """
+    agent_outputs: dict = {}
+    ta_decision:   Optional[str] = None
+    ta_reason:     Optional[str] = None
+    ft_decision:   Optional[str] = None
+    ft_reason:     Optional[str] = None
+    matched_codes: list = []
+    new_concepts:  list = []
+    total_input:   int = 0
+    total_output:  int = 0
+    extracted_json: Optional[dict] = None
+    primary_model  = pipeline[0]["model"] if pipeline else _DEFAULT_MODEL
+
+    for agent in pipeline:
+        if not agent.get("enabled", True):
+            continue
+
+        role   = agent["role"]
+        model  = agent.get("model") or _DEFAULT_MODEL
+        sys_add = agent.get("system_prompt_additions")
+        sys_ovr = agent.get("system_prompt_override")
+
+        try:
+            if role == "ta_screener":
+                prompt = _build_ta_prompt(record, criteria, framework, llm_config)
+                system = sys_ovr or (_SYSTEM_PROMPT_TA if not sys_add else sys_add + "\n\n" + _SYSTEM_PROMPT_TA)
+                out = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key,
+                                      system_prompt_override=system, tool_schema_override=_TA_TOOL_SCHEMA)
+                ta_decision   = out.get("ta_decision")
+                ta_reason     = out.get("ta_reason")
+                matched_codes = out.get("matched_codes") or []
+                new_concepts  = out.get("new_concepts") or []
+                total_input  += out.get("_input_tokens") or 0
+                total_output += out.get("_output_tokens") or 0
+                primary_model = model
+                agent_outputs["ta"] = {
+                    "decision": ta_decision, "reason": ta_reason,
+                    "model": model, "tokens_in": out.get("_input_tokens"), "tokens_out": out.get("_output_tokens"),
+                }
+                # Stop early if excluded
+                if ta_decision == "exclude":
+                    break
+
+            elif role == "ft_screener":
+                if ta_decision != "include":
+                    continue  # skip FT unless TA included
+                prompt = _build_ft_prompt(record, full_text, full_text_source, criteria, framework,
+                                          ta_decision, ta_reason or "", llm_config)
+                system = sys_ovr or (_SYSTEM_PROMPT_FT if not sys_add else sys_add + "\n\n" + _SYSTEM_PROMPT_FT)
+                out = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key,
+                                      system_prompt_override=system, tool_schema_override=_FT_TOOL_SCHEMA)
+                ft_decision   = out.get("ft_decision")
+                ft_reason     = out.get("ft_reason")
+                # merge codes/concepts from FT agent
+                matched_codes = matched_codes + (out.get("matched_codes") or [])
+                new_concepts  = new_concepts  + (out.get("new_concepts") or [])
+                total_input  += out.get("_input_tokens") or 0
+                total_output += out.get("_output_tokens") or 0
+                agent_outputs["ft"] = {
+                    "decision": ft_decision, "reason": ft_reason,
+                    "model": model, "tokens_in": out.get("_input_tokens"), "tokens_out": out.get("_output_tokens"),
+                }
+
+            elif role == "extractor":
+                if ft_decision != "include":
+                    continue
+                if not include_extraction or not extraction_template or not extraction_template.get("rows"):
+                    continue
+                try:
+                    extracted_json = await _extract_one_record(
+                        record=record, full_text=full_text,
+                        extraction_template=extraction_template, llm_config=llm_config,
+                        model=model, anthropic_api_key=anthropic_api_key,
+                        openrouter_api_key=openrouter_api_key,
+                    )
+                    agent_outputs["extract"] = {"model": model, "fields": list((extracted_json or {}).keys())}
+                except Exception:
+                    logger.exception("Multi-agent extraction failed for record %s", record.id)
+
+            elif role == "verifier":
+                prompt = _build_verify_prompt(record, ta_decision or "uncertain", ta_reason or "",
+                                              ft_decision, ft_reason, criteria, llm_config)
+                system = sys_ovr or (_SYSTEM_PROMPT_VERIFY if not sys_add else sys_add + "\n\n" + _SYSTEM_PROMPT_VERIFY)
+                out = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key,
+                                      system_prompt_override=system, tool_schema_override=_VERIFY_TOOL_SCHEMA)
+                total_input  += out.get("_input_tokens") or 0
+                total_output += out.get("_output_tokens") or 0
+                agent_outputs["verify"] = {
+                    "ta_assessment":           out.get("ta_assessment"),
+                    "ft_assessment":           out.get("ft_assessment"),
+                    "override_recommendation": out.get("override_recommendation"),
+                    "verification_notes":      out.get("verification_notes"),
+                    "model": model,
+                }
+
+            elif role == "custom":
+                # Custom agent: runs after all standard stages; receives full context
+                agent_id = agent.get("id", "custom")
+                prompt = _build_prompt(record, full_text, full_text_source, criteria, framework, llm_config)
+                system = sys_ovr or (sys_add + "\n\n" + _SYSTEM_PROMPT if sys_add else None)
+                out = await _call_llm(model, prompt, anthropic_api_key, openrouter_api_key,
+                                      system_prompt_override=system)
+                total_input  += out.get("_input_tokens") or 0
+                total_output += out.get("_output_tokens") or 0
+                agent_outputs[agent_id] = {
+                    "model": model, "tokens_in": out.get("_input_tokens"), "tokens_out": out.get("_output_tokens"),
+                    "ta_decision": out.get("ta_decision"), "ft_decision": out.get("ft_decision"),
+                }
+
+        except Exception:
+            logger.exception("Agent %s (%s) failed for record %s", agent.get("id"), role, record.id)
+
+    if ta_decision is None:
+        return None  # No TA screener ran successfully
+
+    return LlmScreeningResult(
+        run_id=run_id,
+        project_id=project_id,
+        record_id=record.id,
+        cluster_id=None,
+        ta_decision=ta_decision,
+        ta_reason=ta_reason,
+        ft_decision=ft_decision,
+        ft_reason=ft_reason,
+        matched_codes=matched_codes or [],
+        new_concepts=new_concepts or [],
+        full_text_source=full_text_source,
+        input_tokens=total_input,
+        output_tokens=total_output,
+        model=primary_model,
+        extracted_json=extracted_json,
+        agent_outputs=agent_outputs if agent_outputs else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Adaptive cost estimation helper
+# ---------------------------------------------------------------------------
+
+
+def estimate_pipeline_cost(
+    total_records: int,
+    agent_mode: str,
+    pipeline: list[dict],
+) -> dict[str, Any]:
+    """Compute stage-by-stage cost estimate for a given pipeline.
+
+    Returns a dict with total cost, per-stage breakdown, and estimated minutes.
+    """
+    stages: list[dict] = []
+    total_cost = 0.0
+    total_minutes = 0.0
+    total_input_toks = 0
+    total_output_toks = 0
+
+    if agent_mode == "single":
+        # Single agent: one model for all stages
+        model = pipeline[0]["model"] if pipeline else _DEFAULT_MODEL
+        in_p, out_p = _cost_per_token(model)
+        mins_p = _MINUTES_PER_RECORD.get(model, 0.015)
+
+        # TA pass: all records
+        ta_in  = total_records * _STAGE_AVG_INPUT["ta"]
+        ta_out = total_records * _STAGE_AVG_OUTPUT["ta"]
+        # FT pass: ~30% of records
+        ft_n   = int(total_records * _STAGE_REACH["ft"])
+        ft_in  = ft_n * _STAGE_AVG_INPUT["ft"]
+        ft_out = ft_n * _STAGE_AVG_OUTPUT["ft"]
+        # Extraction: ~15% of records
+        ex_n   = int(total_records * _STAGE_REACH["extract"])
+        ex_in  = ex_n * _STAGE_AVG_INPUT["extract"]
+        ex_out = ex_n * _STAGE_AVG_OUTPUT["extract"]
+
+        for label, n, i_toks, o_toks in [
+            ("Screening (TA)", total_records, ta_in, ta_out),
+            ("Screening (FT)", ft_n, ft_in, ft_out),
+            ("Extraction",     ex_n, ex_in, ex_out),
+        ]:
+            cost  = i_toks * in_p + o_toks * out_p
+            mins  = n * mins_p
+            stages.append({"stage": label, "records": n, "model": model, "cost_usd": round(cost, 5), "minutes": round(mins, 1)})
+            total_cost    += cost
+            total_minutes += mins
+            total_input_toks  += i_toks
+            total_output_toks += o_toks
+
+    else:  # multi-agent
+        # Map role → reach fraction (relative to total)
+        role_reach = {"ta_screener": "ta", "ft_screener": "ft", "extractor": "extract", "verifier": "verify"}
+        for agent in pipeline:
+            if not agent.get("enabled", True):
+                continue
+            role   = agent.get("role", "single")
+            model  = agent.get("model") or _DEFAULT_MODEL
+            stage_key = role_reach.get(role, "single")
+            reach_frac = _STAGE_REACH.get(stage_key, 1.0)
+            n_records  = int(total_records * reach_frac)
+            i_toks = n_records * _STAGE_AVG_INPUT.get(stage_key, _AVG_INPUT_TOKENS)
+            o_toks = n_records * _STAGE_AVG_OUTPUT.get(stage_key, _AVG_OUTPUT_TOKENS)
+            in_p, out_p = _cost_per_token(model)
+            mins_p      = _MINUTES_PER_RECORD.get(model, 0.015)
+            cost        = i_toks * in_p + o_toks * out_p
+            mins        = n_records * mins_p
+            stages.append({
+                "stage": agent.get("name", role),
+                "agent_id": agent.get("id"),
+                "records": n_records,
+                "model": model,
+                "cost_usd": round(cost, 5),
+                "minutes": round(mins, 1),
+            })
+            total_cost    += cost
+            total_minutes += mins
+            total_input_toks  += i_toks
+            total_output_toks += o_toks
+
+    # Parallelism discount for minutes (multi-agent stages can overlap somewhat)
+    if agent_mode == "multi":
+        total_minutes = max(total_minutes * 0.7, 5.0)
+    else:
+        total_minutes = max(total_minutes, 5.0)
+
+    return {
+        "total_records":           total_records,
+        "estimated_input_tokens":  total_input_toks,
+        "estimated_output_tokens": total_output_toks,
+        "estimated_cost_usd":      round(total_cost, 4),
+        "estimated_minutes":       round(total_minutes, 1),
+        "stages":                  stages,
+    }
 
 
 async def _call_llm(

@@ -99,6 +99,11 @@ class LlmScreeningRun(Base):
     stopped_at_saturation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    # Agent fields (migration 027)
+    agent_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="single"
+    )
+    agent_pipeline: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -166,6 +171,8 @@ class LlmScreeningResult(Base):
     )  # accepted / rejected / merged
     # Structured extraction (migration 025)
     extracted_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Per-agent outputs for multi-agent runs (migration 027)
+    agent_outputs: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

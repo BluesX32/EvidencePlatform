@@ -16,24 +16,29 @@ import {
   ChevronLeft,
   Play,
   RefreshCw,
-  Key,
   X,
-  Eye,
-  EyeOff,
   ChevronDown,
   ChevronUp,
   Download,
   GitCompare,
   Wand2,
+  Layers,
+  User,
+  Plus,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import {
   projectsApi,
   sourcesApi,
   llmScreeningApi,
+  authApi,
   type LlmRunResponse,
   type LlmResultResponse,
   type LlmConfig,
   type LlmComparisonResponse,
+  type AgentSpec,
+  type EstimateStage,
   type Source,
 } from "../api/client";
 
@@ -443,145 +448,6 @@ function fmtDate(iso: string | null | undefined) {
   return new Date(iso).toLocaleString();
 }
 
-function maskKey(key: string): string {
-  if (!key) return "";
-  if (key.length <= 8) return "••••••••";
-  return key.slice(0, 7) + "••••";
-}
-
-// ── API Keys Panel ────────────────────────────────────────────────────────────
-
-function ApiKeysPanel({
-  anthropicKey,
-  openrouterKey,
-  onSaveAnthropic,
-  onSaveOpenrouter,
-}: {
-  anthropicKey: string;
-  openrouterKey: string;
-  onSaveAnthropic: (val: string) => void;
-  onSaveOpenrouter: (val: string) => void;
-}) {
-  const [anthropicInput, setAnthropicInput] = useState("");
-  const [openrouterInput, setOpenrouterInput] = useState("");
-  const [showAnthropic, setShowAnthropic] = useState(false);
-  const [showOpenrouter, setShowOpenrouter] = useState(false);
-
-  const hasNoKey = !anthropicKey && !openrouterKey;
-
-  return (
-    <section
-      style={{
-        background: "#f8f9fa",
-        border: "1px solid #dadce0",
-        borderRadius: "0.5rem",
-        padding: "1.25rem",
-        marginBottom: "1.5rem",
-        maxWidth: 680,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
-        <Key size={16} style={{ color: "#6366f1" }} />
-        <h3 style={{ margin: 0 }}>API Keys</h3>
-      </div>
-
-      {hasNoKey && (
-        <div
-          style={{
-            background: "#fef7e0",
-            border: "1px solid #f6d858",
-            borderRadius: "0.375rem",
-            padding: "0.6rem 0.85rem",
-            marginBottom: "1rem",
-            fontSize: "0.84rem",
-            color: "#7a5200",
-          }}
-        >
-          No API key configured. Add an Anthropic or OpenRouter key to launch a run.
-        </div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-        <div>
-          <label style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}>
-            Anthropic API Key
-          </label>
-          {anthropicKey ? (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <code style={{ background: "#e8f0fe", color: "#1a73e8", padding: "0.3rem 0.6rem", borderRadius: "0.3rem", fontSize: "0.82rem", flex: 1 }}>
-                {maskKey(anthropicKey)}
-              </code>
-              <button title="Remove key" onClick={() => onSaveAnthropic("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", padding: "0.2rem", display: "flex", alignItems: "center" }}>
-                <X size={14} />
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: "0.4rem" }}>
-              <div style={{ position: "relative", flex: 1 }}>
-                <input
-                  type={showAnthropic ? "text" : "password"}
-                  placeholder="sk-ant-…"
-                  value={anthropicInput}
-                  onChange={(e) => setAnthropicInput(e.target.value)}
-                  style={{ width: "100%", padding: "0.4rem 2rem 0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }}
-                />
-                <button type="button" onClick={() => setShowAnthropic((v) => !v)} style={{ position: "absolute", right: "0.4rem", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9aa0a6", padding: 0, display: "flex", alignItems: "center" }}>
-                  {showAnthropic ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
-              <button className="btn-primary" style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }} onClick={() => { onSaveAnthropic(anthropicInput); setAnthropicInput(""); }} disabled={!anthropicInput.trim()}>
-                Save
-              </button>
-            </div>
-          )}
-          <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.3rem" }}>For Claude models (direct)</p>
-        </div>
-
-        <div>
-          <label style={{ fontSize: "0.83rem", fontWeight: 600, display: "block", marginBottom: "0.35rem", color: "#3c4043" }}>
-            OpenRouter API Key
-          </label>
-          {openrouterKey ? (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <code style={{ background: "#e8f0fe", color: "#1a73e8", padding: "0.3rem 0.6rem", borderRadius: "0.3rem", fontSize: "0.82rem", flex: 1 }}>
-                {maskKey(openrouterKey)}
-              </code>
-              <button title="Remove key" onClick={() => onSaveOpenrouter("")} style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", padding: "0.2rem", display: "flex", alignItems: "center" }}>
-                <X size={14} />
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: "0.4rem" }}>
-              <div style={{ position: "relative", flex: 1 }}>
-                <input
-                  type={showOpenrouter ? "text" : "password"}
-                  placeholder="sk-or-…"
-                  value={openrouterInput}
-                  onChange={(e) => setOpenrouterInput(e.target.value)}
-                  style={{ width: "100%", padding: "0.4rem 2rem 0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }}
-                />
-                <button type="button" onClick={() => setShowOpenrouter((v) => !v)} style={{ position: "absolute", right: "0.4rem", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9aa0a6", padding: 0, display: "flex", alignItems: "center" }}>
-                  {showOpenrouter ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
-              <button className="btn-primary" style={{ fontSize: "0.82rem", padding: "0.35rem 0.75rem" }} onClick={() => { onSaveOpenrouter(openrouterInput); setOpenrouterInput(""); }} disabled={!openrouterInput.trim()}>
-                Save
-              </button>
-            </div>
-          )}
-          <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.3rem" }}>
-            For all models via{" "}
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#6366f1" }}>openrouter.ai</a>
-          </p>
-        </div>
-      </div>
-
-      <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.85rem", marginBottom: 0 }}>
-        Keys are stored in your browser's local storage and sent only to our backend when making LLM calls.
-      </p>
-    </section>
-  );
-}
 
 // ── Model Description Card ────────────────────────────────────────────────────
 
@@ -1310,6 +1176,256 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
   );
 }
 
+// ── Stage Cost Breakdown ──────────────────────────────────────────────────────
+
+const ROLE_LABEL: Record<string, string> = {
+  single: "Single Agent",
+  ta_screener: "TA Screener",
+  ft_screener: "FT Screener",
+  extractor: "Extractor",
+  verifier: "Verifier",
+  custom: "Custom",
+};
+
+function StageCostBreakdown({ stages }: { stages: EstimateStage[] }) {
+  if (!stages.length) return null;
+  return (
+    <div style={{ marginTop: "0.75rem", border: "1px solid #e8eaed", borderRadius: "0.375rem", overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+        <thead>
+          <tr style={{ background: "#f1f3f4" }}>
+            {["Stage", "Model", "Reach", "Input tokens", "Output tokens", "Cost"].map((h) => (
+              <th key={h} style={{ padding: "0.4rem 0.65rem", textAlign: "left", fontWeight: 600, color: "#5f6368", fontSize: "0.75rem" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {stages.map((s, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+              <td style={{ padding: "0.4rem 0.65rem", fontWeight: 600 }}>{ROLE_LABEL[s.role] ?? s.role}</td>
+              <td style={{ padding: "0.4rem 0.65rem", color: "#5f6368" }}>{MODEL_BY_ID[s.model]?.label ?? s.model.split("/").pop()}</td>
+              <td style={{ padding: "0.4rem 0.65rem", color: "#5f6368" }}>{s.reach_pct}%</td>
+              <td style={{ padding: "0.4rem 0.65rem", color: "#3c4043" }}>{s.input_tokens.toLocaleString()}</td>
+              <td style={{ padding: "0.4rem 0.65rem", color: "#3c4043" }}>{s.output_tokens.toLocaleString()}</td>
+              <td style={{ padding: "0.4rem 0.65rem", color: s.cost_usd === 0 ? "#188038" : "#b06000", fontWeight: 600 }}>
+                {s.cost_usd === 0 ? "Free" : `$${s.cost_usd.toFixed(4)}`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Pipeline Editor ───────────────────────────────────────────────────────────
+
+const AGENT_ROLES = [
+  { role: "ta_screener", label: "TA Screener", desc: "Title & abstract screening — fast, cheap, high recall" },
+  { role: "ft_screener", label: "FT Screener", desc: "Full-text screening — thorough, requires full text" },
+  { role: "extractor",   label: "Extractor",   desc: "Structured data extraction from FT-included records" },
+  { role: "verifier",    label: "Verifier",    desc: "Cross-checks TA/FT decisions for consistency" },
+  { role: "custom",      label: "Custom",      desc: "Custom agent with your own role and prompt" },
+];
+
+const ROLE_COLOR: Record<string, { bg: string; fg: string }> = {
+  ta_screener: { bg: "#e8f0fe", fg: "#1a73e8" },
+  ft_screener: { bg: "#e6f4ea", fg: "#188038" },
+  extractor:   { bg: "#fef7e0", fg: "#b06000" },
+  verifier:    { bg: "#f3e8fd", fg: "#9333ea" },
+  custom:      { bg: "#f1f3f4", fg: "#5f6368" },
+  single:      { bg: "#ede9fe", fg: "#6366f1" },
+};
+
+function AgentCard({
+  agent,
+  onChange,
+  onRemove,
+  index,
+}: {
+  agent: AgentSpec;
+  onChange: (patch: Partial<AgentSpec>) => void;
+  onRemove?: () => void;
+  index: number;
+}) {
+  const [promptOpen, setPromptOpen] = useState(false);
+  const color = ROLE_COLOR[agent.role] ?? ROLE_COLOR.custom;
+  const roleInfo = AGENT_ROLES.find((r) => r.role === agent.role);
+
+  return (
+    <div
+      style={{
+        border: `1.5px solid ${agent.enabled ? "#dadce0" : "#e8eaed"}`,
+        borderRadius: "0.5rem",
+        background: agent.enabled ? "#fff" : "#f8f9fa",
+        marginBottom: "0.65rem",
+        opacity: agent.enabled ? 1 : 0.7,
+        transition: "opacity 0.15s",
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: "0.65rem", padding: "0.65rem 0.85rem" }}>
+        <span style={{ background: color.bg, color: color.fg, fontWeight: 700, fontSize: "0.72rem", padding: "0.15rem 0.55rem", borderRadius: "0.75rem", whiteSpace: "nowrap" }}>
+          {index + 1}
+        </span>
+        <span style={{ fontWeight: 600, fontSize: "0.88rem", color: "#3c4043", flex: 1 }}>
+          {agent.name || agent.label || roleInfo?.label || agent.role}
+        </span>
+        {agent.role === "custom" && (
+          <input
+            value={agent.name ?? ""}
+            onChange={(e) => onChange({ name: e.target.value })}
+            placeholder="Agent name"
+            style={{ fontSize: "0.83rem", padding: "0.25rem 0.5rem", border: "1px solid #dadce0", borderRadius: "0.3rem", flex: 1 }}
+          />
+        )}
+        <select
+          value={agent.model}
+          onChange={(e) => onChange({ model: e.target.value })}
+          style={{ fontSize: "0.8rem", padding: "0.25rem 0.4rem", border: "1px solid #dadce0", borderRadius: "0.3rem", minWidth: 160 }}
+        >
+          {MODEL_CATALOG.map((g) => (
+            <optgroup key={g.group} label={g.group}>
+              {g.models.map((m) => (
+                <option key={m.id} value={m.id}>{m.label} — {m.cost_per_1k}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer", fontSize: "0.8rem", color: "#5f6368" }}>
+          <input
+            type="checkbox"
+            checked={agent.enabled}
+            onChange={(e) => onChange({ enabled: e.target.checked })}
+            style={{ cursor: "pointer" }}
+          />
+          Active
+        </label>
+        <button
+          onClick={() => setPromptOpen((o) => !o)}
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#5f6368", padding: "0.2rem", display: "flex", alignItems: "center" }}
+          title="Customize prompt"
+        >
+          <ChevronDown size={14} style={{ transform: promptOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+        </button>
+        {onRemove && (
+          <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", padding: "0.2rem", display: "flex", alignItems: "center" }} title="Remove agent">
+            <Trash2 size={13} />
+          </button>
+        )}
+      </div>
+      {roleInfo?.desc && !promptOpen && (
+        <p style={{ margin: "0 0 0.5rem 2.8rem", fontSize: "0.78rem", color: "#9aa0a6" }}>{roleInfo.desc}</p>
+      )}
+      {/* Expandable prompt section */}
+      {promptOpen && (
+        <div style={{ padding: "0 0.85rem 0.85rem", borderTop: "1px solid #f1f3f4" }}>
+          <div style={{ marginTop: "0.75rem" }}>
+            <label style={{ fontWeight: 600, fontSize: "0.8rem", display: "block", marginBottom: "0.3rem" }}>
+              System prompt additions <span style={{ fontWeight: 400, color: "#9aa0a6" }}>(appended to built-in prompt)</span>
+            </label>
+            <textarea
+              rows={3}
+              value={agent.system_prompt_additions ?? ""}
+              onChange={(e) => onChange({ system_prompt_additions: e.target.value })}
+              placeholder="Any additional instructions for this specific agent…"
+              style={{ width: "100%", fontSize: "0.82rem", padding: "0.4rem 0.6rem", border: "1px solid #dadce0", borderRadius: "0.3rem", fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }}
+            />
+          </div>
+          <div style={{ marginTop: "0.65rem" }}>
+            <label style={{ fontWeight: 600, fontSize: "0.8rem", display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.3rem" }}>
+              <input
+                type="checkbox"
+                checked={!!agent.system_prompt_override}
+                onChange={(e) => onChange({ system_prompt_override: e.target.checked ? (agent.system_prompt_override || "") : undefined })}
+              />
+              Full prompt override (replace entire system prompt)
+            </label>
+            {agent.system_prompt_override !== undefined && (
+              <textarea
+                rows={5}
+                value={agent.system_prompt_override}
+                onChange={(e) => onChange({ system_prompt_override: e.target.value })}
+                placeholder="Complete replacement system prompt for this agent…"
+                style={{ width: "100%", fontSize: "0.82rem", padding: "0.4rem 0.6rem", border: "1px solid #dadce0", borderRadius: "0.3rem", fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PipelineEditor({
+  pipeline,
+  onChange,
+  defaultPipeline,
+}: {
+  pipeline: AgentSpec[];
+  onChange: (pipeline: AgentSpec[]) => void;
+  defaultPipeline: AgentSpec[];
+}) {
+  function updateAgent(index: number, patch: Partial<AgentSpec>) {
+    const next = pipeline.map((a, i) => (i === index ? { ...a, ...patch } : a));
+    onChange(next);
+  }
+
+  function removeAgent(index: number) {
+    onChange(pipeline.filter((_, i) => i !== index));
+  }
+
+  function addCustomAgent() {
+    onChange([
+      ...pipeline,
+      {
+        id: `custom_${Date.now()}`,
+        role: "custom",
+        model: "claude-haiku-4-5-20251001",
+        enabled: true,
+        name: "Custom Agent",
+      },
+    ]);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
+        <h4 style={{ margin: 0, fontSize: "0.9rem" }}>Agent pipeline</h4>
+        <button
+          onClick={() => onChange(defaultPipeline)}
+          style={{ background: "none", border: "1px solid #dadce0", cursor: "pointer", color: "#5f6368", padding: "0.2rem 0.6rem", borderRadius: "0.3rem", fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "0.3rem" }}
+          title="Reset to default multi-agent pipeline"
+        >
+          <RotateCcw size={11} /> Reset to default
+        </button>
+      </div>
+
+      <div style={{ fontSize: "0.8rem", color: "#5f6368", marginBottom: "0.75rem", padding: "0.5rem 0.75rem", background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem" }}>
+        <strong>Default pipeline:</strong> TA Screener → FT Screener (30% reach) → Extractor (15% reach) → Verifier (optional).
+        Disable or customize individual agents below. Each agent can use a different model.
+      </div>
+
+      {pipeline.map((agent, i) => (
+        <AgentCard
+          key={agent.id}
+          agent={agent}
+          index={i}
+          onChange={(patch) => updateAgent(i, patch)}
+          onRemove={pipeline.length > 1 ? () => removeAgent(i) : undefined}
+        />
+      ))}
+
+      <button
+        onClick={addCustomAgent}
+        style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.4rem 0.85rem", border: "1.5px dashed #dadce0", borderRadius: "0.375rem", background: "none", cursor: "pointer", color: "#5f6368", fontSize: "0.83rem", width: "100%" }}
+      >
+        <Plus size={13} /> Add custom agent
+      </button>
+    </div>
+  );
+}
+
 // ── Run History Table ─────────────────────────────────────────────────────────
 
 function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void }) {
@@ -1340,10 +1456,17 @@ function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunRespon
                 <td style={{ padding: "0.55rem 0.75rem" }}>{fmtDate(run.started_at ?? run.created_at)}</td>
                 <td style={{ padding: "0.55rem 0.75rem", color: "#5f6368", fontSize: "0.78rem" }}>{modelLabel}</td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
-                  <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : "#5f6368" }}>
-                    {run.mode === "saturation" ? "Saturation" : "PRISMA-ScR"}
-                    {run.stopped_at_saturation && " ⬡"}
-                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                    <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : "#5f6368" }}>
+                      {run.mode === "saturation" ? "Saturation" : "PRISMA-ScR"}
+                      {run.stopped_at_saturation && " ⬡"}
+                    </span>
+                    {run.agent_mode === "multi" && (
+                      <span style={{ fontSize: "0.72rem", background: "#e6f4ea", color: "#188038", borderRadius: "0.75rem", padding: "0 0.4rem", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "0.2rem", width: "fit-content" }}>
+                        <Layers size={9} /> Multi-agent
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>{statusBadge(run.status)}{run.error_message && <span title={run.error_message} style={{ marginLeft: "0.35rem", cursor: "help" }}>⚠</span>}</td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
@@ -1378,16 +1501,12 @@ export default function LLMScreeningPage() {
   type Tab = "run" | "prompt" | "results" | "compare";
   const [activeTab, setActiveTab] = useState<Tab>("run");
 
-  // ── Persistent API keys ────────────────────────────────────────────────────
-  const [anthropicKey, setAnthropicKey] = useState(() => localStorage.getItem("ep_llm_anthropic_key") ?? "");
-  const [openrouterKey, setOpenrouterKey] = useState(() => localStorage.getItem("ep_llm_openrouter_key") ?? "");
-
-  function saveKey(type: "anthropic" | "openrouter", value: string) {
-    if (value.trim()) localStorage.setItem(`ep_llm_${type}_key`, value.trim());
-    else localStorage.removeItem(`ep_llm_${type}_key`);
-    if (type === "anthropic") setAnthropicKey(value.trim());
-    else setOpenrouterKey(value.trim());
-  }
+  const { data: profile } = useQuery({
+    queryKey: ["auth-me"],
+    queryFn: () => authApi.me().then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const hasApiKey = !!(profile?.anthropic_key_hint || profile?.openrouter_key_hint);
 
   // ── Run config state ───────────────────────────────────────────────────────
   const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-6");
@@ -1397,6 +1516,9 @@ export default function LLMScreeningPage() {
   const [saturationThreshold, setSaturationThreshold] = useState(5);
   const [includeExtraction, setIncludeExtraction] = useState(true);
   const [showComparison, setShowComparison] = useState(false);
+  // Agent mode
+  const [agentMode, setAgentMode] = useState<"single" | "multi">("single");
+  const [pipeline, setPipeline] = useState<AgentSpec[]>([]);
 
   // ── Results state ──────────────────────────────────────────────────────────
   const [selectedRun, setSelectedRun] = useState<LlmRunResponse | null>(null);
@@ -1417,10 +1539,25 @@ export default function LLMScreeningPage() {
     staleTime: 60_000,
   });
 
+  const { data: defaultPipelines } = useQuery({
+    queryKey: ["llm-default-pipelines", projectId],
+    queryFn: () => llmScreeningApi.getDefaultPipelines(projectId!).then((r) => r.data),
+    enabled: !!projectId,
+    staleTime: Infinity,
+  });
+
+  // Seed pipeline when default pipelines load and user hasn't customised
+  useEffect(() => {
+    if (defaultPipelines && pipeline.length === 0) {
+      setPipeline(defaultPipelines.multi);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultPipelines]);
+
   const { data: estimate, isLoading: estimateLoading } = useQuery({
-    queryKey: ["llm-estimate", projectId, selectedModel, mode === "saturation" ? selectedSourceId : null],
+    queryKey: ["llm-estimate", projectId, selectedModel, agentMode, mode === "saturation" ? selectedSourceId : null],
     queryFn: () =>
-      llmScreeningApi.estimate(projectId!, selectedModel, mode === "saturation" && selectedSourceId ? selectedSourceId : undefined).then((r) => r.data),
+      llmScreeningApi.estimate(projectId!, selectedModel, mode === "saturation" && selectedSourceId ? selectedSourceId : undefined, agentMode).then((r) => r.data),
     enabled: !!projectId,
     staleTime: 60_000,
   });
@@ -1467,8 +1604,9 @@ export default function LLMScreeningPage() {
           seed: mode === "saturation" && seed ? parseInt(seed, 10) : undefined,
           saturation_threshold: saturationThreshold,
           include_extraction: includeExtraction,
-        },
-        { anthropic: anthropicKey || undefined, openrouter: openrouterKey || undefined }
+          agent_mode: agentMode,
+          pipeline: agentMode === "multi" && pipeline.length > 0 ? pipeline : undefined,
+        }
       ),
     onSuccess: (res) => {
       setLaunchError(null);
@@ -1528,7 +1666,16 @@ export default function LLMScreeningPage() {
         {/* ── Tab: Run ─────────────────────────────────────────────────────── */}
         {activeTab === "run" && (
           <>
-            <ApiKeysPanel anthropicKey={anthropicKey} openrouterKey={openrouterKey} onSaveAnthropic={(v) => saveKey("anthropic", v)} onSaveOpenrouter={(v) => saveKey("openrouter", v)} />
+            {!hasApiKey && (
+              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.65rem 0.9rem", marginBottom: "1.25rem", background: "#fff8e1", border: "1px solid #f9ab00", borderRadius: "0.375rem", fontSize: "0.83rem", color: "#5f4a00", maxWidth: 700 }}>
+                <AlertCircle size={15} style={{ flexShrink: 0, color: "#f9ab00" }} />
+                No API key configured. Add an Anthropic or OpenRouter key in your{" "}
+                <button onClick={() => {}} style={{ background: "none", border: "none", cursor: "pointer", color: "#6366f1", fontWeight: 600, padding: 0, fontSize: "0.83rem", textDecoration: "underline" }}>
+                  account profile
+                </button>
+                {" "}(click your name in the bottom-left sidebar).
+              </div>
+            )}
 
             <section style={{ background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "1.25rem", marginBottom: "2rem", maxWidth: 700 }}>
               <h3 style={{ marginTop: 0, marginBottom: "1rem" }}>Screening Mode</h3>
@@ -1591,44 +1738,101 @@ export default function LLMScreeningPage() {
                 </div>
               )}
 
-              {/* Model + Estimate */}
-              <h3 style={{ margin: "1.25rem 0 0.75rem" }}>Model & Estimate</h3>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.35rem" }}>
-                  <label style={{ fontSize: "0.85rem", fontWeight: 500, color: "#3c4043" }}>Model</label>
-                  <button className="btn-ghost" style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "0.25rem" }} onClick={() => setShowComparison((v) => !v)}>
-                    {showComparison ? <ChevronUp size={12} /> : <ChevronDown size={12} />} Compare models
-                  </button>
+              {/* Agent Mode */}
+              <h3 style={{ margin: "1.25rem 0 0.75rem" }}>Agent Mode</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
+                {[
+                  {
+                    id: "single" as const,
+                    icon: <User size={16} />,
+                    label: "Single Agent",
+                    desc: "One agent handles all screening stages (TA → FT → extraction) using a single model. Simple, cost-effective, and easy to audit.",
+                  },
+                  {
+                    id: "multi" as const,
+                    icon: <Layers size={16} />,
+                    label: "Multi-Agent Pipeline",
+                    desc: "Specialised agents for each stage, each with its own model and prompt. Use a fast/cheap model for TA and a more powerful one for FT.",
+                  },
+                ].map(({ id, icon, label, desc }) => (
+                  <div
+                    key={id}
+                    onClick={() => setAgentMode(id)}
+                    style={{ padding: "0.85rem", border: `2px solid ${agentMode === id ? "#6366f1" : "#dadce0"}`, borderRadius: "0.5rem", cursor: "pointer", background: agentMode === id ? "#ede9fe" : "#fff" }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 700, color: agentMode === id ? "#6366f1" : "#3c4043", marginBottom: "0.3rem" }}>
+                      {icon} {label}
+                    </div>
+                    <div style={{ fontSize: "0.8rem", color: "#5f6368" }}>{desc}</div>
+                  </div>
+                ))}
+              </div>
+
+              {agentMode === "multi" && defaultPipelines && pipeline.length > 0 && (
+                <div style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "1rem", marginBottom: "1rem" }}>
+                  <PipelineEditor
+                    pipeline={pipeline}
+                    onChange={setPipeline}
+                    defaultPipeline={defaultPipelines.multi}
+                  />
                 </div>
-                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} style={{ fontSize: "0.9rem", padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", minWidth: 320 }}>
-                  {MODEL_CATALOG.map((group) => (
-                    <optgroup key={group.group} label={group.group}>
-                      {group.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.recommended ? " ★" : ""} — {m.cost_per_1k} · {m.speed}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-                <ModelDescriptionCard modelId={selectedModel} />
-                {showComparison && <ModelComparisonTable onSelectModel={(id) => { setSelectedModel(id); setShowComparison(false); }} />}
+              )}
+
+              {/* Model + Estimate */}
+              <h3 style={{ margin: "1.25rem 0 0.75rem" }}>
+                {agentMode === "single" ? "Model & Estimate" : "Estimate"}
+              </h3>
+              <div>
+                {agentMode === "single" && (
+                  <>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.35rem" }}>
+                      <label style={{ fontSize: "0.85rem", fontWeight: 500, color: "#3c4043" }}>Model</label>
+                      <button className="btn-ghost" style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "0.25rem" }} onClick={() => setShowComparison((v) => !v)}>
+                        {showComparison ? <ChevronUp size={12} /> : <ChevronDown size={12} />} Compare models
+                      </button>
+                    </div>
+                    <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} style={{ fontSize: "0.9rem", padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", minWidth: 320 }}>
+                      {MODEL_CATALOG.map((group) => (
+                        <optgroup key={group.group} label={group.group}>
+                          {group.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.recommended ? " ★" : ""} — {m.cost_per_1k} · {m.speed}</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                    <ModelDescriptionCard modelId={selectedModel} />
+                    {showComparison && <ModelComparisonTable onSelectModel={(id) => { setSelectedModel(id); setShowComparison(false); }} />}
+                  </>
+                )}
+                {agentMode === "multi" && (
+                  <p style={{ fontSize: "0.83rem", color: "#5f6368", margin: "0 0 0.75rem" }}>
+                    Cost is calculated per stage based on each agent's model and expected reach fraction.
+                    Disabled agents are not included in the estimate.
+                  </p>
+                )}
               </div>
 
               <div style={{ marginTop: "1.25rem" }}>
                 {estimateLoading ? (
                   <p style={{ color: "#9aa0a6", fontSize: "0.88rem" }}>Calculating estimate…</p>
                 ) : estimate ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "0.75rem" }}>
-                    {[
-                      { value: estimate.total_records.toLocaleString(), label: "papers to screen", color: "#3c4043" },
-                      { value: estimate.estimated_input_tokens.toLocaleString(), label: "est. input tokens", color: "#3c4043" },
-                      { value: estimate.estimated_output_tokens.toLocaleString(), label: "est. output tokens", color: "#3c4043" },
-                      { value: `$${estimate.estimated_cost_usd.toFixed(2)}`, label: "est. total cost", color: estimate.estimated_cost_usd === 0 ? "#188038" : "#b06000" },
-                      { value: fmtMinutes(estimate.estimated_minutes), label: "est. time", color: "#1a73e8" },
-                    ].map(({ value, label, color }) => (
-                      <div key={label} style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "0.75rem" }}>
-                        <div style={{ fontSize: "1.2rem", fontWeight: 700, color }}>{value}</div>
-                        <div style={{ fontSize: "0.75rem", color: "#5f6368", marginTop: "0.15rem" }}>{label}</div>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.75rem" }}>
+                      {[
+                        { value: estimate.total_records.toLocaleString(), label: "papers to screen", color: "#3c4043" },
+                        { value: estimate.estimated_input_tokens.toLocaleString(), label: "est. input tokens", color: "#3c4043" },
+                        { value: estimate.estimated_output_tokens.toLocaleString(), label: "est. output tokens", color: "#3c4043" },
+                        { value: `$${estimate.estimated_cost_usd.toFixed(2)}`, label: "est. total cost", color: estimate.estimated_cost_usd === 0 ? "#188038" : "#b06000" },
+                        { value: fmtMinutes(estimate.estimated_minutes), label: "est. time", color: "#1a73e8" },
+                      ].map(({ value, label, color }) => (
+                        <div key={label} style={{ background: "#fff", border: "1px solid #e8eaed", borderRadius: "0.375rem", padding: "0.75rem" }}>
+                          <div style={{ fontSize: "1.2rem", fontWeight: 700, color }}>{value}</div>
+                          <div style={{ fontSize: "0.75rem", color: "#5f6368", marginTop: "0.15rem" }}>{label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {agentMode === "multi" && estimate.stages.length > 0 && (
+                      <StageCostBreakdown stages={estimate.stages} />
+                    )}
+                  </>
                 ) : null}
               </div>
 
