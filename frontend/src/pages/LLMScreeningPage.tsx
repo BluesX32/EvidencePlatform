@@ -32,7 +32,10 @@ import {
   projectsApi,
   sourcesApi,
   llmScreeningApi,
+  fulltextApi,
   authApi,
+  screeningApi,
+  teamApi,
   type LlmRunResponse,
   type LlmResultResponse,
   type LlmConfig,
@@ -40,6 +43,9 @@ import {
   type AgentSpec,
   type EstimateStage,
   type Source,
+  type ScreeningQueueHistoryEntry,
+  type TeamMember,
+  type MissingPdfRecord,
 } from "../api/client";
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
@@ -674,6 +680,85 @@ function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }:
 
 // ── Results Panel ─────────────────────────────────────────────────────────────
 
+// ── Missing PDFs Panel ────────────────────────────────────────────────────────
+
+function MissingPdfsPanel({ projectId, runId }: { projectId: string; runId: string }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const [uploading, setUploading] = useState<string | null>(null); // record_id being uploaded
+
+  const { data: missing, refetch } = useQuery({
+    queryKey: ["llm-missing-pdfs", runId],
+    queryFn: () => llmScreeningApi.getMissingPdfs(projectId, runId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  if (!missing || missing.length === 0) return null;
+
+  async function handleUpload(record: MissingPdfRecord, file: File) {
+    setUploading(record.record_id);
+    try {
+      await fulltextApi.upload(projectId, file, { record_id: record.record_id });
+      void refetch();
+    } catch {
+      // ignore — user can retry
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  return (
+    <div style={{ border: "1px solid #fbbf24", borderRadius: "0.5rem", background: "#fffbeb", marginBottom: "1.25rem" }}>
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.65rem 1rem", background: "transparent", border: "none", cursor: "pointer", fontSize: "0.88rem", fontWeight: 600, color: "#92400e" }}
+      >
+        <span>⚠ {missing.length} paper{missing.length !== 1 ? "s" : ""} screened from abstract only — upload PDFs for full-text screening</span>
+        {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+      </button>
+      {!collapsed && (
+        <div style={{ padding: "0 1rem 0.75rem" }}>
+          <p style={{ fontSize: "0.8rem", color: "#78350f", margin: "0 0 0.75rem" }}>
+            These records passed TA screening but the LLM could not access their full text (no open-access PDF found). Upload PDFs to include them in future FT screening runs.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {missing.map((r) => (
+              <div key={r.record_id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", background: "#fff", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.5rem 0.75rem", fontSize: "0.82rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: "#1c1b1f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {r.title || "(no title)"}
+                  </div>
+                  <div style={{ color: "#5f6368", fontSize: "0.78rem" }}>
+                    {r.authors ? `${r.authors.split(";")[0].trim()}${r.authors.includes(";") ? " et al." : ""}` : ""}
+                    {r.year ? ` · ${r.year}` : ""}
+                    {r.doi ? ` · DOI: ${r.doi}` : ""}
+                  </div>
+                </div>
+                <label style={{ cursor: "pointer", whiteSpace: "nowrap" }}>
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    style={{ display: "none" }}
+                    disabled={uploading === r.record_id}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleUpload(r, file);
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className="btn-secondary btn-sm" style={{ pointerEvents: uploading === r.record_id ? "none" : "auto", opacity: uploading === r.record_id ? 0.6 : 1 }}>
+                    {uploading === r.record_id ? "Uploading…" : "Upload PDF"}
+                  </span>
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function ResultsPanel({ projectId, run, extractionTemplate }: {
   projectId: string;
   run: LlmRunResponse;
@@ -742,6 +827,9 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
         <span style={{ marginLeft: "auto", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} · {(run.input_tokens + run.output_tokens).toLocaleString()} tokens</span>
       </div>
 
+      {/* Missing PDFs prompt — only shown when run is complete */}
+      {run.status === "completed" && <MissingPdfsPanel projectId={projectId} runId={run.id} />}
+
       {isLoading ? (
         <p style={{ color: "#5f6368" }}>Loading results…</p>
       ) : !data || data.items.length === 0 ? (
@@ -786,22 +874,43 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
 
 // ── Prompt Config Panel ────────────────────────────────────────────────────────
 
-const DEFAULT_SYSTEM_PROMPT =
-  "You are an expert systematic review researcher. " +
-  "Your task is to screen academic papers for inclusion in an evidence synthesis. " +
-  "You MUST use the submit_screening_result tool to return your answer — " +
-  "do not produce any other output.";
+/** Collapsible block showing a read-only default system prompt. */
+function DefaultPromptBlock({ label, prompt }: { label: string; prompt: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ border: "1px solid #e8eaed", borderRadius: "0.375rem", marginBottom: "1rem" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.55rem 0.75rem", background: "#f8f9fa", border: "none", cursor: "pointer", borderRadius: open ? "0.375rem 0.375rem 0 0" : "0.375rem", fontSize: "0.82rem", color: "#5f6368", fontWeight: 600 }}
+      >
+        <span>{label}</span>
+        <ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+      </button>
+      {open && (
+        <pre style={{ margin: 0, padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#fff", borderTop: "1px solid #e8eaed", borderRadius: "0 0 0.375rem 0.375rem", lineHeight: 1.5 }}>
+          {prompt}
+        </pre>
+      )}
+    </div>
+  );
+}
 
-function PromptConfigPanel({ projectId }: { projectId: string }) {
+/** Single-agent prompt section: edits llm_config (research question, additions, concepts, etc.) */
+function SingleAgentPromptSection({
+  projectId,
+  defaultPrompts,
+}: {
+  projectId: string;
+  defaultPrompts: Record<string, string>;
+}) {
   const qc = useQueryClient();
   const [advancedMode, setAdvancedMode] = useState(false);
   const [config, setConfig] = useState<LlmConfig>({});
   const [dirty, setDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<{ system_prompt: string; user_prompt: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [defaultPromptOpen, setDefaultPromptOpen] = useState(false);
 
   const { data: savedConfig } = useQuery({
     queryKey: ["llm-config", projectId],
@@ -826,9 +935,7 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
       setDirty(false);
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
-    } catch {
-      setSaveStatus("error");
-    }
+    } catch { setSaveStatus("error"); }
   }
 
   async function handlePreview() {
@@ -837,9 +944,7 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
       const res = await llmScreeningApi.previewPrompt(projectId);
       setPreviewData(res.data);
       setPreviewOpen(true);
-    } finally {
-      setPreviewLoading(false);
-    }
+    } finally { setPreviewLoading(false); }
   }
 
   const taStyle: React.CSSProperties = {
@@ -848,87 +953,66 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
     boxSizing: "border-box", resize: "vertical",
   };
 
-  return (
-    <section style={{ maxWidth: 720 }}>
-      <p className="muted" style={{ marginBottom: "1.5rem" }}>
-        Configure the prompts used when the LLM screens and extracts data. Your inclusion/exclusion
-        criteria and thematic framework are automatically included — add supplementary instructions here.
-      </p>
+  const defaultSingle = defaultPrompts["single"] ?? "";
 
+  return (
+    <>
       {/* Research question */}
       <div style={{ marginBottom: "1.25rem" }}>
         <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Research question / review scope</label>
         <textarea rows={2} style={taStyle} placeholder="e.g. What is the effect of mindfulness interventions on burnout in healthcare workers?" value={config.research_question ?? ""} onChange={(e) => update({ research_question: e.target.value })} />
-        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Prepended to the prompt as context for the LLM.</p>
+        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Prepended to every prompt as high-level context for the agent.</p>
       </div>
 
       {/* Basic / Advanced toggle */}
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
-        {["Basic", "Advanced"].map((mode) => (
-          <button key={mode} onClick={() => setAdvancedMode(mode === "Advanced")}
-            style={{ padding: "0.3rem 1rem", borderRadius: "0.375rem", border: `1.5px solid ${advancedMode === (mode === "Advanced") ? "#6366f1" : "#dadce0"}`, background: advancedMode === (mode === "Advanced") ? "#ede9fe" : "#f8f9fa", color: advancedMode === (mode === "Advanced") ? "#6366f1" : "#5f6368", fontWeight: 600, cursor: "pointer", fontSize: "0.85rem" }}>
-            {mode}
+        {["Basic", "Advanced"].map((m) => (
+          <button key={m} onClick={() => setAdvancedMode(m === "Advanced")}
+            style={{ padding: "0.3rem 1rem", borderRadius: "0.375rem", border: `1.5px solid ${advancedMode === (m === "Advanced") ? "#6366f1" : "#dadce0"}`, background: advancedMode === (m === "Advanced") ? "#ede9fe" : "#f8f9fa", color: advancedMode === (m === "Advanced") ? "#6366f1" : "#5f6368", fontWeight: 600, cursor: "pointer", fontSize: "0.85rem" }}>
+            {m}
           </button>
         ))}
       </div>
 
       {!advancedMode ? (
         <>
-          {/* Additional context */}
+          <DefaultPromptBlock label="Default system prompt (built-in)" prompt={defaultSingle} />
+
           <div style={{ marginBottom: "1.25rem" }}>
             <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Additional screening context</label>
-            <textarea rows={3} style={taStyle} placeholder="Any additional context or instructions for screening decisions…" value={config.custom_system_additions ?? ""} onChange={(e) => update({ custom_system_additions: e.target.value })} />
+            <textarea rows={3} style={taStyle} placeholder="Additional context or instructions prepended to the default prompt…" value={config.custom_system_additions ?? ""} onChange={(e) => update({ custom_system_additions: e.target.value })} />
           </div>
 
-          {/* Extraction instructions */}
           <div style={{ marginBottom: "1.25rem" }}>
             <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Extraction instructions</label>
             <textarea rows={3} style={taStyle} placeholder="Instructions for how to fill in the extraction template fields…" value={config.extraction_instructions ?? ""} onChange={(e) => update({ extraction_instructions: e.target.value })} />
           </div>
 
-          {/* Concept and extraction guidance */}
           <div style={{ marginBottom: "1.25rem" }}>
             <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>Concepts &amp; what to extract</label>
             <textarea rows={5} style={taStyle}
-              placeholder={"Describe what the agent should look for and extract. For example:\n- Focus on studies that measure burnout using validated scales (e.g. MBI, OLBI).\n- Extract the intervention type, duration, and primary outcome measure.\n- 'Mindfulness' includes MBSR, MBCT, and informal mindfulness practices."}
+              placeholder={"Describe what the agent should look for and extract. For example:\n- Focus on studies using validated burnout scales (MBI, OLBI).\n- Extract intervention type, duration, and primary outcome.\n- 'Mindfulness' includes MBSR, MBCT, and informal practices."}
               value={config.concept_instructions ?? ""}
               onChange={(e) => update({ concept_instructions: e.target.value })}
             />
             <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>
-              Injected into the prompt as a "Concepts and Extraction Guidance" section. Write in plain language — bullet points work well.
+              Injected as a "Concepts and Extraction Guidance" section. Plain language and bullet points work best.
             </p>
-          </div>
-
-          {/* Default system prompt (collapsible reference) */}
-          <div style={{ marginBottom: "1.25rem", border: "1px solid #e8eaed", borderRadius: "0.375rem" }}>
-            <button
-              onClick={() => setDefaultPromptOpen((o) => !o)}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.6rem 0.75rem", background: "#f8f9fa", border: "none", cursor: "pointer", borderRadius: defaultPromptOpen ? "0.375rem 0.375rem 0 0" : "0.375rem", fontSize: "0.82rem", color: "#5f6368", fontWeight: 600 }}
-            >
-              <span>Default system prompt (built-in)</span>
-              <ChevronDown size={14} style={{ transform: defaultPromptOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-            </button>
-            {defaultPromptOpen && (
-              <pre style={{ margin: 0, padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#fff", borderTop: "1px solid #e8eaed", borderRadius: "0 0 0.375rem 0.375rem" }}>
-                {DEFAULT_SYSTEM_PROMPT}
-              </pre>
-            )}
           </div>
         </>
       ) : (
         <>
-          {/* Default system prompt — always visible in advanced mode */}
+          {/* Advanced: default prompt always visible */}
           <div style={{ marginBottom: "1.25rem" }}>
             <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem" }}>
               Default system prompt
-              <span style={{ fontWeight: 400, fontSize: "0.78rem", color: "#9aa0a6", marginLeft: "0.5rem" }}>(read-only)</span>
+              <span style={{ fontWeight: 400, fontSize: "0.78rem", color: "#9aa0a6", marginLeft: "0.5rem" }}>(read-only — your edits below modify or replace this)</span>
             </label>
             <pre style={{ margin: 0, padding: "0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem", lineHeight: 1.5 }}>
-              {DEFAULT_SYSTEM_PROMPT}
+              {defaultSingle}
             </pre>
           </div>
 
-          {/* Advanced: full system prompt override */}
           <div style={{ marginBottom: "1.25rem" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.4rem" }}>
               <label style={{ fontWeight: 600 }}>
@@ -936,17 +1020,19 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
               </label>
               <label style={{ fontSize: "0.82rem", color: "#5f6368", display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
                 <input type="checkbox" checked={config.use_full_override ?? false} onChange={(e) => update({ use_full_override: e.target.checked })} />
-                Full override (replace entire system prompt)
+                Full override
               </label>
             </div>
             {!config.use_full_override && (
-              <p style={{ fontSize: "0.78rem", color: "#5f6368", margin: "0 0 0.4rem" }}>
-                Your text will be prepended to the default prompt above.
-              </p>
+              <p style={{ fontSize: "0.78rem", color: "#5f6368", margin: "0 0 0.4rem" }}>Your text will be prepended to the default prompt above.</p>
             )}
-            <textarea rows={8} style={{ ...taStyle, fontFamily: "monospace", fontSize: "0.83rem" }} placeholder={config.use_full_override ? "Write the complete replacement system prompt…" : "Additional instructions prepended to the default system prompt…"} value={(config.use_full_override ? config.full_override_prompt : config.custom_system_additions) ?? ""} onChange={(e) => update(config.use_full_override ? { full_override_prompt: e.target.value } : { custom_system_additions: e.target.value })} />
+            <textarea rows={8} style={{ ...taStyle, fontFamily: "monospace", fontSize: "0.83rem" }}
+              placeholder={config.use_full_override ? "Write the complete replacement system prompt…" : "Additional instructions prepended to the default prompt…"}
+              value={(config.use_full_override ? config.full_override_prompt : config.custom_system_additions) ?? ""}
+              onChange={(e) => update(config.use_full_override ? { full_override_prompt: e.target.value } : { custom_system_additions: e.target.value })}
+            />
             <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>
-              Available variables: <code style={{ fontSize: "0.78rem" }}>{"{title}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{abstract}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{criteria}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{framework}"}</code> <code style={{ fontSize: "0.78rem" }}>{"{extraction_template}"}</code>
+              Variables: <code>{"{title}"}</code> <code>{"{abstract}"}</code> <code>{"{criteria}"}</code> <code>{"{framework}"}</code> <code>{"{extraction_template}"}</code>
             </p>
           </div>
 
@@ -968,7 +1054,6 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
         {saveStatus === "error" && <span style={{ color: "#c5221f", fontSize: "0.83rem" }}>Save failed</span>}
       </div>
 
-      {/* Preview modal */}
       {previewOpen && previewData && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setPreviewOpen(false)}>
           <div style={{ background: "#fff", borderRadius: "0.5rem", padding: "1.5rem", maxWidth: 780, width: "90vw", maxHeight: "80vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
@@ -986,6 +1071,225 @@ function PromptConfigPanel({ projectId }: { projectId: string }) {
             </div>
           </div>
         </div>
+      )}
+    </>
+  );
+}
+
+/** Per-agent prompt editor for one agent in the multi-agent pipeline. */
+function AgentPromptSection({
+  agent,
+  defaultPrompt,
+  onChange,
+}: {
+  agent: AgentSpec;
+  defaultPrompt: string;
+  onChange: (patch: Partial<AgentSpec>) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const color = ROLE_COLOR[agent.role] ?? ROLE_COLOR.custom;
+  const taStyle: React.CSSProperties = {
+    width: "100%", padding: "0.5rem 0.75rem", borderRadius: "0.375rem",
+    border: "1px solid #dadce0", fontSize: "0.84rem", fontFamily: "inherit",
+    boxSizing: "border-box", resize: "vertical",
+  };
+
+  const hasCustomisation = !!(agent.system_prompt_additions || agent.system_prompt_override);
+
+  return (
+    <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", marginBottom: "1rem", background: "#fff" }}>
+      {/* Accordion header */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", display: "flex", alignItems: "center", gap: "0.65rem", padding: "0.7rem 0.9rem", background: "none", border: "none", cursor: "pointer", borderRadius: open ? "0.5rem 0.5rem 0 0" : "0.5rem", textAlign: "left" }}
+      >
+        <span style={{ background: color.bg, color: color.fg, fontWeight: 700, fontSize: "0.72rem", padding: "0.15rem 0.6rem", borderRadius: "0.75rem", whiteSpace: "nowrap" }}>
+          {ROLE_LABEL[agent.role] ?? agent.role}
+        </span>
+        <span style={{ fontWeight: 600, fontSize: "0.9rem", color: "#3c4043", flex: 1 }}>
+          {agent.name || agent.label || ROLE_LABEL[agent.role] || agent.role}
+        </span>
+        {hasCustomisation && (
+          <span style={{ fontSize: "0.72rem", background: "#e8f0fe", color: "#1a73e8", borderRadius: "0.75rem", padding: "0 0.45rem", fontWeight: 600 }}>
+            customised
+          </span>
+        )}
+        {!agent.enabled && (
+          <span style={{ fontSize: "0.72rem", color: "#9aa0a6", fontStyle: "italic" }}>disabled</span>
+        )}
+        <ChevronDown size={13} style={{ color: "#5f6368", transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} />
+      </button>
+
+      {open && (
+        <div style={{ padding: "0 1rem 1rem", borderTop: "1px solid #f1f3f4" }}>
+          {/* Default system prompt — always shown */}
+          <div style={{ marginTop: "0.85rem", marginBottom: "1rem" }}>
+            <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>
+              Default system prompt
+              <span style={{ fontWeight: 400, color: "#9aa0a6", marginLeft: "0.4rem", fontSize: "0.78rem" }}>(read-only)</span>
+            </label>
+            <pre style={{ margin: 0, padding: "0.65rem 0.75rem", fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3c4043", background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem", lineHeight: 1.5 }}>
+              {agent.system_prompt_override
+                ? <span style={{ color: "#9aa0a6", fontStyle: "italic" }}>(replaced by override below)</span>
+                : defaultPrompt}
+            </pre>
+          </div>
+
+          {/* Additions textarea */}
+          {!agent.system_prompt_override && (
+            <div style={{ marginBottom: "1rem" }}>
+              <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>
+                Additional instructions
+                <span style={{ fontWeight: 400, color: "#9aa0a6", marginLeft: "0.4rem", fontSize: "0.78rem" }}>(prepended to default prompt above)</span>
+              </label>
+              <textarea
+                rows={4}
+                style={taStyle}
+                placeholder={`Any extra guidance for the ${agent.name || ROLE_LABEL[agent.role] || agent.role} agent…`}
+                value={agent.system_prompt_additions ?? ""}
+                onChange={(e) => onChange({ system_prompt_additions: e.target.value || undefined })}
+              />
+            </div>
+          )}
+
+          {/* Full override */}
+          <div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.83rem", marginBottom: "0.35rem" }}>
+              <input
+                type="checkbox"
+                checked={!!agent.system_prompt_override}
+                onChange={(e) => onChange({
+                  system_prompt_override: e.target.checked ? (agent.system_prompt_override ?? defaultPrompt) : undefined,
+                  system_prompt_additions: e.target.checked ? undefined : agent.system_prompt_additions,
+                })}
+              />
+              <span style={{ fontWeight: 600 }}>Replace entire system prompt</span>
+              <span style={{ color: "#9aa0a6", fontWeight: 400 }}>(full override)</span>
+            </label>
+            {!!agent.system_prompt_override && (
+              <textarea
+                rows={8}
+                style={{ ...taStyle, fontFamily: "monospace", fontSize: "0.83rem" }}
+                value={agent.system_prompt_override}
+                onChange={(e) => onChange({ system_prompt_override: e.target.value })}
+                placeholder="Complete replacement system prompt for this agent…"
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Multi-agent prompt section: per-agent accordion editors. */
+function MultiAgentPromptSection({
+  pipeline,
+  onPipelineChange,
+  defaultPrompts,
+}: {
+  pipeline: AgentSpec[];
+  onPipelineChange: (pipeline: AgentSpec[]) => void;
+  defaultPrompts: Record<string, string>;
+}) {
+  const [pipelineDirty, setPipelineDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle");
+
+  function updateAgent(index: number, patch: Partial<AgentSpec>) {
+    const next = pipeline.map((a, i) => (i === index ? { ...a, ...patch } : a));
+    onPipelineChange(next);
+    setPipelineDirty(true);
+  }
+
+  // Pipeline customisations are kept in React state (not persisted to DB) —
+  // they are sent as part of the CreateRunBody when the user launches a run.
+  function handleAcknowledge() {
+    setSaveStatus("saved");
+    setPipelineDirty(false);
+    setTimeout(() => setSaveStatus("idle"), 2500);
+  }
+
+  return (
+    <>
+      <p style={{ fontSize: "0.83rem", color: "#5f6368", marginBottom: "1.25rem", padding: "0.6rem 0.85rem", background: "#f8f9fa", border: "1px solid #e8eaed", borderRadius: "0.375rem" }}>
+        Each agent has its own default system prompt tailored to its role. Add instructions or replace
+        the prompt entirely. Changes are applied on the next run — they are saved as part of the pipeline configuration.
+      </p>
+
+      {pipeline.map((agent, i) => (
+        <AgentPromptSection
+          key={agent.id}
+          agent={agent}
+          defaultPrompt={defaultPrompts[agent.role] ?? defaultPrompts["single"] ?? ""}
+          onChange={(patch) => updateAgent(i, patch)}
+        />
+      ))}
+
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", marginTop: "0.5rem" }}>
+        <button
+          className="btn-primary"
+          disabled={!pipelineDirty || saveStatus === "saved"}
+          onClick={handleAcknowledge}
+          style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}
+        >
+          {saveStatus === "saved" ? "Saved to pipeline ✓" : "Apply to pipeline"}
+        </button>
+        <span style={{ fontSize: "0.78rem", color: "#9aa0a6" }}>
+          Changes take effect when you launch a new run from the Run tab.
+        </span>
+      </div>
+    </>
+  );
+}
+
+/** Top-level Prompt tab component. Delegates to single or multi section based on agentMode. */
+function PromptConfigPanel({
+  projectId,
+  agentMode,
+  pipeline,
+  onPipelineChange,
+}: {
+  projectId: string;
+  agentMode: "single" | "multi";
+  pipeline: AgentSpec[];
+  onPipelineChange: (pipeline: AgentSpec[]) => void;
+}) {
+  const { data: defaultPrompts } = useQuery({
+    queryKey: ["llm-default-system-prompts", projectId],
+    queryFn: () => llmScreeningApi.getDefaultSystemPrompts(projectId).then((r) => r.data),
+    staleTime: Infinity,
+  });
+
+  return (
+    <section style={{ maxWidth: 760 }}>
+      <p className="muted" style={{ marginBottom: "1rem" }}>
+        Configure the prompts used when the LLM screens and extracts data. Inclusion/exclusion
+        criteria and the thematic framework are automatically included — add supplementary context here.
+      </p>
+
+      {/* Mode indicator */}
+      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "1.5rem", padding: "0.5rem 0.85rem", background: agentMode === "multi" ? "#e6f4ea" : "#ede9fe", borderRadius: "0.375rem", fontSize: "0.83rem" }}>
+        {agentMode === "multi" ? <Layers size={14} style={{ color: "#188038" }} /> : <User size={14} style={{ color: "#6366f1" }} />}
+        <span style={{ fontWeight: 600, color: agentMode === "multi" ? "#188038" : "#6366f1" }}>
+          {agentMode === "multi" ? "Multi-Agent Mode" : "Single-Agent Mode"}
+        </span>
+        <span style={{ color: "#5f6368" }}>
+          {agentMode === "multi"
+            ? "— each agent in your pipeline has its own configurable system prompt"
+            : "— one agent, one configurable system prompt"}
+        </span>
+      </div>
+
+      {!defaultPrompts ? (
+        <p style={{ color: "#9aa0a6" }}>Loading default prompts…</p>
+      ) : agentMode === "single" ? (
+        <SingleAgentPromptSection projectId={projectId} defaultPrompts={defaultPrompts} />
+      ) : (
+        <MultiAgentPromptSection
+          pipeline={pipeline}
+          onPipelineChange={onPipelineChange}
+          defaultPrompts={defaultPrompts}
+        />
       )}
     </section>
   );
@@ -1173,6 +1477,93 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
         </>
       )}
     </section>
+  );
+}
+
+// ── Seed Picker ───────────────────────────────────────────────────────────────
+
+function SeedPicker({
+  sourceId,
+  queueHistory,
+  teamMembers,
+  value,
+  customValue,
+  onChange,
+  onCustomChange,
+}: {
+  sourceId: string;
+  queueHistory: ScreeningQueueHistoryEntry[];
+  teamMembers: TeamMember[];
+  value: string;        // "random" | "custom" | "<seed number>"
+  customValue: string;
+  onChange: (v: string) => void;
+  onCustomChange: (v: string) => void;
+}) {
+  const memberMap: Record<string, string> = Object.fromEntries(
+    teamMembers.map((m) => [m.user_id, m.name || m.email])
+  );
+
+  // Filter to queues matching the selected source, deduplicate by seed+reviewer
+  const relevant = queueHistory.filter(
+    (q) => !sourceId || q.source_id === sourceId || q.source_id === "all"
+  );
+
+  // Group by seed so we can show which reviewers used each seed
+  const bySeed: Map<number, ScreeningQueueHistoryEntry[]> = new Map();
+  for (const q of relevant) {
+    if (!bySeed.has(q.seed)) bySeed.set(q.seed, []);
+    bySeed.get(q.seed)!.push(q);
+  }
+  const seedOptions = Array.from(bySeed.entries()).sort(([a], [b]) => a - b);
+
+  return (
+    <div>
+      <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>
+        Seed — queue order
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem" }}
+      >
+        <option value="random">Random (new order)</option>
+        {seedOptions.map(([seed, entries]) => {
+          const reviewerNames = [...new Set(entries.map((e) => memberMap[e.reviewer_id] || `…${e.reviewer_id.slice(-6)}`))];
+          const label = `Seed ${seed} — ${reviewerNames.join(", ")}`;
+          return <option key={seed} value={String(seed)}>{label}</option>;
+        })}
+        <option value="custom">Custom seed…</option>
+      </select>
+      {value === "custom" && (
+        <input
+          type="number"
+          placeholder="Enter seed number"
+          value={customValue}
+          onChange={(e) => onCustomChange(e.target.value)}
+          style={{ width: "100%", marginTop: "0.4rem", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }}
+        />
+      )}
+      {value !== "random" && value !== "custom" && (
+        <p style={{ fontSize: "0.75rem", color: "#5f6368", marginTop: "0.25rem" }}>
+          LLM will process records in the same order as the human reviewer(s) who used seed {value}.
+        </p>
+      )}
+      {value === "random" && (
+        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.25rem" }}>
+          A new random order will be used (not matching any human reviewer).
+        </p>
+      )}
+      {seedOptions.length === 0 && !sourceId && (
+        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.25rem" }}>
+          Select a corpus above to see seeds from human reviewers.
+        </p>
+      )}
+      {seedOptions.length === 0 && sourceId && (
+        <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.25rem" }}>
+          No human reviewer has screened this corpus yet — no existing seeds available.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -1512,7 +1903,9 @@ export default function LLMScreeningPage() {
   const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-6");
   const [mode, setMode] = useState<"prisma_scr" | "saturation">("prisma_scr");
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
-  const [seed, setSeed] = useState<string>("");
+  // Seed: "random" | "custom" | "<number>" (selected from reviewer queue history)
+  const [seedSelection, setSeedSelection] = useState<string>("random");
+  const [customSeedValue, setCustomSeedValue] = useState<string>("");
   const [saturationThreshold, setSaturationThreshold] = useState(5);
   const [includeExtraction, setIncludeExtraction] = useState(true);
   const [showComparison, setShowComparison] = useState(false);
@@ -1536,6 +1929,20 @@ export default function LLMScreeningPage() {
     queryKey: ["sources", projectId],
     queryFn: () => sourcesApi.list(projectId!).then((r) => r.data),
     enabled: !!projectId,
+    staleTime: 60_000,
+  });
+
+  const { data: queueHistory } = useQuery({
+    queryKey: ["screening-queue-history", projectId],
+    queryFn: () => screeningApi.getQueueHistory(projectId!).then((r) => r.data),
+    enabled: !!projectId && mode === "saturation",
+    staleTime: 30_000,
+  });
+
+  const { data: teamMembers } = useQuery({
+    queryKey: ["team-members", projectId],
+    queryFn: () => teamApi.listMembers(projectId!).then((r) => r.data),
+    enabled: !!projectId && mode === "saturation",
     staleTime: 60_000,
   });
 
@@ -1601,7 +2008,7 @@ export default function LLMScreeningPage() {
           model: selectedModel,
           mode,
           source_id: mode === "saturation" && selectedSourceId ? selectedSourceId : undefined,
-          seed: mode === "saturation" && seed ? parseInt(seed, 10) : undefined,
+          seed: mode === "saturation" ? effectiveSeed : undefined,
           saturation_threshold: saturationThreshold,
           include_extraction: includeExtraction,
           agent_mode: agentMode,
@@ -1619,6 +2026,17 @@ export default function LLMScreeningPage() {
       setLaunchError(typeof detail === "string" ? detail : JSON.stringify(detail));
     },
   });
+
+  // Resolve the numeric seed from the three-way selector
+  const effectiveSeed: number | undefined = (() => {
+    if (seedSelection === "random") return undefined;
+    if (seedSelection === "custom") {
+      const v = parseInt(customSeedValue, 10);
+      return isNaN(v) ? undefined : v;
+    }
+    const v = parseInt(seedSelection, 10);
+    return isNaN(v) ? undefined : v;
+  })();
 
   const hasRunningRun = !!runningRun;
   const canLaunch = !hasRunningRun && (estimate?.total_records ?? 0) > 0 && (mode === "prisma_scr" || !!selectedSourceId);
@@ -1705,9 +2123,15 @@ export default function LLMScreeningPage() {
                       {!selectedSourceId && <p style={{ fontSize: "0.75rem", color: "#c5221f", margin: "0.2rem 0 0" }}>Required for saturation mode</p>}
                     </div>
                     <div>
-                      <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>Seed (optional)</label>
-                      <input type="number" placeholder="Random" value={seed} onChange={(e) => setSeed(e.target.value)} style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", boxSizing: "border-box" }} />
-                      <p style={{ fontSize: "0.75rem", color: "#9aa0a6", marginTop: "0.2rem" }}>Match a human reviewer's seed for identical queue order</p>
+                      <SeedPicker
+                        sourceId={selectedSourceId}
+                        queueHistory={queueHistory ?? []}
+                        teamMembers={teamMembers ?? []}
+                        value={seedSelection}
+                        customValue={customSeedValue}
+                        onChange={setSeedSelection}
+                        onCustomChange={setCustomSeedValue}
+                      />
                     </div>
                     <div>
                       <label style={{ fontWeight: 600, fontSize: "0.83rem", display: "block", marginBottom: "0.35rem" }}>Saturation threshold: {saturationThreshold}</label>
@@ -1860,7 +2284,14 @@ export default function LLMScreeningPage() {
         )}
 
         {/* ── Tab: Prompt ────────────────────────────────────────────────── */}
-        {activeTab === "prompt" && projectId && <PromptConfigPanel projectId={projectId} />}
+        {activeTab === "prompt" && projectId && (
+          <PromptConfigPanel
+            projectId={projectId}
+            agentMode={agentMode}
+            pipeline={pipeline}
+            onPipelineChange={setPipeline}
+          />
+        )}
 
         {/* ── Tab: Results ────────────────────────────────────────────────── */}
         {activeTab === "results" && (

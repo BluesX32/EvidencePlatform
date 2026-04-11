@@ -324,6 +324,28 @@ async def get_default_pipelines(
     }
 
 
+@router.get("/projects/{project_id}/llm-screening/default-system-prompts")
+async def get_default_system_prompts(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return the built-in system prompts for each agent role."""
+    await _require_project(project_id, db, user)
+    return {
+        "single": svc._SYSTEM_PROMPT,
+        "ta_screener": svc._SYSTEM_PROMPT_TA,
+        "ft_screener": svc._SYSTEM_PROMPT_FT,
+        "extractor": (
+            "You are an expert systematic review researcher performing structured data extraction. "
+            "Extract specific data fields from papers that have been included after full-text screening. "
+            "You MUST use the submit_extraction tool to return your answer — do not produce any other output."
+        ),
+        "verifier": svc._SYSTEM_PROMPT_VERIFY,
+        "custom": svc._SYSTEM_PROMPT,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Screening endpoints
 # ---------------------------------------------------------------------------
@@ -352,12 +374,12 @@ async def estimate(
     data = await svc.estimate_run(db, project.id, model, source_id=sid, agent_mode=agent_mode)
     stages = [
         EstimateStage(
-            role=s["role"],
-            model=s["model"],
-            input_tokens=s["input_tokens"],
-            output_tokens=s["output_tokens"],
-            cost_usd=s["cost_usd"],
-            reach_pct=round(s["reach"] * 100, 1),
+            role=s.get("stage", s.get("role", "")),
+            model=s.get("model", model),
+            input_tokens=s.get("input_tokens", 0),
+            output_tokens=s.get("output_tokens", 0),
+            cost_usd=s.get("cost_usd", 0.0),
+            reach_pct=s.get("reach_pct", 0.0),
         )
         for s in data.get("stages", [])
     ]
@@ -963,3 +985,51 @@ async def preview_prompt(
 
     preview = await svc.build_prompt_preview(db, project.id, record_id=rid)
     return preview
+
+
+# ---------------------------------------------------------------------------
+# Missing PDFs — records that need a user-uploaded PDF for FT screening
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/missing-pdfs",
+)
+async def get_missing_pdfs(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """Return records where TA=include but full_text_source=abstract_only and FT is not yet decided.
+
+    These are candidates for manual PDF upload so a future run can screen the full text.
+    """
+    project = await _require_project(project_id, db, user)
+    run = await _require_run(run_id, project, db)
+
+    rows = (
+        await db.execute(
+            select(LlmScreeningResult, Record)
+            .join(Record, Record.id == LlmScreeningResult.record_id)
+            .where(
+                LlmScreeningResult.run_id == run.id,
+                LlmScreeningResult.ta_decision == "include",
+                LlmScreeningResult.full_text_source == "abstract_only",
+                LlmScreeningResult.ft_decision.is_(None),
+            )
+            .order_by(Record.title)
+        )
+    ).all()
+
+    return [
+        {
+            "record_id": str(result.record_id),
+            "title": record.title or "",
+            "authors": record.authors or "",
+            "year": record.year,
+            "doi": record.doi,
+            "ta_reason": result.ta_reason,
+        }
+        for result, record in rows
+    ]

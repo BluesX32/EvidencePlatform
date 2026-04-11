@@ -2,13 +2,14 @@
 
 Priority order:
   1. Uploaded PDF (stored in fulltext_pdfs table → storage_path → pdfplumber)
-  2. Unpaywall open-access PDF (if DOI available)
-  3. Europe PMC full text XML (if PMID available)
-  4. PubMed Central full text XML (if PMCID in raw_data)
-  5. Abstract-only fallback
+  2. OneDrive (if the triggering user has connected their OneDrive account)
+  3. Unpaywall open-access PDF (if DOI available)
+  4. Europe PMC full text XML (if PMID available)
+  5. PubMed Central full text XML (if PMCID in raw_data)
+  6. Abstract-only fallback
 
 Returns (text: str | None, source: str) where source is one of:
-  uploaded_pdf / unpaywall / europe_pmc / pubmed_central / abstract_only
+  uploaded_pdf / onedrive / unpaywall / europe_pmc / pubmed_central / abstract_only
 """
 from __future__ import annotations
 
@@ -184,35 +185,44 @@ async def get_full_text(
     pmid: Optional[str],
     pmcid: Optional[str],
     db: AsyncSession,
+    onedrive_token: Optional[str] = None,
+    title: Optional[str] = None,
 ) -> tuple[Optional[str], str]:
     """Fetch full text for a paper using a prioritised source cascade.
 
     Returns (text, source) where source is one of:
-      uploaded_pdf / unpaywall / europe_pmc / pubmed_central / abstract_only
+      uploaded_pdf / onedrive / unpaywall / europe_pmc / pubmed_central / abstract_only
     """
-    # 1. Uploaded PDF
+    # 1. Uploaded PDF (highest priority — user explicitly provided this file)
     if record_id is not None:
         text = await _text_from_uploaded_pdf(record_id, project_id, db)
         if text:
             return text, "uploaded_pdf"
 
-    # 2. Unpaywall
+    # 2. OneDrive (user's personal document library)
+    if onedrive_token and title:
+        from app.utils.onedrive_fetcher import fetch_from_onedrive  # lazy import
+        text = await fetch_from_onedrive(title, onedrive_token)
+        if text:
+            return text, "onedrive"
+
+    # 3. Unpaywall (open-access PDF by DOI)
     if doi:
         text = await _text_from_unpaywall(doi)
         if text:
             return text, "unpaywall"
 
-    # 3. Europe PMC (PMID-based)
+    # 4. Europe PMC full text XML (PMID-based)
     if pmid:
         text = await _text_from_europe_pmc(pmid)
         if text:
             return text, "europe_pmc"
 
-    # 4. PubMed Central (PMCID-based)
+    # 5. PubMed Central full text XML (PMCID-based)
     if pmcid:
         text = await _text_from_pubmed_central(pmcid)
         if text:
             return text, "pubmed_central"
 
-    # 5. Abstract-only fallback
+    # 6. Abstract-only fallback
     return None, "abstract_only"

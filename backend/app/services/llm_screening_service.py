@@ -43,6 +43,7 @@ from app.models.project import Project
 from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.screening_queue import ScreeningQueue
+from app.models.user import User
 from app.utils.fulltext_fetcher import get_full_text
 
 logger = logging.getLogger(__name__)
@@ -156,12 +157,12 @@ _STAGE_AVG_OUTPUT: dict[str, int] = {
     "verify":  180,
     "single":  400,
 }
-# Fraction of records expected to reach each stage (rough priors)
+# Fraction of records expected to reach each stage (empirical priors for systematic reviews)
 _STAGE_REACH: dict[str, float] = {
     "ta":      1.00,   # all records go through TA
-    "ft":      0.30,   # ~30% pass TA
-    "extract": 0.15,   # ~50% of FT-included get extracted → 15% total
-    "verify":  1.00,   # verifier sees all (or all TA-included)
+    "ft":      0.30,   # ~30% pass TA screening
+    "extract": 0.15,   # ~50% of FT-included → 15% of total
+    "verify":  0.30,   # verifier only checks TA-included records (~30%)
     "single":  1.00,   # single agent sees all records
 }
 
@@ -271,41 +272,76 @@ async def estimate_run(
     source_id: Optional[uuid.UUID] = None,
     agent_mode: str = "single",
     pipeline: Optional[list] = None,
+    include_extraction: bool = True,
 ) -> dict[str, Any]:
     """Return adaptive cost/time preview for a screening run. No DB side effects.
 
-    When agent_mode='single', uses a flat per-record estimate.
-    When agent_mode='multi', uses stage-by-stage estimates per enabled agent.
-    When source_id is provided, counts only records from that source.
+    Uses actual record text lengths to compute accurate per-record token estimates.
+    When agent_mode='single', breaks cost into TA / FT / Extraction stages.
+    When agent_mode='multi', maps each enabled agent to its reach fraction.
     """
+    # ── Record count (scoped to source if given) ──────────────────────────────
+    base_where = [Record.project_id == project_id]
     if source_id is not None:
         total_result = await db.execute(
             select(func.count())
             .select_from(Record)
             .join(RecordSource, RecordSource.record_id == Record.id)
-            .where(
-                Record.project_id == project_id,
-                RecordSource.source_id == source_id,
-            )
+            .where(*base_where, RecordSource.source_id == source_id)
         )
     else:
         total_result = await db.execute(
-            select(func.count()).select_from(Record).where(Record.project_id == project_id)
+            select(func.count()).select_from(Record).where(*base_where)
         )
     total: int = total_result.scalar_one()
 
-    # Resolve effective pipeline
+    # ── Compute actual average text length from project records ───────────────
+    # Use title + abstract character count as proxy for TA input tokens.
+    avg_len_result = await db.execute(
+        select(
+            func.avg(
+                func.length(
+                    func.coalesce(Record.title, "") + " " + func.coalesce(Record.abstract, "")
+                )
+            )
+        ).where(*base_where, Record.abstract.isnot(None))
+    )
+    avg_chars: float = float(avg_len_result.scalar_one_or_none() or 0.0)
+
+    # 4 chars ≈ 1 token; add ~400 tokens overhead for criteria + system prompt
+    if avg_chars > 0:
+        avg_ta_tokens = int(avg_chars / 4) + 400
+    else:
+        avg_ta_tokens = _STAGE_AVG_INPUT["ta"]
+
+    # FT token estimate: TA tokens + ~2500 tokens for full-text body
+    avg_ft_tokens = avg_ta_tokens + 2500
+
+    # ── FT availability: fraction of records likely to have open-access full text ──
+    doi_count_result = await db.execute(
+        select(func.count()).select_from(Record).where(*base_where, Record.doi.isnot(None))
+    )
+    doi_count: int = doi_count_result.scalar_one()
+    ft_avail_frac = min(doi_count / total, 1.0) if total > 0 else 0.5
+    # Blend: records with DOI get full-text tokens; others get TA-only tokens
+    effective_ft_tokens = int(avg_ft_tokens * ft_avail_frac + avg_ta_tokens * (1 - ft_avail_frac))
+
+    # ── Resolve effective pipeline ─────────────────────────────────────────────
     if agent_mode == "multi":
         effective_pipeline: list[dict] = pipeline or DEFAULT_MULTI_PIPELINE
     else:
         effective_pipeline = pipeline or [{"id": "main", "role": "single", "model": model, "enabled": True}]
-        # Ensure model is set on single-agent pipeline
         if effective_pipeline and effective_pipeline[0].get("role") == "single":
             effective_pipeline[0]["model"] = model
 
-    pipeline_estimate = estimate_pipeline_cost(total, agent_mode, effective_pipeline)
+    pipeline_estimate = estimate_pipeline_cost(
+        total, agent_mode, effective_pipeline,
+        avg_ta_tokens=avg_ta_tokens,
+        effective_ft_tokens=effective_ft_tokens,
+        include_extraction=include_extraction,
+    )
 
-    # Per-model cost comparison using same stage logic as the selected agent_mode
+    # ── Per-model cost comparison (single-agent, same reach fractions) ─────────
     _COMPARISON_MODELS = [
         "claude-haiku-4-5-20251001",
         "claude-sonnet-4-6",
@@ -318,7 +354,12 @@ async def estimate_run(
     cost_breakdown: dict[str, float] = {}
     for m in _COMPARISON_MODELS:
         single_pl = [{"id": "main", "role": "single", "model": m, "enabled": True}]
-        est = estimate_pipeline_cost(total, "single", single_pl)
+        est = estimate_pipeline_cost(
+            total, "single", single_pl,
+            avg_ta_tokens=avg_ta_tokens,
+            effective_ft_tokens=effective_ft_tokens,
+            include_extraction=include_extraction,
+        )
         cost_breakdown[m] = est["estimated_cost_usd"]
 
     return {
@@ -329,6 +370,9 @@ async def estimate_run(
         "estimated_minutes":       pipeline_estimate["estimated_minutes"],
         "cost_breakdown":          cost_breakdown,
         "stages":                  pipeline_estimate["stages"],
+        # Expose inputs so the frontend can show how the estimate was computed
+        "avg_ta_tokens_per_record": avg_ta_tokens,
+        "ft_availability_pct": round(ft_avail_frac * 100, 1),
     }
 
 
@@ -536,10 +580,15 @@ async def _do_execute_run(
     # Resolve agent mode from run row
     agent_mode: str = "single"
     effective_pipeline: list[dict] = pipeline or []
+    triggered_by_id: Optional[uuid.UUID] = None
     if run_row is not None:
         agent_mode = run_row.agent_mode or "single"
         if not effective_pipeline and run_row.agent_pipeline:
             effective_pipeline = run_row.agent_pipeline
+        triggered_by_id = run_row.triggered_by
+
+    # Load OneDrive token for full-text fetching (may refresh automatically)
+    onedrive_token: Optional[str] = await _load_onedrive_token(db, triggered_by_id)
 
     # Accumulate counters
     included = excluded = uncertain = new_concepts_total = 0
@@ -557,7 +606,7 @@ async def _do_execute_run(
             try:
                 if agent_mode == "multi" and effective_pipeline:
                     full_text, full_text_source = await _fetch_fulltext_for_record(
-                        record, project_id, db
+                        record, project_id, db, onedrive_token=onedrive_token
                     )
                     result = await _run_multi_agent_pipeline(
                         record=record,
@@ -589,6 +638,7 @@ async def _do_execute_run(
                         llm_config=llm_config,
                         extraction_template=extraction_template,
                         include_extraction=include_extraction,
+                        onedrive_token=onedrive_token,
                     )
                 if result is None:
                     return
@@ -654,6 +704,46 @@ async def _do_execute_run(
         )
     )
     await db.commit()
+
+
+async def _load_onedrive_token(
+    db: AsyncSession,
+    user_id: Optional[uuid.UUID],
+) -> Optional[str]:
+    """Return the OneDrive access token for a user, refreshing if a refresh token is stored.
+
+    Returns None if the user has no OneDrive connection or on any error.
+    """
+    if user_id is None:
+        return None
+    user: Optional[User] = await db.get(User, user_id)
+    if user is None or not user.api_keys:
+        return None
+    keys: dict = user.api_keys or {}
+    access_token: Optional[str] = keys.get("onedrive_access")
+    refresh_token: Optional[str] = keys.get("onedrive_refresh")
+
+    if not access_token and not refresh_token:
+        return None
+
+    # If we have only a refresh token (or want to proactively refresh), do so
+    if refresh_token and not access_token:
+        client_id = os.environ.get("MICROSOFT_CLIENT_ID", "")
+        client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
+        if client_id and client_secret:
+            from app.utils.onedrive_fetcher import refresh_onedrive_token  # lazy import
+            new_tokens = await refresh_onedrive_token(refresh_token, client_id, client_secret)
+            if new_tokens:
+                access_token = new_tokens.get("access_token")
+                # Persist the refreshed tokens back to the user row
+                updated_keys = dict(keys)
+                updated_keys["onedrive_access"] = access_token
+                if new_tokens.get("refresh_token"):
+                    updated_keys["onedrive_refresh"] = new_tokens["refresh_token"]
+                user.api_keys = updated_keys
+                await db.flush()
+
+    return access_token
 
 
 async def _resolve_queue_order(
@@ -770,10 +860,15 @@ async def _do_execute_run_saturation(
     run_row_sat: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
     agent_mode_sat: str = "single"
     effective_pipeline_sat: list[dict] = pipeline or []
+    triggered_by_id_sat: Optional[uuid.UUID] = None
     if run_row_sat is not None:
         agent_mode_sat = run_row_sat.agent_mode or "single"
         if not effective_pipeline_sat and run_row_sat.agent_pipeline:
             effective_pipeline_sat = run_row_sat.agent_pipeline
+        triggered_by_id_sat = run_row_sat.triggered_by
+
+    # Load OneDrive token for full-text fetching
+    onedrive_token_sat: Optional[str] = await _load_onedrive_token(db, triggered_by_id_sat)
 
     included = excluded = uncertain = new_concepts_total = 0
     input_tok_total = output_tok_total = 0
@@ -790,7 +885,7 @@ async def _do_execute_run_saturation(
         try:
             if agent_mode_sat == "multi" and effective_pipeline_sat:
                 full_text, full_text_source = await _fetch_fulltext_for_record(
-                    record, project_id, db
+                    record, project_id, db, onedrive_token=onedrive_token_sat
                 )
                 result = await _run_multi_agent_pipeline(
                     record=record,
@@ -822,6 +917,7 @@ async def _do_execute_run_saturation(
                     llm_config=llm_config,
                     extraction_template=extraction_template,
                     include_extraction=include_extraction,
+                    onedrive_token=onedrive_token_sat,
                 )
         except Exception:
             logger.exception("Error screening record %s in saturation run", record_id)
@@ -902,6 +998,7 @@ async def _fetch_fulltext_for_record(
     record: Record,
     project_id: uuid.UUID,
     db: AsyncSession,
+    onedrive_token: Optional[str] = None,
 ) -> tuple[Optional[str], str]:
     """Fetch full text and source label for a record. Shared by single and multi-agent paths."""
     rs_row = (
@@ -933,6 +1030,8 @@ async def _fetch_fulltext_for_record(
         pmid=str(pmid) if pmid else None,
         pmcid=str(pmcid) if pmcid else None,
         db=db,
+        onedrive_token=onedrive_token,
+        title=record.title,
     )
 
 
@@ -949,9 +1048,12 @@ async def _screen_one_record(
     llm_config: Optional[dict] = None,
     extraction_template: Optional[dict] = None,
     include_extraction: bool = False,
+    onedrive_token: Optional[str] = None,
 ) -> Optional[LlmScreeningResult]:
     """Screen a single record: fetch full text, call LLM, return result row."""
-    full_text, full_text_source = await _fetch_fulltext_for_record(record, project_id, db)
+    full_text, full_text_source = await _fetch_fulltext_for_record(
+        record, project_id, db, onedrive_token=onedrive_token
+    )
 
     prompt = _build_prompt(
         record,
@@ -1701,9 +1803,14 @@ def estimate_pipeline_cost(
     total_records: int,
     agent_mode: str,
     pipeline: list[dict],
+    avg_ta_tokens: Optional[int] = None,
+    effective_ft_tokens: Optional[int] = None,
+    include_extraction: bool = True,
 ) -> dict[str, Any]:
     """Compute stage-by-stage cost estimate for a given pipeline.
 
+    When avg_ta_tokens / effective_ft_tokens are provided (from actual record data),
+    they override the hardcoded _STAGE_AVG_INPUT defaults for more accurate estimates.
     Returns a dict with total cost, per-stage breakdown, and estimated minutes.
     """
     stages: list[dict] = []
@@ -1712,6 +1819,10 @@ def estimate_pipeline_cost(
     total_input_toks = 0
     total_output_toks = 0
 
+    # Use caller-supplied token estimates when available; fall back to table defaults
+    ta_input = avg_ta_tokens if avg_ta_tokens is not None else _STAGE_AVG_INPUT["ta"]
+    ft_input = effective_ft_tokens if effective_ft_tokens is not None else _STAGE_AVG_INPUT["ft"]
+
     if agent_mode == "single":
         # Single agent: one model for all stages
         model = pipeline[0]["model"] if pipeline else _DEFAULT_MODEL
@@ -1719,42 +1830,62 @@ def estimate_pipeline_cost(
         mins_p = _MINUTES_PER_RECORD.get(model, 0.015)
 
         # TA pass: all records
-        ta_in  = total_records * _STAGE_AVG_INPUT["ta"]
+        ta_in  = total_records * ta_input
         ta_out = total_records * _STAGE_AVG_OUTPUT["ta"]
         # FT pass: ~30% of records
         ft_n   = int(total_records * _STAGE_REACH["ft"])
-        ft_in  = ft_n * _STAGE_AVG_INPUT["ft"]
+        ft_in  = ft_n * ft_input
         ft_out = ft_n * _STAGE_AVG_OUTPUT["ft"]
-        # Extraction: ~15% of records
-        ex_n   = int(total_records * _STAGE_REACH["extract"])
+        # Extraction: ~15% of records (only if requested)
+        ex_n   = int(total_records * _STAGE_REACH["extract"]) if include_extraction else 0
         ex_in  = ex_n * _STAGE_AVG_INPUT["extract"]
         ex_out = ex_n * _STAGE_AVG_OUTPUT["extract"]
 
-        for label, n, i_toks, o_toks in [
+        stage_rows = [
             ("Screening (TA)", total_records, ta_in, ta_out),
             ("Screening (FT)", ft_n, ft_in, ft_out),
-            ("Extraction",     ex_n, ex_in, ex_out),
-        ]:
+        ]
+        if include_extraction:
+            stage_rows.append(("Extraction", ex_n, ex_in, ex_out))
+
+        for label, n, i_toks, o_toks in stage_rows:
             cost  = i_toks * in_p + o_toks * out_p
             mins  = n * mins_p
-            stages.append({"stage": label, "records": n, "model": model, "cost_usd": round(cost, 5), "minutes": round(mins, 1)})
+            reach_pct = round((n / total_records * 100) if total_records > 0 else 0.0, 1)
+            stages.append({
+                "stage": label,
+                "role": label,
+                "records": n,
+                "model": model,
+                "input_tokens": i_toks,
+                "output_tokens": o_toks,
+                "cost_usd": round(cost, 5),
+                "minutes": round(mins, 1),
+                "reach_pct": reach_pct,
+            })
             total_cost    += cost
             total_minutes += mins
             total_input_toks  += i_toks
             total_output_toks += o_toks
 
     else:  # multi-agent
-        # Map role → reach fraction (relative to total)
+        # Map role → (stage_key, input_tokens_per_record)
         role_reach = {"ta_screener": "ta", "ft_screener": "ft", "extractor": "extract", "verifier": "verify"}
+        role_input_override = {"ta_screener": ta_input, "ft_screener": ft_input}
         for agent in pipeline:
             if not agent.get("enabled", True):
                 continue
             role   = agent.get("role", "single")
+            # Skip extractor stage if extraction not requested
+            if role == "extractor" and not include_extraction:
+                continue
             model  = agent.get("model") or _DEFAULT_MODEL
             stage_key = role_reach.get(role, "single")
             reach_frac = _STAGE_REACH.get(stage_key, 1.0)
             n_records  = int(total_records * reach_frac)
-            i_toks = n_records * _STAGE_AVG_INPUT.get(stage_key, _AVG_INPUT_TOKENS)
+            # Use empirical token override for TA/FT stages when available
+            per_record_input = role_input_override.get(role, _STAGE_AVG_INPUT.get(stage_key, _AVG_INPUT_TOKENS))
+            i_toks = n_records * per_record_input
             o_toks = n_records * _STAGE_AVG_OUTPUT.get(stage_key, _AVG_OUTPUT_TOKENS)
             in_p, out_p = _cost_per_token(model)
             mins_p      = _MINUTES_PER_RECORD.get(model, 0.015)
@@ -1762,9 +1893,13 @@ def estimate_pipeline_cost(
             mins        = n_records * mins_p
             stages.append({
                 "stage": agent.get("name", role),
+                "role": role,
                 "agent_id": agent.get("id"),
                 "records": n_records,
                 "model": model,
+                "input_tokens": i_toks,
+                "output_tokens": o_toks,
+                "reach_pct": round(reach_frac * 100, 1),
                 "cost_usd": round(cost, 5),
                 "minutes": round(mins, 1),
             })

@@ -48,6 +48,16 @@ export interface UserProfile {
   name: string;
   anthropic_key_hint: string | null;
   openrouter_key_hint: string | null;
+  onedrive_connected: boolean;
+}
+
+export interface MissingPdfRecord {
+  record_id: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  doi: string | null;
+  ta_reason: string | null;
 }
 
 export const authApi = {
@@ -63,6 +73,12 @@ export const authApi = {
     api.patch("/auth/me/password", { current_password, new_password }),
   updateApiKeys: (keys: { anthropic?: string; openrouter?: string }) =>
     api.patch<UserProfile>("/auth/me/api-keys", keys),
+  getOneDriveConnectUrl: () =>
+    api.get<{ url: string }>("/auth/onedrive/connect-url"),
+  exchangeOneDriveCode: (code: string) =>
+    api.post<UserProfile>("/auth/onedrive/exchange", { code }),
+  disconnectOneDrive: () =>
+    api.delete("/auth/onedrive/disconnect"),
 };
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -1326,6 +1342,11 @@ export const llmScreeningApi = {
       `/projects/${projectId}/llm-screening/default-pipelines`
     ),
 
+  getDefaultSystemPrompts: (projectId: string) =>
+    api.get<Record<string, string>>(
+      `/projects/${projectId}/llm-screening/default-system-prompts`
+    ),
+
   listRuns: (projectId: string) =>
     api.get<LlmRunResponse[]>(`/projects/${projectId}/llm-screening/runs`),
 
@@ -1384,6 +1405,11 @@ export const llmScreeningApi = {
     api.get<LlmPromptPreview>(
       `/projects/${projectId}/llm-screening/preview-prompt`,
       { params: record_id ? { record_id } : {} }
+    ),
+
+  getMissingPdfs: (projectId: string, runId: string) =>
+    api.get<MissingPdfRecord[]>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/missing-pdfs`
     ),
 };
 

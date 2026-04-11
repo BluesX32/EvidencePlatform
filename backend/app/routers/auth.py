@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, field_validator
@@ -122,6 +123,7 @@ def _user_response(user: User) -> dict:
         "name": user.name,
         "anthropic_key_hint": _api_key_hint(keys.get("anthropic")),
         "openrouter_key_hint": _api_key_hint(keys.get("openrouter")),
+        "onedrive_connected": bool(keys.get("onedrive_access") or keys.get("onedrive_refresh")),
     }
 
 
@@ -182,5 +184,104 @@ async def change_password(
     if not AuthService.verify_password(body.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     current_user.password_hash = AuthService.hash_password(body.new_password)
+    db.add(current_user)
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# OneDrive OAuth
+# ---------------------------------------------------------------------------
+
+_ONEDRIVE_SCOPES = "files.read offline_access"
+
+
+@router.get("/onedrive/connect-url")
+async def onedrive_connect_url(
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return the Microsoft OAuth2 authorization URL the frontend should open.
+
+    Requires MICROSOFT_CLIENT_ID and ONEDRIVE_REDIRECT_URI env vars.
+    """
+    client_id = os.environ.get("MICROSOFT_CLIENT_ID", "")
+    redirect_uri = os.environ.get("ONEDRIVE_REDIRECT_URI", "")
+    if not client_id or not redirect_uri:
+        raise HTTPException(503, "OneDrive integration is not configured on this server")
+    import urllib.parse
+    params = {
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": _ONEDRIVE_SCOPES,
+        "response_mode": "query",
+        "state": str(current_user.id),
+    }
+    url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" + urllib.parse.urlencode(params)
+    return {"url": url}
+
+
+class OneDriveExchangeRequest(BaseModel):
+    code: str
+
+
+@router.post("/onedrive/exchange")
+async def onedrive_exchange(
+    body: OneDriveExchangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Exchange an OAuth2 authorization code for OneDrive access + refresh tokens.
+
+    Stores both tokens in user.api_keys and returns the updated profile.
+    """
+    client_id = os.environ.get("MICROSOFT_CLIENT_ID", "")
+    client_secret = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
+    redirect_uri = os.environ.get("ONEDRIVE_REDIRECT_URI", "")
+    if not client_id or not client_secret or not redirect_uri:
+        raise HTTPException(503, "OneDrive integration is not configured on this server")
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": body.code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "scope": _ONEDRIVE_SCOPES,
+            },
+        )
+    if resp.status_code != 200:
+        logger.warning("OneDrive code exchange failed: %s %s", resp.status_code, resp.text[:200])
+        raise HTTPException(400, "OneDrive authorization failed — please try connecting again")
+
+    data = resp.json()
+    access_token = data.get("access_token")
+    refresh_token = data.get("refresh_token")
+    if not access_token:
+        raise HTTPException(400, "OneDrive did not return an access token")
+
+    keys: dict = dict(current_user.api_keys or {})
+    keys["onedrive_access"] = access_token
+    if refresh_token:
+        keys["onedrive_refresh"] = refresh_token
+    current_user.api_keys = keys
+    db.add(current_user)
+    await db.commit()
+    return _user_response(current_user)
+
+
+@router.delete("/onedrive/disconnect", status_code=204)
+async def onedrive_disconnect(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove stored OneDrive tokens from the user's profile."""
+    keys: dict = dict(current_user.api_keys or {})
+    keys.pop("onedrive_access", None)
+    keys.pop("onedrive_refresh", None)
+    current_user.api_keys = keys
     db.add(current_user)
     await db.commit()

@@ -19,6 +19,7 @@ import {
   Menu, PanelLeftClose,
 } from "lucide-react";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
+import { Cloud } from "lucide-react";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 
@@ -151,6 +152,7 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
   const [anthropic, setAnthropic] = useState("");
   const [openrouter, setOpenrouter] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [odStatus, setOdStatus] = useState<"idle" | "connecting" | "disconnecting" | "error">("idle");
 
   const mut = useMutation({
     mutationFn: () => authApi.updateApiKeys({
@@ -177,11 +179,49 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
     authApi.updateApiKeys({ [type]: "" }).then(res => onSaved(res.data));
   }
 
+  async function connectOneDrive() {
+    setOdStatus("connecting");
+    try {
+      const res = await authApi.getOneDriveConnectUrl();
+      // Open OAuth popup and listen for the redirect code via postMessage
+      const popup = window.open(res.data.url, "onedrive_auth", "width=600,height=700");
+      const handler = async (ev: MessageEvent) => {
+        if (ev.data?.type !== "onedrive_code") return;
+        window.removeEventListener("message", handler);
+        popup?.close();
+        try {
+          const exRes = await authApi.exchangeOneDriveCode(ev.data.code as string);
+          onSaved(exRes.data);
+          setOdStatus("idle");
+        } catch {
+          setOdStatus("error");
+        }
+      };
+      window.addEventListener("message", handler);
+      // Fallback: clear connecting state if popup closed without sending code
+      const interval = setInterval(() => {
+        if (popup?.closed) { clearInterval(interval); window.removeEventListener("message", handler); setOdStatus("idle"); }
+      }, 1000);
+    } catch {
+      setOdStatus("error");
+    }
+  }
+
+  async function disconnectOneDrive() {
+    setOdStatus("disconnecting");
+    try {
+      await authApi.disconnectOneDrive();
+      const updated = await authApi.me();
+      onSaved(updated.data);
+    } catch { /* ignore */ }
+    setOdStatus("idle");
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+      <div className="modal-card" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h3 style={{ margin: 0, fontSize: "1rem" }}>API keys</h3>
+          <h3 style={{ margin: 0, fontSize: "1rem" }}>API keys &amp; connections</h3>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div style={{ padding: "1rem 1.25rem 1.25rem" }}>
@@ -231,6 +271,47 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
               </button>
             </div>
           </form>
+
+          {/* OneDrive */}
+          <hr style={{ border: "none", borderTop: "1px solid #e2e8f0", margin: "1.25rem 0 1rem" }} />
+          <div>
+            <label style={labelSt}>Microsoft OneDrive</label>
+            <p style={{ fontSize: "0.78rem", color: "#64748b", margin: "0 0 0.75rem" }}>
+              Connect OneDrive so the LLM screener can access full-text PDFs stored in your drive.
+            </p>
+            {profile?.onedrive_connected ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem", color: "#16a34a" }}>
+                  <Cloud size={14} /> Connected
+                </span>
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  disabled={odStatus === "disconnecting"}
+                  onClick={disconnectOneDrive}
+                  style={{ fontSize: "0.75rem", color: "#dc2626" }}
+                >
+                  {odStatus === "disconnecting" ? "Disconnecting…" : "Disconnect"}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                disabled={odStatus === "connecting"}
+                onClick={connectOneDrive}
+                style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}
+              >
+                <Cloud size={14} />
+                {odStatus === "connecting" ? "Connecting…" : "Connect OneDrive"}
+              </button>
+            )}
+            {odStatus === "error" && (
+              <p style={{ margin: "0.4rem 0 0", fontSize: "0.78rem", color: "#dc2626" }}>
+                OneDrive connection failed — please try again
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
