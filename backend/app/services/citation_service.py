@@ -515,7 +515,7 @@ async def _fetch_paginated(
         )
         if data is None:
             break
-        batch = data.get("data", [])
+        batch = data.get("data") or []
         results.extend(batch)
         if len(batch) < _PAGE_SIZE:
             break
