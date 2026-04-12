@@ -8,7 +8,7 @@
 import { useState } from "react";
 import {
   Upload, GitMerge, CheckSquare, FlaskConical, Tag, Users, Layers,
-  FileText, X, ArrowRight, ArrowLeft, MapPin,
+  FileText, SearchCode, X, ArrowRight, ArrowLeft, MapPin,
 } from "lucide-react";
 
 interface Step {
@@ -128,7 +128,7 @@ const STEPS: Step[] = [
   },
   {
     icon: <Layers size={32} color="white" />,
-    title: "6 · Build a thematic codebook",
+    title: "7 · Build a thematic codebook",
     description:
       "Create themes and sub-codes, assign them to extracted evidence segments, " +
       "and review all passages coded under any given concept. " +
@@ -145,7 +145,7 @@ const STEPS: Step[] = [
   },
   {
     icon: <Tag size={32} color="white" />,
-    title: "7 · Label articles",
+    title: "8 · Label articles",
     description:
       "Create colour-coded labels (e.g. 'RCT', 'Low quality', 'Policy-relevant') and assign them " +
       "to articles at any screening stage. The Labels page shows per-label article counts, " +
@@ -158,6 +158,24 @@ const STEPS: Step[] = [
     where: [
       { label: "Project Overview", color: "#e11d48" },
       { label: "Labels (rose card)", color: "#e11d48" },
+    ],
+  },
+  {
+    icon: <SearchCode size={32} color="white" />,
+    title: "6 · Discover related papers via citation sourcing",
+    description:
+      "After extracting data from your included studies, Citation Search automatically " +
+      "finds additional relevant papers through backward sourcing (the reference lists of your " +
+      "extracted papers) and forward sourcing (papers that cite them), using the Semantic Scholar API. " +
+      "You can run multiple iterations — each cohort of newly imported papers can seed the next search.",
+    features: [
+      { color: "#4f46e5", text: "Backward sourcing — fetches reference lists; Forward sourcing — fetches citing papers" },
+      { color: "#059669", text: "Scope: All extracted papers · New papers only (since last search) · Custom selection" },
+      { color: "#0284c7", text: "Select papers with checkboxes + Select all; each import is named after its source article" },
+    ],
+    where: [
+      { label: "Extraction Library", color: "#0891b2" },
+      { label: "Citation Search button", color: "#0891b2" },
     ],
   },
   {
@@ -207,6 +225,7 @@ const STEP_COLORS = [
   "#059669", // screening
   "#0284c7", // PDF
   "#0891b2", // extraction
+  "#4f46e5", // citation sourcing
   "#0d9488", // thematic
   "#e11d48", // labels
   "#475569", // team

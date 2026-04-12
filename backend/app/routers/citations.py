@@ -1,11 +1,14 @@
 """Citation sourcing (snowballing) endpoints.
 
-POST   /projects/{id}/citations/searches                  → start a search (202)
-GET    /projects/{id}/citations/searches                  → list search history
-GET    /projects/{id}/citations/searches/{search_id}      → single search status
-GET    /projects/{id}/citations/searches/{search_id}/candidates → paginated candidates
-PATCH  /projects/{id}/citations/searches/{search_id}/candidates/{candidate_id} → decide
-POST   /projects/{id}/citations/searches/{search_id}/import → import included candidates (202)
+POST   /projects/{id}/citations/searches                               → start a search (202)
+GET    /projects/{id}/citations/searches                               → list search history
+GET    /projects/{id}/citations/searches/{search_id}                   → single search status
+DELETE /projects/{id}/citations/searches/{search_id}                   → delete a search + all candidates
+GET    /projects/{id}/citations/searches/{search_id}/candidates        → paginated candidates
+DELETE /projects/{id}/citations/searches/{search_id}/candidates/{cid} → delete one candidate
+PATCH  /projects/{id}/citations/searches/{search_id}/candidates/{cid} → select/deselect
+POST   /projects/{id}/citations/searches/{search_id}/import            → import selected candidates (202)
+GET    /projects/{id}/citations/searches/{search_id}/sources           → source articles for this search
 """
 from __future__ import annotations
 
@@ -39,11 +42,13 @@ router = APIRouter(
 
 
 class StartSearchBody(BaseModel):
-    direction: str = "both"  # backward | forward | both
+    direction: str = "both"          # backward | forward | both
+    scope: str = "all"               # all | new | custom
+    record_ids: Optional[List[str]] = None  # UUIDs when scope='custom'
 
 
 class DecisionBody(BaseModel):
-    decision: Optional[str] = None  # include | exclude | already_screened | null (clears)
+    decision: Optional[str] = None   # include | null (clears selection)
     notes: Optional[str] = None
 
 
@@ -53,8 +58,11 @@ class CitationSearchResponse(BaseModel):
     triggered_by: Optional[str]
     status: str
     direction: str
+    scope: Optional[str]
     candidate_count: Optional[int]
     already_in_project_count: Optional[int]
+    source_record_count: Optional[int]
+    source_record_ids: Optional[List[str]]
     error_msg: Optional[str]
     created_at: str
     completed_at: Optional[str]
@@ -91,6 +99,13 @@ class PaginatedCandidatesResponse(BaseModel):
     total_pages: int
 
 
+class SourceArticleResponse(BaseModel):
+    record_id: str
+    title: Optional[str]
+    year: Optional[int]
+    candidate_count: int
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -103,8 +118,11 @@ def _search_to_response(s: Any, project_id: uuid.UUID) -> CitationSearchResponse
         triggered_by=str(s.triggered_by) if s.triggered_by else None,
         status=s.status,
         direction=s.direction,
+        scope=s.scope,
         candidate_count=s.candidate_count,
         already_in_project_count=s.already_in_project_count,
+        source_record_count=s.source_record_count,
+        source_record_ids=[str(r) for r in s.source_record_ids] if s.source_record_ids else None,
         error_msg=s.error_msg,
         created_at=s.created_at.isoformat(),
         completed_at=s.completed_at.isoformat() if s.completed_at else None,
@@ -158,18 +176,49 @@ async def start_search(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CitationSearchResponse:
-    """Start a citation snowballing search. Returns immediately; runs in background."""
+    """Start a citation snowballing search. Returns immediately; runs in background.
+
+    How it works: the platform resolves each extracted paper's Semantic Scholar ID
+    (via DOI or PMID), then fetches the complete reference list (backward sourcing)
+    and/or the papers that cite it (forward sourcing) from the Semantic Scholar Graph
+    API. Results are cross-deduplicated so each unique paper appears once, checked
+    against records already in the project, and stored for researcher review.
+    Selecting papers and clicking Import sends them through the standard import
+    pipeline — including deduplication and overlap detection — so they enter the
+    screening workflow exactly like database imports.
+    """
     await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
 
     valid_directions = {"backward", "forward", "both"}
     if body.direction not in valid_directions:
-        raise HTTPException(status_code=400, detail=f"direction must be one of {sorted(valid_directions)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"direction must be one of {sorted(valid_directions)}",
+        )
+
+    valid_scopes = {"all", "new", "custom"}
+    if body.scope not in valid_scopes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scope must be one of {sorted(valid_scopes)}",
+        )
+
+    record_ids: Optional[list] = None
+    if body.scope == "custom" and body.record_ids:
+        try:
+            record_ids = [uuid.UUID(r) for r in body.record_ids]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="record_ids contains invalid UUIDs")
 
     search = await citation_service.start_citation_search(
-        db, project_id, current_user.id, body.direction
+        db, project_id, current_user.id, body.direction, body.scope, record_ids
     )
     background_tasks.add_task(
-        citation_service.run_citation_search, search.id, project_id
+        citation_service.run_citation_search,
+        search.id,
+        project_id,
+        body.scope,
+        record_ids,
     )
     return _search_to_response(search, project_id)
 
@@ -201,6 +250,20 @@ async def get_search(
     return _search_to_response(search, project_id)
 
 
+@router.delete("/searches/{search_id}", status_code=204)
+async def delete_search(
+    project_id: uuid.UUID,
+    search_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a citation search and all its candidates."""
+    await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
+    deleted = await citation_service.delete_search(db, search_id, project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Citation search not found")
+
+
 @router.get("/searches/{search_id}/candidates")
 async def list_candidates(
     project_id: uuid.UUID,
@@ -209,14 +272,16 @@ async def list_candidates(
     per_page: int = 25,
     decision: Optional[str] = None,
     direction: Optional[str] = None,
+    source_record_id: Optional[uuid.UUID] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedCandidatesResponse:
     """Return paginated candidates for a search.
 
     Query params:
-      decision  — all | unreviewed | include | exclude | already_screened
-      direction — both | backward | forward
+      decision         — all | unselected | include
+      direction        — both | backward | forward
+      source_record_id — filter to candidates discovered from one specific source paper
     """
     await _require_project(project_id, current_user, db)
     if page < 1:
@@ -232,6 +297,7 @@ async def list_candidates(
         per_page=per_page,
         decision_filter=decision,
         direction_filter=direction,
+        source_record_id_filter=source_record_id,
     )
     return PaginatedCandidatesResponse(
         items=[_candidate_to_response(c) for c in result["items"]],
@@ -240,6 +306,21 @@ async def list_candidates(
         per_page=result["per_page"],
         total_pages=result["total_pages"],
     )
+
+
+@router.delete("/searches/{search_id}/candidates/{candidate_id}", status_code=204)
+async def delete_candidate(
+    project_id: uuid.UUID,
+    search_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a single candidate from a search."""
+    await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
+    deleted = await citation_service.delete_candidate(db, search_id, candidate_id, project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Candidate not found")
 
 
 @router.patch("/searches/{search_id}/candidates/{candidate_id}")
@@ -251,7 +332,7 @@ async def decide_candidate(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CitationCandidateResponse:
-    """Include, exclude, or mark a candidate as already screened."""
+    """Select (include) or deselect a candidate. Pass decision=null to deselect."""
     await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
     try:
         candidate = await citation_service.submit_candidate_decision(
@@ -271,23 +352,29 @@ async def decide_candidate(
 
 
 @router.post("/searches/{search_id}/import", status_code=202)
-async def import_included(
+async def import_selected(
     project_id: uuid.UUID,
     search_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Import all decision='include' candidates into the project."""
+    """Import all selected (decision='include') candidates into the project.
+
+    Each group of candidates originating from the same source paper is imported
+    under its own named source (e.g. '← Refs: Smith 2020'), so the origin of
+    each imported paper is visible in the Extraction Library's Sources column.
+    """
     await _require_project(project_id, current_user, db, allowed=ADMIN_ROLE)
 
     search = await citation_service.get_search(db, search_id, project_id)
     if search is None:
         raise HTTPException(status_code=404, detail="Citation search not found")
     if search.status != "completed":
-        raise HTTPException(status_code=400, detail="Search must be completed before importing")
+        raise HTTPException(
+            status_code=400, detail="Search must be completed before importing"
+        )
 
-    # Count pending includes
     from sqlalchemy import select as sa_select
     from app.models.citation_candidate import CitationCandidate
 
@@ -301,12 +388,36 @@ async def import_included(
     )
     pending = list(count_result.scalars().all())
     if not pending:
-        raise HTTPException(status_code=400, detail="No included candidates to import")
+        raise HTTPException(status_code=400, detail="No selected candidates to import")
 
     background_tasks.add_task(
-        citation_service.import_included_candidates,
+        citation_service.import_selected_candidates,
         search_id,
         project_id,
         current_user.id,
     )
     return {"message": f"Import started for {len(pending)} candidates"}
+
+
+@router.get("/searches/{search_id}/sources")
+async def list_source_articles(
+    project_id: uuid.UUID,
+    search_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> List[SourceArticleResponse]:
+    """Return the extracted papers that were used as source for this search.
+
+    Useful for filtering candidates by origin paper.
+    """
+    await _require_project(project_id, current_user, db)
+    sources = await citation_service.list_source_articles(db, search_id, project_id)
+    return [
+        SourceArticleResponse(
+            record_id=s["record_id"],
+            title=s["title"],
+            year=s["year"],
+            candidate_count=s["candidate_count"],
+        )
+        for s in sources
+    ]

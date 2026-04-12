@@ -15,7 +15,7 @@ Open-source infrastructure for systematic, reproducible evidence synthesis. Impo
 | **LLM-assisted screening** | AI screening runs using 15+ models across Anthropic, OpenAI, Google, Meta, DeepSeek, Mistral, and others; each record receives an include/exclude/uncertain decision with rationale; cost and time estimated before launch; all inputs and outputs logged with model version |
 | **Team collaboration** | Invite reviewers by token; dual-reviewer isolation with independent decision storage; automatic conflict detection; adjudication by project owner; Cohen's kappa computed per stage and reviewer pair; team screening statistics |
 | **Extraction** | Template-driven structured evidence capture with inline editing; Extraction Library (shows only TA+FT included papers that have been extracted) with search, filter, and edit; saturation counter tracks diminishing returns on new concepts |
-| **Citation sourcing** | After extraction, automatically find related papers via backward sourcing (references of included papers) and forward sourcing (papers that cite included papers) using the Semantic Scholar API; screen candidates inline; import approved papers into the project in one click |
+| **Citation sourcing** | After extraction, automatically fetch reference lists (backward) and citing papers (forward) for every paper in your Extraction Library via the Semantic Scholar API; results are cross-deduplicated and checked against existing records; select papers with checkboxes (select-all supported); import batches are named after the source article (e.g. *← Refs: Smith 2020*) so provenance is visible in the Extraction Library; supports iterative snowballing with scope options — All / New (papers not yet sourced) / Custom (choose specific papers) |
 | **Thematic analysis** | Codebook-driven synthesis — create themes and codes, assign evidence excerpts, review coded passages, track codebook history |
 | **Labels & Ontology** | Colour-coded personal labels for retrieval; hierarchical concept ontology with 3D graph view, drag-and-drop reparenting, and tagging during screening |
 | **PDF viewer** | Attach full-text PDFs per record or cluster; floating panel with freehand drawing (pen + eraser), text selection, anchored annotation notes, and session history navigation |
@@ -81,7 +81,7 @@ This builds and starts three containers:
 | Container | Purpose | Port |
 |-----------|---------|------|
 | `db` | PostgreSQL 16 database | `5433` (host) |
-| `backend` | FastAPI API server (auto-migrates on start — runs all 28 migrations) | `8000` |
+| `backend` | FastAPI API server (auto-migrates on start — runs all 29 migrations) | `8000` |
 | `frontend` | Vite dev server (React) | `5173` |
 
 Wait about 30 seconds on the first run for images to build. Then open:

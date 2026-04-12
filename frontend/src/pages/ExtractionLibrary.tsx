@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { citationsApi, extractionLibraryApi, projectsApi, screeningApi } from "../api/client";
+import { extractionLibraryApi, projectsApi, screeningApi } from "../api/client";
 import type {
   ExtractionLibraryItem,
   ExtractionJson,
@@ -489,7 +489,6 @@ function EditPanel({
 
 export default function ExtractionLibrary() {
   const { id: projectId } = useParams<{ id: string }>();
-  const navigate = useNavigate();
 
   const [search, setSearch] = useState("");
   const [filterLevels, setFilterLevels] = useState<Set<string>>(new Set());
@@ -567,32 +566,18 @@ export default function ExtractionLibrary() {
           <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
             <Link
               to={`/projects/${projectId}/citations`}
-              style={{
-                padding: "0.3rem 0.75rem",
-                borderRadius: "0.4rem",
-                border: "1.5px solid #dadce0",
-                background: "white",
-                color: "#5f6368",
-                fontSize: "0.82rem",
-                textDecoration: "none",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Search history
-            </Link>
-            <button
               className="btn-primary"
-              style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}
-              disabled={items.length === 0}
-              title={items.length === 0 ? "Extract papers first before running citation search" : "Find papers that reference or cite your extracted studies"}
-              onClick={() => {
-                citationsApi.startSearch(projectId!, "both").then(r => {
-                  navigate(`/projects/${projectId}/citations/${r.data.id}`);
-                });
+              style={{
+                fontSize: "0.82rem",
+                whiteSpace: "nowrap",
+                textDecoration: "none",
+                opacity: items.length === 0 ? 0.5 : 1,
+                pointerEvents: items.length === 0 ? "none" : "auto",
               }}
+              title={items.length === 0 ? "Extract papers first before running citation search" : "Find papers that reference or cite your extracted studies"}
             >
               Citation Search
-            </button>
+            </Link>
           </div>
         </div>
 

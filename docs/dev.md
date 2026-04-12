@@ -138,7 +138,7 @@ Frontend tests cover Euler layout math (`eulerLayout.test.ts`) and are in `front
 
 ## Database migrations
 
-Migrations live in `backend/migrations/versions/`. Current head is migration `028` (adds citation sourcing tables).
+Migrations live in `backend/migrations/versions/`. Current head is migration `029` (citation search enhancements).
 
 | Migration | Description |
 |-----------|-------------|
@@ -167,3 +167,4 @@ Migrations live in `backend/migrations/versions/`. Current head is migration `02
 | 026 | User API keys: `api_keys` JSONB on `users` |
 | 027 | Agent pipeline: `agent_mode`, `agent_pipeline`, `agent_outputs` on `llm_screening_runs` |
 | 028 | Citation sourcing: `citation_searches` + `citation_candidates` tables (backward/forward snowballing) |
+| 029 | Citation search enhancements: `scope`, `source_record_ids`, `source_record_count` on `citation_searches` |

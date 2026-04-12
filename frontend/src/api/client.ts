@@ -1635,7 +1635,7 @@ export const consensusApi = {
 // ── Citation Sourcing ─────────────────────────────────────────────────────────
 
 export type CitationDirection = "backward" | "forward" | "both";
-export type CandidateDecision = "include" | "exclude" | "already_screened";
+export type CitationScope = "all" | "new" | "custom";
 
 export interface CitationSearch {
   id: string;
@@ -1643,8 +1643,11 @@ export interface CitationSearch {
   triggered_by: string | null;
   status: "pending" | "running" | "completed" | "failed";
   direction: CitationDirection;
+  scope: CitationScope | null;
   candidate_count: number | null;
   already_in_project_count: number | null;
+  source_record_count: number | null;
+  source_record_ids: string[] | null;
   error_msg: string | null;
   created_at: string;
   completed_at: string | null;
@@ -1665,7 +1668,8 @@ export interface CitationCandidate {
   journal: string | null;
   in_project: boolean;
   project_record_id: string | null;
-  decision: CandidateDecision | null;
+  /** null = unselected; "include" = selected for import */
+  decision: "include" | null;
   decided_by: string | null;
   decided_at: string | null;
   notes: string | null;
@@ -1681,10 +1685,24 @@ export interface PaginatedCandidates {
   total_pages: number;
 }
 
+export interface CitationSourceArticle {
+  record_id: string;
+  title: string | null;
+  year: number | null;
+  candidate_count: number;
+}
+
 export const citationsApi = {
-  startSearch: (projectId: string, direction: CitationDirection = "both") =>
+  startSearch: (
+    projectId: string,
+    direction: CitationDirection = "both",
+    scope: CitationScope = "all",
+    record_ids?: string[],
+  ) =>
     api.post<CitationSearch>(`/projects/${projectId}/citations/searches`, {
       direction,
+      scope,
+      record_ids: record_ids ?? null,
     }),
 
   listSearches: (projectId: string) =>
@@ -1695,6 +1713,9 @@ export const citationsApi = {
       `/projects/${projectId}/citations/searches/${searchId}`
     ),
 
+  deleteSearch: (projectId: string, searchId: string) =>
+    api.delete(`/projects/${projectId}/citations/searches/${searchId}`),
+
   listCandidates: (
     projectId: string,
     searchId: string,
@@ -1703,6 +1724,7 @@ export const citationsApi = {
       per_page?: number;
       decision?: string;
       direction?: string;
+      source_record_id?: string;
     }
   ) =>
     api.get<PaginatedCandidates>(
@@ -1710,19 +1732,29 @@ export const citationsApi = {
       { params }
     ),
 
+  deleteCandidate: (projectId: string, searchId: string, candidateId: string) =>
+    api.delete(
+      `/projects/${projectId}/citations/searches/${searchId}/candidates/${candidateId}`
+    ),
+
   submitDecision: (
     projectId: string,
     searchId: string,
     candidateId: string,
-    body: { decision: CandidateDecision | null; notes?: string | null }
+    body: { decision: "include" | null; notes?: string | null }
   ) =>
     api.patch<CitationCandidate>(
       `/projects/${projectId}/citations/searches/${searchId}/candidates/${candidateId}`,
       body
     ),
 
-  importIncluded: (projectId: string, searchId: string) =>
+  importSelected: (projectId: string, searchId: string) =>
     api.post<{ message: string }>(
       `/projects/${projectId}/citations/searches/${searchId}/import`
+    ),
+
+  listSourceArticles: (projectId: string, searchId: string) =>
+    api.get<CitationSourceArticle[]>(
+      `/projects/${projectId}/citations/searches/${searchId}/sources`
     ),
 };

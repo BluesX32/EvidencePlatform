@@ -98,15 +98,19 @@ Reviewers extract structured evidence from included full-text records using a fl
 - Full metadata enrichment — title, authors, year, DOI, source names per item
 
 ### 8. Citation Sourcing (Snowballing)
-After data extraction, researchers can discover additional eligible papers through automated citation snowballing — a standard systematic review methodology:
+After data extraction, researchers can discover additional eligible papers through automated citation snowballing — a standard systematic review methodology. For each paper in the Extraction Library (TA+FT included AND extracted), the platform resolves its Semantic Scholar ID and fetches the complete reference list (backward sourcing) and all papers that cite it (forward sourcing). Results are cross-deduplicated across all source papers, checked against records already in the project, and presented for researcher review.
 
-- **Backward sourcing** — fetches the full reference lists of every extracted paper; each reference is a candidate for inclusion
+- **Backward sourcing** — fetches the full reference lists of extracted papers; each reference is a candidate
 - **Forward sourcing** — fetches papers that cite each extracted paper via the Semantic Scholar API
+- **Extraction Library cohort** — sourcing always starts from the validated set: TA=include, FT=include, AND extracted; candidates are never based on partially-screened papers
+- **Cohort scoping** — three modes: *All* (every paper in the Extraction Library), *New* (papers not yet used as source in any prior completed search), or *Custom* (researcher selects specific papers via a checklist); supports iterative snowballing across multiple rounds
 - **Cross-paper deduplication** — the same paper referenced by multiple included studies produces a single candidate row (partial-unique indexes on DOI, PMID, and Semantic Scholar paper ID)
-- **Project membership check** — candidates already present in the project are automatically flagged so researchers don't screen them twice
-- **Inline screening** — include, exclude, or mark each candidate as already screened without leaving the platform; clicking an active decision clears it (toggle)
-- **Import pipeline** — approved candidates are bundled into a single RIS file in memory and fed through the existing import pipeline (including dedup and overlap detection) under a project-level "Citation Sourcing" source
-- **Search history** — every citation search run is logged with status, direction, candidate count, and already-in-project count; results can be reviewed at any time
+- **Project membership check** — candidates already present in the project are automatically flagged
+- **Checkbox selection** — select individual papers or use Select All to mark the full page; no include/exclude decisions required
+- **Named per-article sources** — each import batch is grouped by the source article that led to the discovery and given a descriptive Source name (e.g. *← Refs: Smith 2020* or *→ Citing: Jones 2021*); this name appears in the Extraction Library's Sources column so the provenance chain is always visible
+- **Delete candidates** — remove individual candidates or entire search runs to keep the workspace clean
+- **Filter by source article** — view only candidates discovered from a specific extracted paper
+- **Search history** — every run is logged with timestamp, direction, scope, source paper count, candidate count, and already-in-project count
 - **Semantic Scholar integration** — uses the free Semantic Scholar Graph API (1 RPS without key; 100 RPS with a free API key set via `SEMANTIC_SCHOLAR_API_KEY`)
 - **Background execution** — the fetch runs asynchronously; the UI polls every 3 seconds and shows a live status badge
 
@@ -183,7 +187,7 @@ EvidencePlatform provides three distinct, independently optional systems for org
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (28 versioned migrations) |
+| Schema migrations | Alembic (29 versioned migrations) |
 | Citation sourcing | Semantic Scholar Graph API (httpx async client; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |

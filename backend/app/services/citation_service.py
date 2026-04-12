@@ -1,27 +1,47 @@
 """
 Citation sourcing (snowballing) service.
 
-Fetches references (backward) and citing papers (forward) for all extracted
-papers in a project via the Semantic Scholar API, then stores them as
-citation_candidates for researcher review.
+Fetches references (backward) and citing papers (forward) for extracted papers in a
+project via the Semantic Scholar API, then stores them as citation_candidates for
+researcher review.
+
+Citation searches always operate on the Extraction Library cohort: papers that have
+both a TA=include and FT=include screening decision AND a completed extraction record.
+This ensures the snowball starts from the same set the researcher has already validated.
+
+Scope controls which cohort of extracted papers is used as source:
+  "all"    – every paper currently in the Extraction Library (default)
+  "new"    – only papers not used as source in any prior completed search
+  "custom" – caller passes a specific list of record_ids
 
 Public API
 ----------
-start_citation_search(db, project_id, user_id, direction)
-    → CitationSearch   (synchronous — caller enqueues run_citation_search as background task)
+start_citation_search(db, project_id, user_id, direction, scope, record_ids)
+    → CitationSearch   (synchronous — caller enqueues run_citation_search)
 
 run_citation_search(search_id, project_id)
     → None   [background task — opens its own DB session]
 
 list_searches(db, project_id) → List[CitationSearch]
 get_search(db, search_id, project_id) → Optional[CitationSearch]
-list_candidates(db, search_id, project_id, page, per_page, decision_filter, direction_filter)
+delete_search(db, search_id, project_id) → bool
+
+list_candidates(db, search_id, project_id, page, per_page, decision_filter,
+                direction_filter, source_record_id_filter)
     → dict with items/total/page/per_page/total_pages
+
+list_source_articles(db, search_id, project_id)
+    → List[dict]  (source records used as input for this search)
+
 submit_candidate_decision(db, search_id, candidate_id, project_id, decision, notes, reviewer_id)
     → CitationCandidate
-import_included_candidates(search_id, project_id, user_id)
+
+delete_candidate(db, search_id, candidate_id, project_id) → bool
+
+import_selected_candidates(search_id, project_id, user_id)
     → None   [background task — opens its own DB session]
-get_or_create_citation_source(db, project_id) → Source
+    Imports decision='include' candidates grouped by source article;
+    each group gets its own named Source so the origin is visible in the Extraction Library.
 """
 from __future__ import annotations
 
@@ -32,7 +52,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -52,11 +72,36 @@ logger = logging.getLogger(__name__)
 _S2_BASE = "https://api.semanticscholar.org/graph/v1"
 _S2_FIELDS = "title,authors,year,externalIds,abstract,journal"
 _PAGE_SIZE = 500
-# Sleep between API calls to respect rate limits
 _SLEEP_NO_KEY = 1.05
 _SLEEP_WITH_KEY = 0.02
-# asyncpg parameter limit safety margin
 _CHUNK_SIZE = 500
+
+
+# ---------------------------------------------------------------------------
+# SQL helper: extraction-library records (TA+FT included AND extracted)
+# ---------------------------------------------------------------------------
+
+_EXTRACTION_LIBRARY_SQL = text("""
+    SELECT er.record_id, er.cluster_id
+    FROM extraction_records er
+    WHERE er.project_id = :project_id
+      AND EXISTS (
+          SELECT 1 FROM screening_decisions sd
+          WHERE sd.project_id = :project_id AND sd.stage = 'TA' AND sd.decision = 'include'
+            AND (
+              (er.record_id IS NOT NULL AND sd.record_id = er.record_id) OR
+              (er.cluster_id IS NOT NULL AND sd.cluster_id = er.cluster_id)
+            )
+      )
+      AND EXISTS (
+          SELECT 1 FROM screening_decisions sd
+          WHERE sd.project_id = :project_id AND sd.stage = 'FT' AND sd.decision = 'include'
+            AND (
+              (er.record_id IS NOT NULL AND sd.record_id = er.record_id) OR
+              (er.cluster_id IS NOT NULL AND sd.cluster_id = er.cluster_id)
+            )
+      )
+""")
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +114,8 @@ async def start_citation_search(
     project_id: uuid.UUID,
     user_id: uuid.UUID,
     direction: str = "both",
+    scope: str = "all",
+    record_ids: Optional[List[uuid.UUID]] = None,
 ) -> CitationSearch:
     """Create a CitationSearch row and return it. Caller enqueues run_citation_search."""
     search = CitationSearch(
@@ -76,6 +123,7 @@ async def start_citation_search(
         triggered_by=user_id,
         status="pending",
         direction=direction,
+        scope=scope,
     )
     db.add(search)
     await db.commit()
@@ -106,6 +154,24 @@ async def get_search(
     return result.scalar_one_or_none()
 
 
+async def delete_search(
+    db: AsyncSession, search_id: uuid.UUID, project_id: uuid.UUID
+) -> bool:
+    """Delete a citation search and all its candidates. Returns True if deleted."""
+    result = await db.execute(
+        select(CitationSearch).where(
+            CitationSearch.id == search_id,
+            CitationSearch.project_id == project_id,
+        )
+    )
+    search = result.scalar_one_or_none()
+    if search is None:
+        return False
+    await db.delete(search)
+    await db.commit()
+    return True
+
+
 async def list_candidates(
     db: AsyncSession,
     search_id: uuid.UUID,
@@ -114,26 +180,27 @@ async def list_candidates(
     per_page: int = 25,
     decision_filter: Optional[str] = None,
     direction_filter: Optional[str] = None,
+    source_record_id_filter: Optional[uuid.UUID] = None,
 ) -> Dict[str, Any]:
     base_q = select(CitationCandidate).where(
         CitationCandidate.search_id == search_id,
         CitationCandidate.project_id == project_id,
     )
     if decision_filter and decision_filter != "all":
-        if decision_filter == "unreviewed":
+        if decision_filter == "unselected":
             base_q = base_q.where(CitationCandidate.decision.is_(None))
         else:
             base_q = base_q.where(CitationCandidate.decision == decision_filter)
     if direction_filter and direction_filter != "both":
         base_q = base_q.where(CitationCandidate.direction == direction_filter)
+    if source_record_id_filter is not None:
+        base_q = base_q.where(CitationCandidate.source_record_id == source_record_id_filter)
 
-    # total count
     count_result = await db.execute(
         select(text("count(*)")).select_from(base_q.subquery())
     )
     total = count_result.scalar_one()
 
-    # paginated items
     offset = (page - 1) * per_page
     items_result = await db.execute(
         base_q.order_by(CitationCandidate.direction, CitationCandidate.year.desc().nullslast())
@@ -152,6 +219,56 @@ async def list_candidates(
     }
 
 
+async def list_source_articles(
+    db: AsyncSession,
+    search_id: uuid.UUID,
+    project_id: uuid.UUID,
+) -> List[Dict[str, Any]]:
+    """Return the distinct source records used as input for this search.
+
+    Loads the source_record_ids stored on the CitationSearch row and returns
+    basic metadata (id, title, year, authors) for each record so the frontend
+    can render a filter UI grouped by origin paper.
+    """
+    search = await get_search(db, search_id, project_id)
+    if search is None or not search.source_record_ids:
+        return []
+
+    raw_ids = search.source_record_ids  # list of UUID strings
+    if not raw_ids:
+        return []
+
+    try:
+        uuids = [uuid.UUID(str(r)) for r in raw_ids]
+    except Exception:
+        return []
+
+    result = await db.execute(
+        select(Record).where(Record.id.in_(uuids))
+    )
+    records = list(result.scalars().all())
+
+    out = []
+    for r in records:
+        # Candidate count for this source record within the search
+        cnt_result = await db.execute(
+            select(text("count(*)")).select_from(
+                select(CitationCandidate).where(
+                    CitationCandidate.search_id == search_id,
+                    CitationCandidate.source_record_id == r.id,
+                ).subquery()
+            )
+        )
+        cnt = cnt_result.scalar_one()
+        out.append({
+            "record_id": str(r.id),
+            "title": r.title,
+            "year": r.year,
+            "candidate_count": cnt,
+        })
+    return out
+
+
 async def submit_candidate_decision(
     db: AsyncSession,
     search_id: uuid.UUID,
@@ -161,10 +278,10 @@ async def submit_candidate_decision(
     notes: Optional[str],
     reviewer_id: uuid.UUID,
 ) -> CitationCandidate:
-    """Set or clear a decision on a candidate. Pass decision=None to un-decide."""
-    valid = {"include", "exclude", "already_screened"}
+    """Set or clear a selection on a candidate. Pass decision=None to deselect."""
+    valid = {"include"}
     if decision is not None and decision not in valid:
-        raise ValueError(f"decision must be one of {valid} or null")
+        raise ValueError(f"decision must be 'include' or null")
 
     result = await db.execute(
         select(CitationCandidate).where(
@@ -186,24 +303,26 @@ async def submit_candidate_decision(
     return candidate
 
 
-async def get_or_create_citation_source(
-    db: AsyncSession, project_id: uuid.UUID
-) -> Source:
-    """Find or create the project-level 'Citation Sourcing' source.
-
-    record_sources.source_id is non-nullable, so citation imports need a real
-    Source row.
-    """
+async def delete_candidate(
+    db: AsyncSession,
+    search_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    project_id: uuid.UUID,
+) -> bool:
+    """Delete a single candidate. Returns True if deleted."""
     result = await db.execute(
-        select(Source).where(
-            Source.project_id == project_id,
-            Source.name == "Citation Sourcing",
+        select(CitationCandidate).where(
+            CitationCandidate.id == candidate_id,
+            CitationCandidate.search_id == search_id,
+            CitationCandidate.project_id == project_id,
         )
     )
-    source = result.scalar_one_or_none()
-    if source is None:
-        source = await SourceRepo.create(db, project_id, "Citation Sourcing")
-    return source
+    candidate = result.scalar_one_or_none()
+    if candidate is None:
+        return False
+    await db.delete(candidate)
+    await db.commit()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -214,10 +333,12 @@ async def get_or_create_citation_source(
 async def run_citation_search(
     search_id: uuid.UUID,
     project_id: uuid.UUID,
+    scope: str = "all",
+    record_ids: Optional[List[uuid.UUID]] = None,
 ) -> None:
     """Background task. Opens its own DB session (same pattern as process_import)."""
     try:
-        await _do_citation_search(search_id, project_id)
+        await _do_citation_search(search_id, project_id, scope, record_ids)
     except BaseException as exc:  # noqa: BLE001
         logger.exception("Unhandled exception in run_citation_search %s", search_id)
         try:
@@ -230,6 +351,8 @@ async def run_citation_search(
 async def _do_citation_search(
     search_id: uuid.UUID,
     project_id: uuid.UUID,
+    scope: str,
+    explicit_record_ids: Optional[List[uuid.UUID]],
 ) -> None:
     api_key: Optional[str] = settings.semantic_scholar_api_key or None
     sleep_interval = _SLEEP_WITH_KEY if api_key else _SLEEP_NO_KEY
@@ -244,22 +367,50 @@ async def _do_citation_search(
         search.status = "running"
         await db.commit()
 
-    # ── 2. Load extracted records with DOI/PMID ────────────────────────────
+    # ── 2. Load source records from the Extraction Library cohort ──────────
+    #
+    # The Extraction Library shows papers with:
+    #   - an extraction_record
+    #   - TA=include AND FT=include screening decisions
+    #
+    # This is the same filter used by the Extraction Library page, ensuring
+    # citation sourcing always starts from fully validated, extracted papers.
+    #
     async with SessionLocal() as db:
-        er_result = await db.execute(
-            select(ExtractionRecord.record_id, ExtractionRecord.cluster_id)
-            .where(ExtractionRecord.project_id == project_id)
-        )
+        if explicit_record_ids:
+            # Custom scope: caller provided a specific list of record IDs.
+            # Still validate they are in the extraction library.
+            er_result = await db.execute(
+                text("""
+                    SELECT er.record_id, er.cluster_id
+                    FROM extraction_records er
+                    WHERE er.project_id = :project_id
+                      AND er.record_id = ANY(:ids)
+                      AND EXISTS (
+                          SELECT 1 FROM screening_decisions sd
+                          WHERE sd.project_id = :project_id AND sd.stage = 'TA'
+                            AND sd.decision = 'include' AND sd.record_id = er.record_id
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM screening_decisions sd
+                          WHERE sd.project_id = :project_id AND sd.stage = 'FT'
+                            AND sd.decision = 'include' AND sd.record_id = er.record_id
+                      )
+                """),
+                {"project_id": project_id, "ids": explicit_record_ids},
+            )
+        else:
+            er_result = await db.execute(
+                _EXTRACTION_LIBRARY_SQL, {"project_id": project_id}
+            )
         er_rows = er_result.all()
 
-        # Collect unique record_ids (cluster-based extractions: pick rep record later)
-        record_ids: List[uuid.UUID] = []
+        # Collect unique record_ids (cluster-based: pick representative record)
+        record_ids_set: List[uuid.UUID] = []
         for row in er_rows:
             if row.record_id is not None:
-                record_ids.append(row.record_id)
-            # cluster-based: fetch representative record below
+                record_ids_set.append(row.record_id)
 
-        # Also fetch representative records for cluster-based extractions
         cluster_ids = [row.cluster_id for row in er_rows if row.cluster_id is not None]
         if cluster_ids:
             rep_result = await db.execute(
@@ -273,15 +424,59 @@ async def _do_citation_search(
                 {"ids": cluster_ids},
             )
             for row in rep_result:
-                record_ids.append(row.record_id)
+                record_ids_set.append(row.record_id)
 
-        unique_record_ids = list(set(record_ids))
+        # For scope='new': exclude records already used as source in any prior
+        # completed search for this project.
+        if scope == "new" and not explicit_record_ids:
+            prior_result = await db.execute(
+                text("""
+                    SELECT source_record_ids
+                    FROM citation_searches
+                    WHERE project_id = :project_id
+                      AND status = 'completed'
+                      AND id != :search_id
+                      AND source_record_ids IS NOT NULL
+                """),
+                {"project_id": project_id, "search_id": search_id},
+            )
+            prior_ids: set = set()
+            for row in prior_result:
+                if row.source_record_ids:
+                    for rid in row.source_record_ids:
+                        try:
+                            prior_ids.add(uuid.UUID(str(rid)))
+                        except Exception:
+                            pass
+            record_ids_set = [r for r in record_ids_set if r not in prior_ids]
+            logger.info(
+                "Scope=new for search %s: %d records after excluding prior cohorts",
+                search_id, len(record_ids_set),
+            )
+
+        unique_record_ids = list(set(record_ids_set))
+
         if not unique_record_ids:
             async with SessionLocal() as db2:
-                await _set_completed(db2, search_id, 0, 0)
+                search2 = await db2.get(CitationSearch, search_id)
+                if search2:
+                    search2.source_record_count = 0
+                    search2.source_record_ids = []
+                    await db2.commit()
+            await _set_completed(
+                await _open_db(), search_id, 0, 0
+            )
             return
 
-        # Load records + their raw_data (for PMID extraction)
+        # Store which records are being used
+        async with SessionLocal() as db2:
+            search2 = await db2.get(CitationSearch, search_id)
+            if search2:
+                search2.source_record_ids = [str(r) for r in unique_record_ids]
+                search2.source_record_count = len(unique_record_ids)
+                await db2.commit()
+
+        # Load records + raw_data for PMID lookup
         records_result = await db.execute(
             select(Record).where(
                 Record.id.in_(unique_record_ids),
@@ -290,7 +485,6 @@ async def _do_citation_search(
         )
         records: List[Record] = list(records_result.scalars().all())
 
-        # Load raw_data per record_id for PMID lookup
         rs_result = await db.execute(
             select(RecordSource.record_id, RecordSource.raw_data)
             .where(RecordSource.record_id.in_(unique_record_ids))
@@ -300,8 +494,6 @@ async def _do_citation_search(
             raw_data_by_record.setdefault(row.record_id, []).append(row.raw_data or {})
 
     # ── 3. Fetch from Semantic Scholar ─────────────────────────────────────
-    # Accumulate candidates in a dict keyed by best identifier (doi > pmid > s2_id)
-    # so the same paper from multiple source records is stored once.
     candidates: Dict[str, dict] = {}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -312,14 +504,18 @@ async def _do_citation_search(
                 continue
 
             if direction in ("backward", "both"):
-                refs = await _fetch_paginated(client, f"{_S2_BASE}/paper/{s2_id}/references", api_key, sleep_interval)
+                refs = await _fetch_paginated(
+                    client, f"{_S2_BASE}/paper/{s2_id}/references", api_key, sleep_interval
+                )
                 for item in refs:
                     paper = item.get("citedPaper") or {}
                     _merge_candidate(candidates, paper, "backward", record.id)
 
             if direction in ("forward", "both"):
                 await asyncio.sleep(sleep_interval)
-                cits = await _fetch_paginated(client, f"{_S2_BASE}/paper/{s2_id}/citations", api_key, sleep_interval)
+                cits = await _fetch_paginated(
+                    client, f"{_S2_BASE}/paper/{s2_id}/citations", api_key, sleep_interval
+                )
                 for item in cits:
                     paper = item.get("citingPaper") or {}
                     _merge_candidate(candidates, paper, "forward", record.id)
@@ -335,9 +531,6 @@ async def _do_citation_search(
     # ── 5. Bulk-insert candidates ──────────────────────────────────────────
     async with SessionLocal() as db:
         if candidate_list:
-            # ON CONFLICT DO NOTHING on partial unique indexes (doi, pmid, s2_paper_id)
-            # We insert one by one in chunks to handle the partial-unique logic;
-            # raw INSERT … ON CONFLICT DO NOTHING respects all three indexes.
             for i in range(0, len(candidate_list), _CHUNK_SIZE):
                 chunk = candidate_list[i : i + _CHUNK_SIZE]
                 rows = [
@@ -376,7 +569,6 @@ async def _do_citation_search(
                 )
             await db.commit()
 
-        # Recount from DB (ON CONFLICT DO NOTHING may have dropped some)
         count_result = await db.execute(
             text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
             {"s": search_id},
@@ -392,24 +584,36 @@ async def _do_citation_search(
         await _set_completed(db, search_id, actual_count, in_proj_count)
 
 
+async def _open_db():
+    """Helper to open a session for the edge-case early-return path."""
+    async with SessionLocal() as db:
+        return db
+
+
 # ---------------------------------------------------------------------------
-# Background task: import included candidates via existing import pipeline
+# Background task: import selected candidates via existing import pipeline
 # ---------------------------------------------------------------------------
 
 
-async def import_included_candidates(
+async def import_selected_candidates(
     search_id: uuid.UUID,
     project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    """Background task. Imports all decision='include' candidates as a single RIS file."""
+    """Background task. Imports decision='include' candidates.
+
+    Groups candidates by (source_record_id, direction) so each group gets a
+    descriptively named Source — e.g. '← Refs: Smith (2020)' or '→ Citing: Jones (2021)'.
+    This name appears in the Extraction Library's Sources column, making the origin
+    of each imported paper visible.
+    """
     try:
-        await _do_import_included(search_id, project_id, user_id)
+        await _do_import_selected(search_id, project_id, user_id)
     except BaseException as exc:  # noqa: BLE001
-        logger.exception("Unhandled exception in import_included_candidates %s", search_id)
+        logger.exception("Unhandled exception in import_selected_candidates %s", search_id)
 
 
-async def _do_import_included(
+async def _do_import_selected(
     search_id: uuid.UUID,
     project_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -426,47 +630,128 @@ async def _do_import_included(
         candidates = list(result.scalars().all())
 
     if not candidates:
-        logger.info("No unimported included candidates for search %s", search_id)
+        logger.info("No unimported selected candidates for search %s", search_id)
         return
 
-    async with SessionLocal() as db:
-        source = await get_or_create_citation_source(db, project_id)
-        source_id = source.id
+    # ── Group by (source_record_id, direction) ────────────────────────────
+    groups: Dict[tuple, List[CitationCandidate]] = {}
+    for c in candidates:
+        key = (c.source_record_id, c.direction)
+        groups.setdefault(key, []).append(c)
 
-    # Build a single RIS file in memory
-    ris_bytes = _build_ris(candidates)
-    short_id = str(search_id)[:8]
-
-    async with SessionLocal() as db:
-        job = await ImportRepo.create(
-            db,
-            project_id=project_id,
-            user_id=user_id,
-            filename=f"citation_search_{short_id}.ris",
-            file_format="ris",
-            source_id=source_id,
-        )
-        job_id = job.id
-
-    # Run through the full import pipeline (dedup included)
-    await process_import(job_id, project_id, source_id, ris_bytes)
-
-    # Link candidates to the import job
-    async with SessionLocal() as db:
-        candidate_ids = [c.id for c in candidates]
-        for i in range(0, len(candidate_ids), _CHUNK_SIZE):
-            chunk = candidate_ids[i : i + _CHUNK_SIZE]
-            await db.execute(
-                update(CitationCandidate)
-                .where(CitationCandidate.id.in_(chunk))
-                .values(import_job_id=job_id)
+    # ── Load source record titles for naming ──────────────────────────────
+    source_record_ids = list({k[0] for k in groups if k[0] is not None})
+    record_titles: Dict[uuid.UUID, str] = {}
+    if source_record_ids:
+        async with SessionLocal() as db:
+            recs_result = await db.execute(
+                select(Record).where(Record.id.in_(source_record_ids))
             )
-        await db.commit()
+            for rec in recs_result.scalars().all():
+                record_titles[rec.id] = _short_record_name(rec)
+
+    # ── Import each group with a named source ─────────────────────────────
+    short_id = str(search_id)[:8]
+    all_candidate_ids: List[uuid.UUID] = []
+    job_id: Optional[uuid.UUID] = None  # track last job for logging
+
+    for (src_rec_id, direction), group in groups.items():
+        source_name = _build_source_name(src_rec_id, direction, record_titles, short_id)
+
+        async with SessionLocal() as db:
+            source = await _find_or_create_named_source(db, project_id, source_name)
+            source_id = source.id
+
+        ris_bytes = _build_ris(group)
+
+        async with SessionLocal() as db:
+            job = await ImportRepo.create(
+                db,
+                project_id=project_id,
+                user_id=user_id,
+                filename=f"citation_search_{short_id}.ris",
+                file_format="ris",
+                source_id=source_id,
+            )
+            job_id = job.id
+
+        await process_import(job_id, project_id, source_id, ris_bytes)
+
+        async with SessionLocal() as db:
+            chunk_ids = [c.id for c in group]
+            for i in range(0, len(chunk_ids), _CHUNK_SIZE):
+                chunk = chunk_ids[i : i + _CHUNK_SIZE]
+                await db.execute(
+                    update(CitationCandidate)
+                    .where(CitationCandidate.id.in_(chunk))
+                    .values(import_job_id=job_id)
+                )
+            await db.commit()
+
+        all_candidate_ids.extend(c.id for c in group)
 
     logger.info(
-        "Citation import job %s created for search %s (%d candidates)",
-        job_id, search_id, len(candidates),
+        "Citation import complete for search %s: %d candidates across %d sources",
+        search_id, len(all_candidate_ids), len(groups),
     )
+
+
+def _short_record_name(rec: Record) -> str:
+    """Derive a short 'Author (Year)' label from a Record."""
+    year = f" ({rec.year})" if rec.year else ""
+    # Try to extract first author last name from title or record.title
+    # Authors are not on the Record model directly — use title as fallback
+    title = (rec.title or "")[:40]
+    if title:
+        return f"{title}{year}"
+    return f"Record{year}"
+
+
+def _build_source_name(
+    src_rec_id: Optional[uuid.UUID],
+    direction: str,
+    record_titles: Dict[uuid.UUID, str],
+    search_short_id: str,
+) -> str:
+    """Build a descriptive source name for the import batch."""
+    arrow = "←" if direction == "backward" else "→"
+    if src_rec_id and src_rec_id in record_titles:
+        title_short = record_titles[src_rec_id][:50]
+        label = "Refs" if direction == "backward" else "Citing"
+        return f"{arrow} {label}: {title_short}"
+    return f"{arrow} Citation Search {search_short_id}"
+
+
+async def _find_or_create_named_source(
+    db: AsyncSession, project_id: uuid.UUID, name: str
+) -> Source:
+    """Find or create a Source with this exact name under the project."""
+    result = await db.execute(
+        select(Source).where(
+            Source.project_id == project_id,
+            Source.name == name,
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        source = await SourceRepo.create(db, project_id, name)
+    return source
+
+
+async def get_or_create_citation_source(
+    db: AsyncSession, project_id: uuid.UUID
+) -> Source:
+    """Fallback: find or create the generic 'Citation Sourcing' source."""
+    result = await db.execute(
+        select(Source).where(
+            Source.project_id == project_id,
+            Source.name == "Citation Sourcing",
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        source = await SourceRepo.create(db, project_id, "Citation Sourcing")
+    return source
 
 
 # ---------------------------------------------------------------------------
@@ -480,17 +765,19 @@ async def _resolve_s2_id(
     raw_data_rows: List[dict],
     api_key: Optional[str],
 ) -> Optional[str]:
-    """Return the Semantic Scholar paperId for a record, or None if not found."""
     if record.doi:
-        result = await _s2_get(client, f"{_S2_BASE}/paper/DOI:{record.doi}", {"fields": "paperId"}, api_key)
+        result = await _s2_get(
+            client, f"{_S2_BASE}/paper/DOI:{record.doi}", {"fields": "paperId"}, api_key
+        )
         if result and result.get("paperId"):
             return result["paperId"]
 
-    # Try PMID from raw_data
     for rd in raw_data_rows:
         pmid = rd.get("pmid") or rd.get("AN") or rd.get("pubmed_id") or rd.get("accession_number")
         if pmid and str(pmid).isdigit():
-            result = await _s2_get(client, f"{_S2_BASE}/paper/PMID:{pmid}", {"fields": "paperId"}, api_key)
+            result = await _s2_get(
+                client, f"{_S2_BASE}/paper/PMID:{pmid}", {"fields": "paperId"}, api_key
+            )
             if result and result.get("paperId"):
                 return result["paperId"]
 
@@ -504,7 +791,6 @@ async def _fetch_paginated(
     api_key: Optional[str],
     sleep_interval: float,
 ) -> List[dict]:
-    """Fetch all pages from a Semantic Scholar paginated endpoint."""
     results: List[dict] = []
     offset = 0
     while True:
@@ -515,6 +801,7 @@ async def _fetch_paginated(
         )
         if data is None:
             break
+        # S2 returns {"data": null} for papers with no indexed refs — treat as empty
         batch = data.get("data") or []
         results.extend(batch)
         if len(batch) < _PAGE_SIZE:
@@ -559,10 +846,10 @@ def _merge_candidate(
     direction: str,
     source_record_id: uuid.UUID,
 ) -> None:
-    """Insert or update a candidate entry in the accumulator dict.
+    """Insert a candidate into the accumulator dict, keyed by DOI > PMID > S2 ID.
 
-    Keyed by DOI > PMID > S2 paper ID so the same paper from multiple source
-    records collapses into one entry. The first direction seen is kept.
+    The same paper referenced by multiple source records collapses to one entry.
+    The first source_record_id to discover the paper is preserved.
     """
     if not paper:
         return
@@ -577,7 +864,7 @@ def _merge_candidate(
         return  # no usable identifier — skip
 
     if key in candidates:
-        return  # already have this paper
+        return  # already have this paper (first-seen wins)
 
     authors = [a.get("name", "") for a in (paper.get("authors") or []) if a.get("name")]
     journal_info = paper.get("journal") or {}
@@ -608,7 +895,6 @@ async def _dedup_against_project(
     doi_candidates = {c["doi"]: c for c in candidates if c.get("doi")}
     pmid_candidates = {c["pmid"]: c for c in candidates if c.get("pmid") and not c.get("doi")}
 
-    # DOI lookup (chunked)
     doi_list = list(doi_candidates.keys())
     for i in range(0, len(doi_list), _CHUNK_SIZE):
         chunk = doi_list[i : i + _CHUNK_SIZE]
@@ -621,7 +907,6 @@ async def _dedup_against_project(
                 doi_candidates[row.doi]["in_project"] = True
                 doi_candidates[row.doi]["project_record_id"] = row.id
 
-    # PMID lookup via record_sources raw_data
     if pmid_candidates:
         pmid_list = list(pmid_candidates.keys())
         for i in range(0, len(pmid_list), _CHUNK_SIZE):
@@ -667,7 +952,6 @@ def _build_ris(candidates: List[CitationCandidate]) -> bytes:
         if c.doi:
             lines.append(f"DO  - {c.doi}")
         if c.abstract:
-            # RIS AB tag — replace newlines with spaces
             lines.append(f"AB  - {c.abstract.replace(chr(10), ' ').replace(chr(13), ' ')}")
         if c.journal:
             lines.append(f"JO  - {c.journal}")
