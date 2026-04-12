@@ -92,12 +92,25 @@ Multi-reviewer workflows with:
 - **Team screening stats** — agreement rates, decision distributions, and coverage per reviewer
 
 ### 7. Structured Data Extraction
-Reviewers extract structured evidence from included full-text records using a flexible JSONB schema. The **Extraction Library** aggregates all extractions across a project with:
+Reviewers extract structured evidence from included full-text records using a flexible JSONB schema. The **Extraction Library** shows only papers that were included at both the title-abstract and full-text screening stages and have been extracted — papers that merely passed one stage or have no extraction are excluded. The library provides:
 - Inline edit panel — edit any field without leaving the list
 - Search and filter — by source, label, or free text
 - Full metadata enrichment — title, authors, year, DOI, source names per item
 
-### 8. Thematic Analysis (Taxonomy)
+### 8. Citation Sourcing (Snowballing)
+After data extraction, researchers can discover additional eligible papers through automated citation snowballing — a standard systematic review methodology:
+
+- **Backward sourcing** — fetches the full reference lists of every extracted paper; each reference is a candidate for inclusion
+- **Forward sourcing** — fetches papers that cite each extracted paper via the Semantic Scholar API
+- **Cross-paper deduplication** — the same paper referenced by multiple included studies produces a single candidate row (partial-unique indexes on DOI, PMID, and Semantic Scholar paper ID)
+- **Project membership check** — candidates already present in the project are automatically flagged so researchers don't screen them twice
+- **Inline screening** — include, exclude, or mark each candidate as already screened without leaving the platform; clicking an active decision clears it (toggle)
+- **Import pipeline** — approved candidates are bundled into a single RIS file in memory and fed through the existing import pipeline (including dedup and overlap detection) under a project-level "Citation Sourcing" source
+- **Search history** — every citation search run is logged with status, direction, candidate count, and already-in-project count; results can be reviewed at any time
+- **Semantic Scholar integration** — uses the free Semantic Scholar Graph API (1 RPS without key; 100 RPS with a free API key set via `SEMANTIC_SCHOLAR_API_KEY`)
+- **Background execution** — the fetch runs asynchronously; the UI polls every 3 seconds and shows a live status badge
+
+### 9. Thematic Analysis (Taxonomy)
 A code-based thematic synthesis module for building and managing an evolving **taxonomy of themes**. Concepts extracted from papers are gathered and organized into themes and sub-codes — answering the question *what patterns emerge across the literature?*:
 - Create and organize themes and sub-codes
 - Assign codes to extracted evidence segments
@@ -105,7 +118,7 @@ A code-based thematic synthesis module for building and managing an evolving **t
 - Track codebook history — every change is logged with timestamp and author
 - Saturation tracking — consecutive records without new code assignments surfaced as a progress indicator
 
-### 9. Label System
+### 10. Label System
 Project-scoped **personal tags** with custom names and colors. Labels are entirely user-defined and carry no predefined structure — researchers use them to organize and retrieve papers however suits their workflow (sub-populations, study designs, methodological flags, reading status, etc.). Labels can be:
 - Assigned to any article at any screening stage
 - Created inline during screening (new labels are saved immediately to the project)
@@ -113,7 +126,7 @@ Project-scoped **personal tags** with custom names and colors. Labels are entire
 
 Labels are independent of taxonomy and ontology: they are not required to be linked to themes or structured dimensions.
 
-### 10. Ontology
+### 11. Ontology
 A **hierarchical concept graph** for organizing the structural dimensions of an evidence base — levels of analysis, intervention types, outcome categories, populations, and other domain-specific dimensions. Unlike labels (personal/flexible) and thematic codes (bottom-up from evidence), the ontology is **partially pre-defined** and provides shared vocabulary across a project.
 
 - Hierarchical node tree with arbitrary depth (forest structure)
@@ -127,7 +140,13 @@ A **hierarchical concept graph** for organizing the structural dimensions of an 
 
 Researchers are not required to use all three organization systems (labels, taxonomy, ontology) in a single study — each is independently optional.
 
-### 11. PDF Viewer and Annotation
+---
+
+## Citation Sourcing Loop
+
+Citation sourcing closes the feedback loop between extraction and import: papers discovered through snowballing re-enter the import pipeline and are subject to the same deduplication, overlap detection, and screening workflow as records imported from databases. This ensures a single, auditable provenance chain for every record in the project regardless of how it was discovered.
+
+### 12. PDF Viewer and Annotation
 Full-text PDFs are uploaded per record or per cluster and stored server-side (one per record/cluster). A floating, draggable PDF viewer opens inline during the FT screening stage and provides:
 
 - **Page navigation** — previous/next page with current-page indicator
@@ -164,7 +183,8 @@ EvidencePlatform provides three distinct, independently optional systems for org
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (23 versioned migrations) |
+| Schema migrations | Alembic (28 versioned migrations) |
+| Citation sourcing | Semantic Scholar Graph API (httpx async client; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |
 
@@ -196,6 +216,10 @@ Full-text screening
         ↓
 Structured data extraction
   → tag with labels and ontology concepts inline
+        ↓
+Citation sourcing (backward + forward snowballing)
+  → screen new candidates inline
+  → import approved papers → re-enter pipeline
         ↓
 Thematic coding + saturation analysis (taxonomy)
         ↓

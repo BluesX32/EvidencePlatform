@@ -14,7 +14,8 @@ Open-source infrastructure for systematic, reproducible evidence synthesis. Impo
 | **Human screening** | Title/abstract → full-text pipeline with sequential or mixed mode; configurable inclusion/exclusion criteria; per-reason exclusion tracking; custom exclusion reasons; anchored annotations; back/forward navigation through session history; full-text link resolution (Unpaywall/DOI/PMC/PubMed/Scholar); per-corpus progress dashboard |
 | **LLM-assisted screening** | AI screening runs using 15+ models across Anthropic, OpenAI, Google, Meta, DeepSeek, Mistral, and others; each record receives an include/exclude/uncertain decision with rationale; cost and time estimated before launch; all inputs and outputs logged with model version |
 | **Team collaboration** | Invite reviewers by token; dual-reviewer isolation with independent decision storage; automatic conflict detection; adjudication by project owner; Cohen's kappa computed per stage and reviewer pair; team screening statistics |
-| **Extraction** | Template-driven structured evidence capture with inline editing; Extraction Library with search, filter, and edit; saturation counter tracks diminishing returns on new concepts |
+| **Extraction** | Template-driven structured evidence capture with inline editing; Extraction Library (shows only TA+FT included papers that have been extracted) with search, filter, and edit; saturation counter tracks diminishing returns on new concepts |
+| **Citation sourcing** | After extraction, automatically find related papers via backward sourcing (references of included papers) and forward sourcing (papers that cite included papers) using the Semantic Scholar API; screen candidates inline; import approved papers into the project in one click |
 | **Thematic analysis** | Codebook-driven synthesis — create themes and codes, assign evidence excerpts, review coded passages, track codebook history |
 | **Labels & Ontology** | Colour-coded personal labels for retrieval; hierarchical concept ontology with 3D graph view, drag-and-drop reparenting, and tagging during screening |
 | **PDF viewer** | Attach full-text PDFs per record or cluster; floating panel with freehand drawing (pen + eraser), text selection, anchored annotation notes, and session history navigation |
@@ -80,7 +81,7 @@ This builds and starts three containers:
 | Container | Purpose | Port |
 |-----------|---------|------|
 | `db` | PostgreSQL 16 database | `5433` (host) |
-| `backend` | FastAPI API server (auto-migrates on start) | `8000` |
+| `backend` | FastAPI API server (auto-migrates on start — runs all 28 migrations) | `8000` |
 | `frontend` | Vite dev server (React) | `5173` |
 
 Wait about 30 seconds on the first run for images to build. Then open:
@@ -151,6 +152,10 @@ DATABASE_URL=postgresql+asyncpg://evidence:evidence@localhost:5432/evidenceplatf
 SECRET_KEY=local-dev-secret-key-change-in-production
 ACCESS_TOKEN_EXPIRE_HOURS=24
 BACKEND_CORS_ORIGINS=http://localhost:5173
+
+# Optional: Semantic Scholar API key for citation sourcing (raises rate limit from 1 to 100 RPS)
+# Request a free key at https://www.semanticscholar.org/product/api
+SEMANTIC_SCHOLAR_API_KEY=
 ```
 
 ```bash
@@ -184,7 +189,7 @@ source .venv/bin/activate
 python -m pytest tests/ -v --tb=short
 ```
 
-The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, and strategy history (485+ backend tests + 23 Vitest frontend tests). Run a specific module with `-k <name>`, e.g. `pytest tests/ -k screening`.
+The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, citation sourcing, and strategy history (485+ backend tests + 23 Vitest frontend tests). Run a specific module with `-k <name>`, e.g. `pytest tests/ -k screening`.
 
 ---
 

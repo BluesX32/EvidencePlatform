@@ -138,7 +138,7 @@ Frontend tests cover Euler layout math (`eulerLayout.test.ts`) and are in `front
 
 ## Database migrations
 
-Migrations live in `backend/alembic/versions/`. Current head is migration `016` (adds `fulltext_pdfs` table).
+Migrations live in `backend/migrations/versions/`. Current head is migration `028` (adds citation sourcing tables).
 
 | Migration | Description |
 |-----------|-------------|
@@ -148,10 +148,22 @@ Migrations live in `backend/alembic/versions/`. Current head is migration `016` 
 | 006 | Strategy run history: `overlap_strategy_runs` |
 | 007–008 | (Dropped — old corpus tables) |
 | 009 | Screening tables: `screening_decisions`, `extraction_records`, `screening_claims` |
-| 010 | Workflow strategy fields |
+| 010 | Record indexes for screening performance |
 | 011 | `criteria` JSONB on `projects` |
-| 012 | `record_annotations` table |
+| 012 | `record_annotations` table (anchored annotations) |
 | 013 | `project_labels` + `record_labels` tables |
-| 014 | Taxonomy / ontology tables |
+| 014 | Ontology tables (`ontology_nodes`) |
 | 015 | Thematic analysis: `code_extractions`, `thematic_history` |
 | 016 | Full-text PDFs: `fulltext_pdfs` table |
+| 017 | LLM screening: `llm_screening_runs` + `llm_screening_results` tables |
+| 018 | Team collaboration: `project_members`, `project_invitations`, `consensus_decisions` tables |
+| 019 | PDF drawing: `drawing_data` JSONB on `fulltext_pdfs` (per-page freehand strokes) |
+| 020 | PDF annotation anchoring: `page_num` + `highlight_rects` JSONB on `record_annotations` |
+| 021 | Screening queues: `screening_queues` table (seeded, position-tracked) |
+| 022 | Extraction template: `extraction_template` JSONB on `projects` |
+| 023 | Record concepts: `record_concepts` table (record/cluster ↔ ontology node tagging) |
+| 024 | Ontology edges: `ontology_edges` table (directed relationships between ontology nodes) |
+| 025 | LLM enhancements: mode, source filter, extraction, prompt config, comparison columns on LLM tables |
+| 026 | User API keys: `api_keys` JSONB on `users` |
+| 027 | Agent pipeline: `agent_mode`, `agent_pipeline`, `agent_outputs` on `llm_screening_runs` |
+| 028 | Citation sourcing: `citation_searches` + `citation_candidates` tables (backward/forward snowballing) |
