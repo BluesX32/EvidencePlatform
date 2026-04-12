@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import annotations, auth, consensus, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, teams, thematic
+from app.routers import annotations, auth, citations, consensus, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, teams, thematic
 from app.routers import screening
 from app.routers import llm_screening
 
@@ -26,6 +26,7 @@ app.include_router(dedup_jobs.router)
 app.include_router(overlaps.router)
 app.include_router(screening.router)
 app.include_router(extractions.router)
+app.include_router(citations.router)
 app.include_router(annotations.router)
 app.include_router(labels.router)
 app.include_router(ontology.router)

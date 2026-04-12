@@ -40,6 +40,20 @@ WITH cluster_reps AS (
     JOIN record_sources rs ON rs.id = ocm.record_source_id
     JOIN records r         ON r.id  = rs.record_id
     ORDER BY ocm.cluster_id, ocm.id
+),
+included_items AS (
+    -- Items included at both TA and FT stages
+    SELECT record_id, cluster_id
+    FROM screening_decisions
+    WHERE project_id = :project_id
+      AND stage = 'TA'
+      AND decision = 'include'
+    INTERSECT
+    SELECT record_id, cluster_id
+    FROM screening_decisions
+    WHERE project_id = :project_id
+      AND stage = 'FT'
+      AND decision = 'include'
 )
 SELECT
     er.id,
@@ -54,6 +68,9 @@ SELECT
     COALESCE(r.doi,     cr.doi)     AS doi,
     array_remove(array_agg(DISTINCT s.name), NULL) AS source_names
 FROM extraction_records er
+JOIN included_items ii
+  ON (er.record_id  IS NOT NULL AND ii.record_id  = er.record_id  AND ii.cluster_id  IS NULL)
+  OR (er.cluster_id IS NOT NULL AND ii.cluster_id = er.cluster_id AND ii.record_id   IS NULL)
 LEFT JOIN records r        ON r.id  = er.record_id
 LEFT JOIN cluster_reps cr  ON cr.cluster_id = er.cluster_id
 LEFT JOIN record_sources rs2
@@ -81,6 +98,19 @@ WITH cluster_reps AS (
     JOIN record_sources rs ON rs.id = ocm.record_source_id
     JOIN records r         ON r.id  = rs.record_id
     ORDER BY ocm.cluster_id, ocm.id
+),
+included_items AS (
+    SELECT record_id, cluster_id
+    FROM screening_decisions
+    WHERE project_id = :project_id
+      AND stage = 'TA'
+      AND decision = 'include'
+    INTERSECT
+    SELECT record_id, cluster_id
+    FROM screening_decisions
+    WHERE project_id = :project_id
+      AND stage = 'FT'
+      AND decision = 'include'
 )
 SELECT
     er.id,
@@ -95,6 +125,9 @@ SELECT
     COALESCE(r.doi,     cr.doi)     AS doi,
     array_remove(array_agg(DISTINCT s.name), NULL) AS source_names
 FROM extraction_records er
+JOIN included_items ii
+  ON (er.record_id  IS NOT NULL AND ii.record_id  = er.record_id  AND ii.cluster_id  IS NULL)
+  OR (er.cluster_id IS NOT NULL AND ii.cluster_id = er.cluster_id AND ii.record_id   IS NULL)
 LEFT JOIN records r        ON r.id  = er.record_id
 LEFT JOIN cluster_reps cr  ON cr.cluster_id = er.cluster_id
 LEFT JOIN record_sources rs2

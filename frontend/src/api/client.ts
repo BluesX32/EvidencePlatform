@@ -1631,3 +1631,98 @@ export const consensusApi = {
       { params }
     ),
 };
+
+// ── Citation Sourcing ─────────────────────────────────────────────────────────
+
+export type CitationDirection = "backward" | "forward" | "both";
+export type CandidateDecision = "include" | "exclude" | "already_screened";
+
+export interface CitationSearch {
+  id: string;
+  project_id: string;
+  triggered_by: string | null;
+  status: "pending" | "running" | "completed" | "failed";
+  direction: CitationDirection;
+  candidate_count: number | null;
+  already_in_project_count: number | null;
+  error_msg: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface CitationCandidate {
+  id: string;
+  search_id: string;
+  direction: "backward" | "forward";
+  source_record_id: string | null;
+  s2_paper_id: string | null;
+  title: string | null;
+  abstract: string | null;
+  authors: string[] | null;
+  year: number | null;
+  doi: string | null;
+  pmid: string | null;
+  journal: string | null;
+  in_project: boolean;
+  project_record_id: string | null;
+  decision: CandidateDecision | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  notes: string | null;
+  import_job_id: string | null;
+  created_at: string;
+}
+
+export interface PaginatedCandidates {
+  items: CitationCandidate[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export const citationsApi = {
+  startSearch: (projectId: string, direction: CitationDirection = "both") =>
+    api.post<CitationSearch>(`/projects/${projectId}/citations/searches`, {
+      direction,
+    }),
+
+  listSearches: (projectId: string) =>
+    api.get<CitationSearch[]>(`/projects/${projectId}/citations/searches`),
+
+  getSearch: (projectId: string, searchId: string) =>
+    api.get<CitationSearch>(
+      `/projects/${projectId}/citations/searches/${searchId}`
+    ),
+
+  listCandidates: (
+    projectId: string,
+    searchId: string,
+    params?: {
+      page?: number;
+      per_page?: number;
+      decision?: string;
+      direction?: string;
+    }
+  ) =>
+    api.get<PaginatedCandidates>(
+      `/projects/${projectId}/citations/searches/${searchId}/candidates`,
+      { params }
+    ),
+
+  submitDecision: (
+    projectId: string,
+    searchId: string,
+    candidateId: string,
+    body: { decision: CandidateDecision | null; notes?: string | null }
+  ) =>
+    api.patch<CitationCandidate>(
+      `/projects/${projectId}/citations/searches/${searchId}/candidates/${candidateId}`,
+      body
+    ),
+
+  importIncluded: (projectId: string, searchId: string) =>
+    api.post<{ message: string }>(
+      `/projects/${projectId}/citations/searches/${searchId}/import`
+    ),
+};

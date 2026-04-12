@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose,
+  Menu, PanelLeftClose, SearchCode,
 } from "lucide-react";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
 import { Cloud } from "lucide-react";
@@ -30,6 +30,7 @@ const PROJECT_NAV = [
   { path: "/overlap",     icon: GitMerge,        label: "Overlap"      },
   { path: "/screen",      icon: CheckSquare,     label: "Screening"    },
   { path: "/extractions", icon: FlaskConical,    label: "Extractions"  },
+  { path: "/citations",   icon: SearchCode,      label: "Citation Search" },
   { path: "/labels",      icon: Tag,             label: "Labels"       },
   { path: "/thematic",    icon: GitBranch,       label: "Taxonomy"     },
   { path: "/ontology",    icon: Network,         label: "Ontology"     },

@@ -37,6 +37,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import SessionLocal
+from app.models.extraction_record import ExtractionRecord
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
 from app.models.ontology_node import OntologyNode
 from app.models.project import Project
@@ -646,6 +647,12 @@ async def _do_execute_run(
                 db.add(result)
                 await db.flush()
 
+                # Mirror extraction into shared extraction_records table so the
+                # Extraction Library and saturation counter see LLM extractions
+                # alongside manual ones.
+                if result.extracted_json:
+                    await _sync_extraction_to_shared_table(db, result, triggered_by_id)
+
                 # Update counters
                 if result.ta_decision == "include":
                     included += 1
@@ -929,6 +936,9 @@ async def _do_execute_run_saturation(
         db.add(result)
         await db.flush()
 
+        if result.extracted_json:
+            await _sync_extraction_to_shared_table(db, result, triggered_by_id_sat)
+
         if result.ta_decision == "include":
             included += 1
         elif result.ta_decision == "exclude":
@@ -992,6 +1002,53 @@ async def _do_execute_run_saturation(
         )
     )
     await db.commit()
+
+
+async def _sync_extraction_to_shared_table(
+    db: AsyncSession,
+    result: LlmScreeningResult,
+    triggered_by: Optional[uuid.UUID],
+) -> None:
+    """Upsert LLM extraction into the shared extraction_records table.
+
+    This keeps manual-screening and LLM-screening extractions in the same
+    table so the Extraction Library, saturation counter, and any other consumer
+    see a unified view regardless of how the extraction was produced.
+
+    Uses a simple SELECT-then-INSERT/UPDATE pattern (no ON CONFLICT) because
+    reviewer_id is NULL for LLM runs, making the unique key (project_id,
+    record_id, reviewer_id) ambiguous — we just replace the most recent LLM
+    extraction for this record.
+    """
+    if not result.extracted_json:
+        return
+
+    from sqlalchemy import select as _select
+
+    existing = (
+        await db.execute(
+            _select(ExtractionRecord).where(
+                ExtractionRecord.project_id == result.project_id,
+                ExtractionRecord.record_id == result.record_id,
+                ExtractionRecord.cluster_id.is_(None),
+                ExtractionRecord.reviewer_id == triggered_by,
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        existing.extracted_json = result.extracted_json
+    else:
+        db.add(
+            ExtractionRecord(
+                project_id=result.project_id,
+                record_id=result.record_id,
+                cluster_id=None,
+                extracted_json=result.extracted_json,
+                reviewer_id=triggered_by,
+            )
+        )
+    await db.flush()
 
 
 async def _fetch_fulltext_for_record(
@@ -2277,10 +2334,24 @@ async def _extract_one_record(
             system_prompt_override=extraction_system,
             tool_schema_override=tool_schema,
         )
-        # Remove token-counting keys
+        # Remove internal token-counting keys
         result.pop("_input_tokens", None)
         result.pop("_output_tokens", None)
-        return result if result else None
+        if not result:
+            return None
+
+        # Wrap in the ExtractionJson envelope so format matches human extractions.
+        # Human extractions store cell values under extracted_json.table[row_id].
+        # The LLM tool returns a flat dict keyed by row_id — move that under "table".
+        return {
+            "table": result,
+            "free_note": "",
+            "framework_updated": False,
+            "framework_update_note": "",
+            "levels": [],
+            "dimensions": [],
+            "snippets": [],
+        }
     except Exception:
         logger.exception("Extraction LLM call failed for record %s", record.id)
         return None

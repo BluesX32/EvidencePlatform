@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Base URL of the frontend — used to construct the verification link
     frontend_base_url: str = "http://localhost:5173"
 
+    # Optional Semantic Scholar API key — increases rate limit from 1 RPS to 100 RPS.
+    # Request a free key at https://www.semanticscholar.org/product/api
+    semantic_scholar_api_key: str = ""
+
     model_config = {"env_file": "../.env", "env_file_encoding": "utf-8"}
 
     @property

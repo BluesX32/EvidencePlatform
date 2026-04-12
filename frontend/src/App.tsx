@@ -50,6 +50,7 @@ import RecordsPage from "./pages/RecordsPage";
 import OverlapPage from "./pages/OverlapPage";
 import ScreeningWorkspace from "./pages/ScreeningWorkspace";
 import ExtractionLibrary from "./pages/ExtractionLibrary";
+import CitationSourcingPage from "./pages/CitationSourcingPage";
 import LabelsPage from "./pages/LabelsPage";
 import ThematicAnalysis from "./pages/ThematicAnalysis";
 import TeamPage from "./pages/TeamPage";
@@ -116,6 +117,8 @@ export default function App() {
             <Route path="/projects/:id/overlap"      element={<WithShell><OverlapPage /></WithShell>} />
             <Route path="/projects/:id/screen"       element={<WithShell><ScreeningWorkspace /></WithShell>} />
             <Route path="/projects/:id/extractions"  element={<WithShell><ExtractionLibrary /></WithShell>} />
+            <Route path="/projects/:id/citations"           element={<WithShell><CitationSourcingPage /></WithShell>} />
+            <Route path="/projects/:id/citations/:searchId" element={<WithShell><CitationSourcingPage /></WithShell>} />
             <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
             <Route path="/projects/:id/ontology"     element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><OntologyPage /></Suspense></WithShell>} />
             <Route path="/projects/:id/thematic"     element={<WithShell><ThematicAnalysis /></WithShell>} />

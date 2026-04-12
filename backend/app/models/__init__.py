@@ -26,6 +26,8 @@ from app.models.fulltext_pdf import FulltextPdf
 from app.models.llm_screening import LlmScreeningRun, LlmScreeningResult
 from app.models.screening_queue import ScreeningQueue
 from app.models.record_concept import RecordConcept
+from app.models.citation_search import CitationSearch
+from app.models.citation_candidate import CitationCandidate
 
 __all__ = [
     "User",
@@ -58,4 +60,6 @@ __all__ = [
     "LlmScreeningResult",
     "ScreeningQueue",
     "RecordConcept",
+    "CitationSearch",
+    "CitationCandidate",
 ]
