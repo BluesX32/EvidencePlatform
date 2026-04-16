@@ -15,8 +15,8 @@ React + TypeScript frontend for EvidencePlatform. Built with Vite and TanStack Q
 | `/projects/:id/screen` | ScreeningWorkspace | Sequential and mixed-mode TA/FT/extraction workspace |
 | `/projects/:id/labels` | LabelsPage | Label management and per-label article list |
 | `/projects/:id/extractions` | ExtractionLibrary | Extraction library (TA+FT included papers with extractions only); "Citation Search" link navigates to citation sourcing |
-| `/projects/:id/citations` | CitationSourcingPage | Citation search history — list of past runs; new search form with direction, scope, and custom paper selection |
-| `/projects/:id/citations/:searchId` | CitationSourcingPage | Candidate review — checkbox selection, select-all (all pages, server-side), filter by source article, delete candidates, import selected |
+| `/projects/:id/citations` | CitationSourcingPage | Citation search history — list of past runs; new automated search form (direction, scope, custom paper selection); **Manual Import** button uploads a RIS/MEDLINE file tagged with direction and optional source paper; manual imports shown with a "Manual" scope badge in history table |
+| `/projects/:id/citations/:searchId` | CitationSourcingPage | Candidate review — checkbox selection (disabled for papers already in project), select-all (all pages, server-side), amber "Already in project" badge, filter by source article, delete candidates, import selected |
 | `/projects/:id/thematic` | ThematicAnalysis | Codebook themes, codes, evidence assignments |
 | `/projects/:id/ontology` | OntologyPage | Hierarchical concept graph with 3D view |
 | `/projects/:id/llm-screening` | LLMScreeningPage | LLM-assisted screening runs and results |

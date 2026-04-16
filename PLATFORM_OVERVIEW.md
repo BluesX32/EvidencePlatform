@@ -104,18 +104,21 @@ After data extraction, researchers can discover additional eligible papers throu
 
 - **Backward sourcing** — fetches the full reference lists of extracted papers; each reference is a candidate
 - **Forward sourcing** — fetches papers that cite each extracted paper via the Semantic Scholar API
+- **Manual import** — upload a RIS or MEDLINE file directly into the citation sourcing library when Semantic Scholar does not cover a database or paper set; each import is tagged with a direction (backward = references, forward = citing) and optionally linked to a specific extracted source paper; creates a completed citation search immediately (no background task)
 - **Extraction Library cohort** — sourcing always starts from the validated set: TA=include, FT=include, AND extracted; candidates are never based on partially-screened papers
-- **Robust paper resolution** — resolves Semantic Scholar IDs via DOI, then PMID, then title + year search; papers without DOI or PMID are no longer silently skipped
+- **Robust paper resolution** — multi-tier S2 ID resolution: (1) DOI with full prefix normalisation (`doi.org`, `dx.doi.org`, `doi:`) and URL encoding; (2) PMID with regex extraction for annotated formats like `"12345678 [pubmed]"`; (3) title + year search with ±2-year window (handles online-first vs print-year gaps), ±5-year fallback for pre-print pipelines, and a no-year pass when year is absent
 - **Direction-aware deduplication** — the same paper can correctly appear as both a backward reference and a forward citation; cross-paper dedup collapses duplicates within the same direction (unique index on `search_id + direction + doi/pmid/s2_paper_id`)
-- **Cohort scoping** — three modes: *All* (every paper in the Extraction Library), *New* (papers not yet used as source in any prior completed search), or *Custom* (researcher selects specific papers via a checklist); supports iterative snowballing across multiple rounds
-- **Project membership check** — candidates already present in the project are automatically flagged
-- **Checkbox selection** — select individual papers or use Select All (across all pages, server-side) to mark candidates; no include/exclude decisions required
+- **Cohort scoping** — four modes: *All* (every paper in the Extraction Library), *New* (papers not yet used as source in any prior completed search), *Custom* (researcher selects specific papers via a checklist), or *Manual* (file upload); supports iterative snowballing across multiple rounds
+- **Project membership check** — candidates already present in the project are flagged with an amber "Already in project" badge and a disabled checkbox; their `in_project` flag is automatically reset if the corpus that contained them is later deleted
+- **Checkbox selection** — select individual papers or use Select All (across all pages, server-side) to mark candidates; papers already in the project have their checkbox disabled
 - **Named per-article sources** — each import batch is grouped by the source article that led to the discovery and given a descriptive Source name (e.g. *← Refs: Smith 2020* or *→ Citing: Jones 2021*); this name appears in the Extraction Library's Sources column so the provenance chain is always visible
 - **Delete candidates** — remove individual candidates or entire search runs to keep the workspace clean
 - **Filter by source article** — view only candidates discovered from a specific extracted paper
-- **Search history** — every run is logged with timestamp, direction, scope, source paper count, candidate count, and already-in-project count
+- **Search history** — every run is logged with timestamp, direction, scope, source paper count, candidate count, and already-in-project count; manual imports are marked with a distinct "Manual" badge
+- **Pagination reliability** — uses S2's `next` cursor to drive page iteration; a partial page on an intermediate page no longer causes early termination
+- **Rate-limit resilience** — automatic 429 retry schedule: 30 s → 60 s → 120 s; one failing record never aborts the rest of the loop
 - **Semantic Scholar integration** — uses the free Semantic Scholar Graph API (1 RPS without key; 100 RPS with a free API key set via `SEMANTIC_SCHOLAR_API_KEY`)
-- **Background execution** — the fetch runs asynchronously; the UI polls every 3 seconds and shows a live status badge
+- **Background execution** — the automated fetch runs asynchronously; the UI polls every 3 seconds and shows a live status badge; manual imports complete synchronously and navigate directly to the candidate review page
 
 ### 9. Thematic Analysis (Taxonomy)
 A code-based thematic synthesis module for building and managing an evolving **taxonomy of themes**. Concepts extracted from papers are gathered and organized into themes and sub-codes — answering the question *what patterns emerge across the literature?*:

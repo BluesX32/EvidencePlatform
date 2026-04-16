@@ -169,3 +169,13 @@ Migrations live in `backend/migrations/versions/`. Current head is migration `03
 | 028 | Citation sourcing: `citation_searches` + `citation_candidates` tables (backward/forward snowballing) |
 | 029 | Citation search enhancements: `scope`, `source_record_ids`, `source_record_count` on `citation_searches` |
 | 030 | Citation candidate dedup fix: unique indexes on `(search_id, direction, doi/pmid/s2_paper_id)` — allows same paper as both backward and forward candidate |
+
+### No-migration changes (logic/service layer)
+
+The following changes required no schema migration but alter platform behaviour significantly:
+
+| Area | Change |
+|------|--------|
+| **Manual citation import** | `POST /projects/{id}/citations/searches/manual` — upload RIS/MEDLINE file, tag with direction (backward/forward) and optional source paper; creates a completed `CitationSearch` (scope=`manual`) synchronously |
+| **Corpus deletion → citation update** | When a corpus is deleted, `citation_candidates.in_project` is reset to `FALSE` and `project_record_id` to `NULL` for any candidates whose matching record was exclusively owned by the deleted corpus |
+| **Citation resolution hardening** | Six bugs fixed in `citation_service.py`: (1) `dx.doi.org` prefix stripping + URL-encoding of DOI path; (2) PMID regex extraction for annotated formats (`"12345 [pubmed]"`); (3) title-search year tolerance widened to ±2 yr with ±5 yr fallback; (4) pagination now driven by S2 `next` cursor rather than page-size check; (5) 429 retry schedule 30 s → 60 s → 120 s; (6) per-record exception isolation so one failing record does not abort the entire loop |
