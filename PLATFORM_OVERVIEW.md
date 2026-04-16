@@ -36,6 +36,8 @@ Traditional systematic reviews are labor-intensive and prone to inconsistency: d
 ### 1. Multi-Source Literature Import
 Import and parse citation files from any major database. The parser engine handles **RIS**, **MEDLINE/PubMed**, **BibTeX**, and similar formats with automatic encoding detection (UTF-8, Latin-1) and zero-space tag normalization. Duplicate author-formatting variants and malformed DOIs are corrected at ingestion.
 
+Each import is tagged to a **corpus** (e.g. PubMed 2024, Embase, Cochrane). Corpora and individual records can be permanently deleted by project admins — deleting a corpus removes its exclusively-owned records from the project; records shared with other corpora are preserved.
+
 ### 2. Intelligent Deduplication
 A three-tier **Union-Find deduplication engine** identifies duplicate records across sources using configurable matching strategies:
 - Exact DOI or PMID match
@@ -103,10 +105,11 @@ After data extraction, researchers can discover additional eligible papers throu
 - **Backward sourcing** — fetches the full reference lists of extracted papers; each reference is a candidate
 - **Forward sourcing** — fetches papers that cite each extracted paper via the Semantic Scholar API
 - **Extraction Library cohort** — sourcing always starts from the validated set: TA=include, FT=include, AND extracted; candidates are never based on partially-screened papers
+- **Robust paper resolution** — resolves Semantic Scholar IDs via DOI, then PMID, then title + year search; papers without DOI or PMID are no longer silently skipped
+- **Direction-aware deduplication** — the same paper can correctly appear as both a backward reference and a forward citation; cross-paper dedup collapses duplicates within the same direction (unique index on `search_id + direction + doi/pmid/s2_paper_id`)
 - **Cohort scoping** — three modes: *All* (every paper in the Extraction Library), *New* (papers not yet used as source in any prior completed search), or *Custom* (researcher selects specific papers via a checklist); supports iterative snowballing across multiple rounds
-- **Cross-paper deduplication** — the same paper referenced by multiple included studies produces a single candidate row (partial-unique indexes on DOI, PMID, and Semantic Scholar paper ID)
 - **Project membership check** — candidates already present in the project are automatically flagged
-- **Checkbox selection** — select individual papers or use Select All to mark the full page; no include/exclude decisions required
+- **Checkbox selection** — select individual papers or use Select All (across all pages, server-side) to mark candidates; no include/exclude decisions required
 - **Named per-article sources** — each import batch is grouped by the source article that led to the discovery and given a descriptive Source name (e.g. *← Refs: Smith 2020* or *→ Citing: Jones 2021*); this name appears in the Extraction Library's Sources column so the provenance chain is always visible
 - **Delete candidates** — remove individual candidates or entire search runs to keep the workspace clean
 - **Filter by source article** — view only candidates discovered from a specific extracted paper
@@ -187,7 +190,7 @@ EvidencePlatform provides three distinct, independently optional systems for org
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (29 versioned migrations) |
+| Schema migrations | Alembic (30 versioned migrations) |
 | Citation sourcing | Semantic Scholar Graph API (httpx async client; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |

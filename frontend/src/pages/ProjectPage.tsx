@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { Upload, BookOpen, GitMerge, CheckSquare, FlaskConical, Tag, Network, GitBranch, Bot, Users, Scale } from "lucide-react";
+import { Upload, BookOpen, GitMerge, CheckSquare, FlaskConical, Tag, Network, GitBranch, Bot, Users, Scale, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import {
   projectsApi,
   importsApi,
@@ -372,6 +372,84 @@ function Toast({ message, type, onDismiss }: { message: string; type: "success" 
 }
 
 // ---------------------------------------------------------------------------
+// CollapsibleSection — accordion panel with persistent open/close state
+// ---------------------------------------------------------------------------
+
+function CollapsibleSection({
+  id,
+  title,
+  subtitle,
+  defaultOpen = true,
+  badge,
+  children,
+}: {
+  id: string;
+  title: string;
+  subtitle?: string;
+  defaultOpen?: boolean;
+  badge?: string | number;
+  children: React.ReactNode;
+}) {
+  const storageKey = `ep_section_${id}`;
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(storageKey);
+      return stored !== null ? stored === "true" : defaultOpen;
+    } catch {
+      return defaultOpen;
+    }
+  });
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    try { localStorage.setItem(storageKey, String(next)); } catch { /* ignore */ }
+  }
+
+  return (
+    <section style={{ marginTop: "1.75rem" }}>
+      <button
+        type="button"
+        onClick={toggle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          width: "100%",
+          textAlign: "left",
+          background: "none",
+          border: "none",
+          padding: "0.5rem 0",
+          cursor: "pointer",
+          borderBottom: `2px solid ${open ? "#e5e7eb" : "#f3f4f6"}`,
+          marginBottom: open ? "0.75rem" : 0,
+        }}
+      >
+        <span style={{ color: "#9ca3af", flexShrink: 0 }}>
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </span>
+        <span style={{ fontWeight: 700, fontSize: "1rem", color: "#111827", flex: 1 }}>{title}</span>
+        {badge !== undefined && (
+          <span style={{
+            fontSize: "0.72rem", fontWeight: 600, color: "#6366f1",
+            background: "#eef2ff", border: "1px solid #c7d2fe",
+            borderRadius: "1rem", padding: "0.1rem 0.55rem",
+          }}>
+            {badge}
+          </span>
+        )}
+        {subtitle && !open && (
+          <span style={{ fontSize: "0.78rem", color: "#9ca3af", fontStyle: "italic", marginRight: "0.25rem" }}>
+            {subtitle}
+          </span>
+        )}
+      </button>
+      {open && <div>{children}</div>}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
 
@@ -577,6 +655,21 @@ export default function ProjectPage() {
       setSourceError(typeof detail === "string" ? detail : JSON.stringify(detail));
     },
   });
+
+  const deleteSource = useMutation({
+    mutationFn: (sourceId: string) => sourcesApi.delete(id!, sourceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sources", id] });
+      queryClient.invalidateQueries({ queryKey: ["records", id] });
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      setToast({ message: "Corpus deleted. Exclusively-owned records have been removed.", type: "success" });
+    },
+    onError: () => {
+      setToast({ message: "Failed to delete corpus.", type: "error" });
+    },
+  });
+
+  const [confirmDeleteSourceId, setConfirmDeleteSourceId] = useState<string | null>(null);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -889,19 +982,33 @@ export default function ProjectPage() {
         })()}
 
         {/* ── Labels ───────────────────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Labels</h3>
+        <CollapsibleSection
+          id="labels"
+          title="Labels"
+          subtitle="Manage article tags"
+          defaultOpen={false}
+          badge={allLabels.length > 0 ? allLabels.length : undefined}
+        >
           <p className="muted" style={{ marginBottom: "0.75rem" }}>
             Create labels to categorize articles during screening. Apply them from the
             Screening Workspace and explore them on the{" "}
             <Link to={`/projects/${id}/labels`} style={{ color: "#6366f1" }}>Labels page</Link>.
           </p>
           {id && <LabelManager projectId={id} />}
-        </section>
+        </CollapsibleSection>
 
         {/* ── Screening Criteria ───────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Screening Criteria</h3>
+        <CollapsibleSection
+          id="criteria"
+          title="Screening Criteria"
+          subtitle="Inclusion / exclusion rules"
+          defaultOpen={true}
+          badge={
+            (localCriteria.inclusion.length + localCriteria.exclusion.length) > 0
+              ? localCriteria.inclusion.length + localCriteria.exclusion.length
+              : undefined
+          }
+        >
           <p className="muted" style={{ marginBottom: "1rem" }}>
             Define inclusion and exclusion criteria for this systematic review. These will
             be visible as a reference panel during screening.
@@ -1045,11 +1152,16 @@ export default function ProjectPage() {
               </button>
             </div>
           </div>
-        </section>
+        </CollapsibleSection>
 
         {/* ── Extraction Template ──────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Data Extraction Template</h3>
+        <CollapsibleSection
+          id="extraction-template"
+          title="Data Extraction Template"
+          subtitle="Structured fields for evidence capture"
+          defaultOpen={true}
+          badge={templateRows.length > 0 ? templateRows.length : undefined}
+        >
           <p className="muted" style={{ marginBottom: "1rem" }}>
             Define the rows of your extraction table. During data extraction each included paper
             will show this table with columns: <strong>Domain</strong>, <strong>Data Item</strong>,
@@ -1425,51 +1537,82 @@ export default function ProjectPage() {
               </div>
             )}
           </div>
-        </section>
+        </CollapsibleSection>
 
-        {/* ── Sources ──────────────────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Sources</h3>
-          <p className="muted" style={{ marginBottom: "0.75rem" }}>
-            Tag each imported file with the database it came from (e.g. PubMed, Scopus).
+        {/* ── Sources (Corpora) ─────────────────────────────────────────────── */}
+        <CollapsibleSection
+          id="sources"
+          title="Corpora"
+          subtitle="Imported databases"
+          defaultOpen={true}
+          badge={sources?.length}
+        >
+          <p className="muted" style={{ marginBottom: "0.85rem" }}>
+            Each imported file is tagged to a corpus (e.g. PubMed, Scopus, Embase).
+            Deleting a corpus permanently removes it and any records that belong
+            exclusively to it.
           </p>
           {sources && sources.length > 0 && (
-            <div
-              style={{
-                display: "flex",
-                gap: "0.5rem",
-                flexWrap: "wrap",
-                marginBottom: "1rem",
-              }}
-            >
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "1rem" }}>
               {sources.map((s) => (
-                <Link
+                <div
                   key={s.id}
-                  to={`/projects/${id}/records?source_id=${s.id}`}
                   style={{
-                    background: "var(--surface-alt, #f1f3f4)",
-                    border: "1px solid var(--border, #dadce0)",
-                    borderRadius: "1rem",
-                    padding: "0.2rem 0.75rem",
-                    fontSize: "0.85rem",
-                    fontWeight: 500,
-                    textDecoration: "none",
-                    color: "inherit",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    background: "#f9fafb",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "0.5rem",
+                    padding: "0.45rem 0.75rem",
+                    maxWidth: 480,
                   }}
                 >
-                  {s.name}
-                </Link>
+                  <Link
+                    to={`/projects/${id}/records?source_id=${s.id}`}
+                    style={{ flex: 1, fontWeight: 500, fontSize: "0.875rem", color: "#374151", textDecoration: "none" }}
+                  >
+                    {s.name}
+                  </Link>
+                  {confirmDeleteSourceId === s.id ? (
+                    <span style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+                      <span style={{ fontSize: "0.75rem", color: "#6b7280" }}>Delete all its records?</span>
+                      <button
+                        className="btn-danger btn-sm"
+                        onClick={() => { deleteSource.mutate(s.id); setConfirmDeleteSourceId(null); }}
+                        disabled={deleteSource.isPending}
+                      >
+                        Delete
+                      </button>
+                      <button
+                        className="btn-ghost btn-sm"
+                        onClick={() => setConfirmDeleteSourceId(null)}
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      className="btn-ghost btn-sm"
+                      style={{ color: "#d93025", opacity: 0.6 }}
+                      onClick={() => setConfirmDeleteSourceId(s.id)}
+                      title="Delete corpus"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           )}
           <form
             onSubmit={handleAddSource}
-            style={{ display: "flex", gap: "0.5rem", maxWidth: 360 }}
+            style={{ display: "flex", gap: "0.5rem", maxWidth: 400 }}
           >
             <input
               type="text"
               className="input"
-              placeholder="New source name…"
+              placeholder="New corpus name (e.g. PubMed 2024)…"
               value={newSourceName}
               onChange={(e) => setNewSourceName(e.target.value)}
               style={{ flex: 1 }}
@@ -1487,11 +1630,16 @@ export default function ProjectPage() {
               {sourceError}
             </p>
           )}
-        </section>
+        </CollapsibleSection>
 
         {/* ── Overlap Resolution ───────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Overlap Resolution</h3>
+        <CollapsibleSection
+          id="overlap"
+          title="Overlap Resolution"
+          subtitle="Deduplication strategy"
+          defaultOpen={false}
+          badge={activeStrategy?.name}
+        >
           <p className="muted" style={{ marginBottom: "1rem" }}>
             Detect duplicate records within a single source and the same paper
             appearing across multiple databases. Select the matching fields below
@@ -1732,11 +1880,16 @@ export default function ProjectPage() {
               </Link>
             </p>
           )}
-        </section>
+        </CollapsibleSection>
 
         {/* ── Import history ───────────────────────────────────────────────── */}
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Import history</h3>
+        <CollapsibleSection
+          id="import-history"
+          title="Import History"
+          subtitle="File-by-file log"
+          defaultOpen={false}
+          badge={jobs?.length}
+        >
           {!jobs || jobs.length === 0 ? (
             <p className="muted">No imports yet. Upload a RIS or MEDLINE file to get started.</p>
           ) : (
@@ -1744,7 +1897,7 @@ export default function ProjectPage() {
               <thead>
                 <tr>
                   <th>File</th>
-                  <th>Source</th>
+                  <th>Corpus</th>
                   <th>Status</th>
                   <th>Records</th>
                   <th>Date</th>
@@ -1768,7 +1921,7 @@ export default function ProjectPage() {
               </tbody>
             </table>
           )}
-        </section>
+        </CollapsibleSection>
       </main>
     </div>
   );

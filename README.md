@@ -8,17 +8,18 @@ Open-source infrastructure for systematic, reproducible evidence synthesis. Impo
 
 | Step | What happens |
 |------|-------------|
-| **Import** | Upload RIS, MEDLINE, or BibTeX files from PubMed, Embase, Cochrane, and other databases |
+| **Import** | Upload RIS, MEDLINE, or BibTeX files from PubMed, Embase, Cochrane, and other databases; each file is tagged to a named corpus; corpora and individual records can be permanently deleted by project admins |
 | **Deduplication** | Automatically merges duplicate records within each source using a 3-tier Union-Find engine (exact DOI/PMID → title+year+author → fuzzy) |
 | **Overlap detection** | Identifies the same paper across multiple databases with a configurable 5-tier strategy; manual linking and cluster locking supported; visualised as Euler diagram, pairwise heatmap, and intersection summary |
 | **Human screening** | Title/abstract → full-text pipeline with sequential or mixed mode; configurable inclusion/exclusion criteria; per-reason exclusion tracking; custom exclusion reasons; anchored annotations; back/forward navigation through session history; full-text link resolution (Unpaywall/DOI/PMC/PubMed/Scholar); per-corpus progress dashboard |
 | **LLM-assisted screening** | AI screening runs using 15+ models across Anthropic, OpenAI, Google, Meta, DeepSeek, Mistral, and others; each record receives an include/exclude/uncertain decision with rationale; cost and time estimated before launch; all inputs and outputs logged with model version |
 | **Team collaboration** | Invite reviewers by token; dual-reviewer isolation with independent decision storage; automatic conflict detection; adjudication by project owner; Cohen's kappa computed per stage and reviewer pair; team screening statistics |
 | **Extraction** | Template-driven structured evidence capture with inline editing; Extraction Library (shows only TA+FT included papers that have been extracted) with search, filter, and edit; saturation counter tracks diminishing returns on new concepts |
-| **Citation sourcing** | After extraction, automatically fetch reference lists (backward) and citing papers (forward) for every paper in your Extraction Library via the Semantic Scholar API; results are cross-deduplicated and checked against existing records; select papers with checkboxes (select-all supported); import batches are named after the source article (e.g. *← Refs: Smith 2020*) so provenance is visible in the Extraction Library; supports iterative snowballing with scope options — All / New (papers not yet sourced) / Custom (choose specific papers) |
+| **Citation sourcing** | After extraction, automatically fetch reference lists (backward) and citing papers (forward) for every paper in your Extraction Library via the Semantic Scholar API; resolves papers by DOI, PMID, or title+year search (papers without identifiers are no longer skipped); the same paper correctly appears as both backward and forward candidate when applicable; select papers with checkboxes (select-all across all pages, server-side); import batches named after the source article (e.g. *← Refs: Smith 2020*) so provenance is visible in the Extraction Library; iterative snowballing via All / New / Custom scope options |
 | **Thematic analysis** | Codebook-driven synthesis — create themes and codes, assign evidence excerpts, review coded passages, track codebook history |
 | **Labels & Ontology** | Colour-coded personal labels for retrieval; hierarchical concept ontology with 3D graph view, drag-and-drop reparenting, and tagging during screening |
 | **PDF viewer** | Attach full-text PDFs per record or cluster; floating panel with freehand drawing (pen + eraser), text selection, anchored annotation notes, and session history navigation |
+| **Project overview** | All configuration modules (corpora, screening criteria, extraction template, overlap strategy, labels, import history) are presented as collapsible accordion sections with persistent open/close state per browser |
 
 ---
 
@@ -81,7 +82,7 @@ This builds and starts three containers:
 | Container | Purpose | Port |
 |-----------|---------|------|
 | `db` | PostgreSQL 16 database | `5433` (host) |
-| `backend` | FastAPI API server (auto-migrates on start — runs all 29 migrations) | `8000` |
+| `backend` | FastAPI API server (auto-migrates on start — runs all 30 migrations) | `8000` |
 | `frontend` | Vite dev server (React) | `5173` |
 
 Wait about 30 seconds on the first run for images to build. Then open:
@@ -190,6 +191,8 @@ python -m pytest tests/ -v --tb=short
 ```
 
 The test suite covers parsers, deduplication, overlap detection, screening workflow, extraction logic, thematic analysis, team collaboration, citation sourcing, and strategy history (485+ backend tests + 23 Vitest frontend tests). Run a specific module with `-k <name>`, e.g. `pytest tests/ -k screening`.
+
+> **Admin-only operations** — deleting individual records (`DELETE /projects/{id}/records/{record_id}`) and deleting entire corpora (`DELETE /projects/{id}/sources/{source_id}`) require admin/owner role. Corpus deletion removes all records that belong exclusively to that corpus; records shared with other corpora are preserved.
 
 ---
 
@@ -309,7 +312,7 @@ EvidencePlatform/
 │   │   ├── repositories/    # Database queries
 │   │   ├── parsers/         # RIS / MEDLINE / BibTeX parsers
 │   │   └── utils/           # Dedup, overlap detection, matching
-│   ├── migrations/          # Alembic migrations (024 versioned)
+│   ├── migrations/          # Alembic migrations (030 versioned)
 │   └── tests/               # pytest test suite
 ├── frontend/
 │   ├── src/

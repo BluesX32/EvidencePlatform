@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Trash2 } from "lucide-react";
 import type { RecordItem } from "../api/client";
 
 const BASIS_LABELS: Record<string, string> = {
@@ -160,6 +161,7 @@ interface Props {
   isLoading: boolean;
   columns?: ColumnVisibility;
   onColumnsChange?: (c: ColumnVisibility) => void;
+  onDelete?: (id: string) => void;
 }
 
 export default function RecordsTable({
@@ -169,9 +171,11 @@ export default function RecordsTable({
   isLoading,
   columns = DEFAULT_COLUMNS,
   onColumnsChange,
+  onDelete,
 }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showColPicker, setShowColPicker] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (isLoading && records.length === 0) {
     return <p>Loading records…</p>;
@@ -181,17 +185,27 @@ export default function RecordsTable({
     return <p className="muted">No records match your search.</p>;
   }
 
-  // +2 for the expand toggle column (none visible) and Dedup column
   const optionalColCount =
     (columns.abstract ? 1 : 0) +
     (columns.volume ? 1 : 0) +
     (columns.pages ? 1 : 0) +
     (columns.issn ? 1 : 0) +
     (columns.keywords ? 1 : 0);
-  const totalCols = 7 + optionalColCount;
+  // expand toggle + fixed cols (title, authors, year, journal, doi, sources, dedup) + optional + delete
+  const totalCols = 8 + optionalColCount + (onDelete ? 1 : 0);
 
   function toggleExpand(id: string) {
     setExpandedId((prev) => (prev === id ? null : id));
+  }
+
+  function handleDeleteClick(e: React.MouseEvent, id: string) {
+    e.stopPropagation();
+    setConfirmDeleteId(id);
+  }
+
+  function handleConfirmDelete(id: string) {
+    setConfirmDeleteId(null);
+    onDelete?.(id);
   }
 
   return (
@@ -254,11 +268,13 @@ export default function RecordsTable({
             {columns.keywords && <th>Keywords</th>}
             <th>Sources</th>
             <th>Dedup</th>
+            {onDelete && <th style={{ width: "2.5rem" }} />}
           </tr>
         </thead>
         <tbody>
           {records.map((r) => {
             const isExpanded = expandedId === r.id;
+            const isConfirming = confirmDeleteId === r.id;
             return (
               <>
                 <tr
@@ -291,6 +307,36 @@ export default function RecordsTable({
                   )}
                   <td>{r.sources.length > 0 ? r.sources.join(", ") : "—"}</td>
                   <td><MatchBasisBadge basis={r.match_basis} /></td>
+                  {onDelete && (
+                    <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "center" }}>
+                      {isConfirming ? (
+                        <span style={{ display: "inline-flex", gap: "0.25rem", alignItems: "center" }}>
+                          <button
+                            className="btn-danger btn-sm"
+                            onClick={() => handleConfirmDelete(r.id)}
+                            title="Confirm delete"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            className="btn-ghost btn-sm"
+                            onClick={() => setConfirmDeleteId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          className="btn-ghost btn-sm"
+                          style={{ color: "#d93025", opacity: 0.6 }}
+                          onClick={(e) => handleDeleteClick(e, r.id)}
+                          title="Delete record"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
                 {isExpanded && (
                   <ExpandedRow key={`${r.id}-expanded`} record={r} colSpan={totalCols} />

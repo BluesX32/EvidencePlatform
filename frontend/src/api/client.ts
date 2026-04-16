@@ -159,6 +159,8 @@ export const sourcesApi = {
     api.get<Source[]>(`/projects/${projectId}/sources`),
   create: (projectId: string, name: string) =>
     api.post<Source>(`/projects/${projectId}/sources`, { name }),
+  delete: (projectId: string, sourceId: string) =>
+    api.delete(`/projects/${projectId}/sources/${sourceId}`),
 };
 
 // ── Imports ───────────────────────────────────────────────────────────────────
@@ -240,6 +242,8 @@ export const recordsApi = {
     // axios serialises arrays as repeated params: source_ids=a&source_ids=b
     paramsSerializer: { indexes: null },
   }),
+  delete: (projectId: string, recordId: string) =>
+    api.delete(`/projects/${projectId}/records/${recordId}`),
   overlap: (projectId: string) =>
     api.get<OverlapSummary>(`/projects/${projectId}/overlap`),
 };
@@ -1635,7 +1639,7 @@ export const consensusApi = {
 // ── Citation Sourcing ─────────────────────────────────────────────────────────
 
 export type CitationDirection = "backward" | "forward" | "both";
-export type CitationScope = "all" | "new" | "custom";
+export type CitationScope = "all" | "new" | "custom" | "manual";
 
 export interface CitationSearch {
   id: string;
@@ -1732,6 +1736,16 @@ export const citationsApi = {
       { params }
     ),
 
+  bulkSelect: (
+    projectId: string,
+    searchId: string,
+    body: { decision: "include" | null; direction?: string; source_record_id?: string }
+  ) =>
+    api.post<{ updated: number }>(
+      `/projects/${projectId}/citations/searches/${searchId}/candidates/bulk-select`,
+      body
+    ),
+
   deleteCandidate: (projectId: string, searchId: string, candidateId: string) =>
     api.delete(
       `/projects/${projectId}/citations/searches/${searchId}/candidates/${candidateId}`
@@ -1757,4 +1771,20 @@ export const citationsApi = {
     api.get<CitationSourceArticle[]>(
       `/projects/${projectId}/citations/searches/${searchId}/sources`
     ),
+
+  manualImport: (
+    projectId: string,
+    file: File,
+    direction: "backward" | "forward",
+    sourceRecordId?: string,
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("direction", direction);
+    if (sourceRecordId) form.append("source_record_id", sourceRecordId);
+    return api.post<CitationSearch>(
+      `/projects/${projectId}/citations/searches/manual`,
+      form,
+    );
+  },
 };

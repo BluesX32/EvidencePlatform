@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { recordsApi, sourcesApi } from "../api/client";
 import RecordsTable, { type ColumnVisibility, DEFAULT_COLUMNS } from "../components/RecordsTable";
@@ -78,9 +78,18 @@ export default function RecordsPage() {
   const hasExtractRaw = searchParams.get("has_extraction");
   const hasExtraction = hasExtractRaw === "true" ? true : hasExtractRaw === "false" ? false : undefined;
 
+  const queryClient = useQueryClient();
+
   // ── UI-only state ────────────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState(q);
   const [showFilters, setShowFilters] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: (recordId: string) => recordsApi.delete(projectId!, recordId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["records", projectId] });
+    },
+  });
 
   // Sync search input → URL with debounce
   useEffect(() => {
@@ -461,6 +470,7 @@ export default function RecordsPage() {
           isLoading={isLoading}
           columns={columns}
           onColumnsChange={handleColumnsChange}
+          onDelete={(id) => deleteMutation.mutate(id)}
         />
 
         {/* ── Pagination ────────────────────────────────────────────────────── */}

@@ -123,18 +123,30 @@ function CandidateRow({
       style={{
         borderBottom: "1px solid #e8eaed",
         padding: "0.65rem 1rem",
-        background: selected ? "#f0f4ff" : c.in_project ? "#f8f9fa" : "white",
+        background: selected ? "#f0f4ff" : c.in_project ? "#fffde7" : "white",
       }}
     >
       <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
-        {/* Checkbox */}
+        {/* Checkbox — disabled when already in project or already imported */}
         <input
           type="checkbox"
           checked={selected}
           onChange={onToggle}
-          disabled={!!c.import_job_id}
-          style={{ marginTop: "0.25rem", flexShrink: 0, cursor: c.import_job_id ? "default" : "pointer", accentColor: "#4f46e5" }}
-          title={c.import_job_id ? "Already imported" : selected ? "Deselect" : "Select for import"}
+          disabled={!!c.import_job_id || c.in_project}
+          style={{
+            marginTop: "0.25rem", flexShrink: 0,
+            cursor: (c.import_job_id || c.in_project) ? "default" : "pointer",
+            accentColor: "#4f46e5",
+          }}
+          title={
+            c.import_job_id
+              ? "Already imported via citation search"
+              : c.in_project
+              ? "Already in your project — no need to import"
+              : selected
+              ? "Deselect"
+              : "Select for import"
+          }
         />
 
         {/* Direction badge */}
@@ -159,14 +171,26 @@ function CandidateRow({
             </span>
             {c.import_job_id && (
               <span style={{ padding: "0.1rem 0.45rem", borderRadius: "0.4rem", background: "#e6f4ea", color: "#188038", fontSize: "0.72rem", fontWeight: 600, flexShrink: 0 }}>
-                Imported
+                ✓ Imported
               </span>
             )}
             {c.in_project && !c.import_job_id && (
-              <span style={{ padding: "0.1rem 0.45rem", borderRadius: "0.4rem", background: "#e8f0fe", color: "#1a73e8", fontSize: "0.72rem", fontWeight: 600, flexShrink: 0 }}>
-                Already in project
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: "0.25rem",
+                padding: "0.1rem 0.5rem", borderRadius: "0.4rem",
+                background: "#fff8e1", color: "#f57f17",
+                border: "1px solid #ffe082",
+                fontSize: "0.72rem", fontWeight: 600, flexShrink: 0,
+              }}>
+                ⚑ Already in project
                 {c.project_record_id && (
-                  <Link to={`/projects/${projectId}/records`} style={{ marginLeft: "0.3rem", color: "#1a73e8" }}>↗</Link>
+                  <Link
+                    to={`/projects/${projectId}/records`}
+                    style={{ color: "#f57f17", lineHeight: 1 }}
+                    title="View in Records"
+                  >
+                    ↗
+                  </Link>
                 )}
               </span>
             )}
@@ -233,6 +257,190 @@ function CandidateRow({
   );
 }
 
+// ── Manual Import Modal ───────────────────────────────────────────────────────
+
+function ManualImportModal({
+  projectId,
+  onClose,
+  onSuccess,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onSuccess: (searchId: string) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [direction, setDirection] = useState<"backward" | "forward">("backward");
+  const [sourceRecordId, setSourceRecordId] = useState<string>("");
+
+  const { data: libItems = [] } = useQuery<ExtractionLibraryItem[]>({
+    queryKey: ["extractions-library", projectId],
+    queryFn: () => extractionLibraryApi.list(projectId).then(r => r.data),
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!file) throw new Error("No file selected");
+      return citationsApi.manualImport(
+        projectId,
+        file,
+        direction,
+        sourceRecordId || undefined,
+      );
+    },
+    onSuccess: res => {
+      onSuccess(res.data.id);
+      onClose();
+    },
+  });
+
+  const errMsg =
+    mutation.isError
+      ? ((mutation.error as any)?.response?.data?.detail ?? (mutation.error as Error).message)
+      : null;
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+    }}>
+      <div style={{
+        background: "white", borderRadius: "0.75rem", padding: "1.5rem",
+        width: "min(560px, 94vw)", boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 700, color: "#202124" }}>
+              Manual Citation Import
+            </h3>
+            <p style={{ margin: "0.3rem 0 0", fontSize: "0.82rem", color: "#5f6368", lineHeight: 1.5 }}>
+              Upload a RIS or MEDLINE file of papers you discovered manually — through database searches,
+              hand searches, or other sources not covered by Semantic Scholar.
+              Tag each import with which extracted paper it relates to and whether these are its
+              references (backward) or papers that cite it (forward).
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ marginLeft: "1rem", background: "none", border: "none", fontSize: "1.1rem", cursor: "pointer", color: "#5f6368", flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+
+          {/* File upload */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Citation file <span style={{ color: "#c5221f" }}>*</span>
+            </label>
+            <input
+              type="file"
+              accept=".ris,.txt,.bib"
+              onChange={e => setFile(e.target.files?.[0] ?? null)}
+              style={{ fontSize: "0.84rem", width: "100%" }}
+            />
+            <div style={{ fontSize: "0.75rem", color: "#80868b", marginTop: "0.2rem" }}>
+              Accepted formats: RIS (.ris) · MEDLINE/PubMed-tagged (.txt)
+            </div>
+          </div>
+
+          {/* Direction */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Direction <span style={{ color: "#c5221f" }}>*</span>
+            </label>
+            <div style={{ display: "flex", gap: "0.65rem" }}>
+              {(["backward", "forward"] as const).map(d => (
+                <label
+                  key={d}
+                  style={{
+                    flex: 1, display: "flex", alignItems: "center", gap: "0.5rem",
+                    padding: "0.5rem 0.75rem", borderRadius: "0.4rem", cursor: "pointer",
+                    border: `1.5px solid ${direction === d ? "#4f46e5" : "#dadce0"}`,
+                    background: direction === d ? "#ede9fe" : "white",
+                    fontSize: "0.84rem",
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="direction"
+                    value={d}
+                    checked={direction === d}
+                    onChange={() => setDirection(d)}
+                    style={{ accentColor: "#4f46e5" }}
+                  />
+                  <span>
+                    <strong>{d === "backward" ? "← Backward" : "→ Forward"}</strong>
+                    <span style={{ display: "block", fontSize: "0.74rem", color: "#5f6368" }}>
+                      {d === "backward"
+                        ? "These papers are in the reference lists of an extracted paper"
+                        : "These papers cite one of your extracted papers"}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Source paper */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Source paper <span style={{ fontSize: "0.75rem", fontWeight: 400, color: "#80868b" }}>(recommended)</span>
+            </label>
+            <select
+              value={sourceRecordId}
+              onChange={e => setSourceRecordId(e.target.value)}
+              style={{
+                width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.4rem",
+                border: "1px solid #dadce0", fontSize: "0.84rem", background: "white",
+              }}
+            >
+              <option value="">— Select the extracted paper these citations relate to —</option>
+              {libItems.map(item => {
+                const id = item.record_id ?? item.cluster_id ?? item.id;
+                return (
+                  <option key={id} value={id}>
+                    {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+            <div style={{ fontSize: "0.75rem", color: "#80868b", marginTop: "0.2rem" }}>
+              Linking to a source paper keeps provenance visible in the Extraction Library.
+              You can leave this blank if the file covers citations for multiple papers.
+            </div>
+          </div>
+
+          {errMsg && (
+            <div style={{ padding: "0.5rem 0.75rem", borderRadius: "0.4rem", background: "#fce8e6", color: "#c5221f", fontSize: "0.82rem" }}>
+              {errMsg}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.6rem", marginTop: "0.25rem" }}>
+            <button
+              className="btn-secondary"
+              onClick={onClose}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => mutation.mutate()}
+              disabled={!file || mutation.isPending}
+            >
+              {mutation.isPending ? "Importing…" : "Import file"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Search history view ───────────────────────────────────────────────────────
 
 function SearchHistoryView({ projectId }: { projectId: string }) {
@@ -244,6 +452,7 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
   const [showPaperPicker, setShowPaperPicker] = useState(false);
   const [starting, setStarting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [showManualImport, setShowManualImport] = useState(false);
 
   const { data: searches = [], isLoading } = useQuery({
     queryKey: ["citation-searches", projectId],
@@ -279,26 +488,42 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
     setCustomIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
 
-  const scopeLabel: Record<CitationScope, string> = {
-    all: "All extracted papers",
-    new: "New papers only (not used in prior searches)",
-    custom: "Select specific papers…",
-  };
-
   return (
     <div style={{ padding: "1.5rem", maxWidth: 960 }}>
 
+      {/* Manual import modal */}
+      {showManualImport && (
+        <ManualImportModal
+          projectId={projectId}
+          onClose={() => setShowManualImport(false)}
+          onSuccess={searchId => {
+            queryClient.invalidateQueries({ queryKey: ["citation-searches", projectId] });
+            navigate(`/projects/${projectId}/citations/${searchId}`);
+          }}
+        />
+      )}
+
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "1.25rem" }}>
-        <h2 style={{ margin: "0 0 0.3rem", fontSize: "1.15rem", fontWeight: 700, color: "#202124" }}>
-          Citation Searches
-        </h2>
-        <p style={{ margin: 0, fontSize: "0.84rem", color: "#5f6368", lineHeight: 1.5 }}>
-          For each paper in your Extraction Library, the platform looks up its reference list
-          (backward sourcing) and papers that cite it (forward sourcing) via Semantic Scholar.
-          Results are deduplicated across all source papers, checked against records already
-          in your project, and listed for you to select and import.
-        </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem", gap: "1rem", flexWrap: "wrap" }}>
+        <div>
+          <h2 style={{ margin: "0 0 0.3rem", fontSize: "1.15rem", fontWeight: 700, color: "#202124" }}>
+            Citation Searches
+          </h2>
+          <p style={{ margin: 0, fontSize: "0.84rem", color: "#5f6368", lineHeight: 1.5 }}>
+            For each paper in your Extraction Library, the platform looks up its reference list
+            (backward sourcing) and papers that cite it (forward sourcing) via Semantic Scholar.
+            Results are deduplicated across all source papers, checked against records already
+            in your project, and listed for you to select and import.
+          </p>
+        </div>
+        <button
+          className="btn-secondary"
+          onClick={() => setShowManualImport(true)}
+          style={{ whiteSpace: "nowrap", flexShrink: 0, fontSize: "0.84rem" }}
+          title="Upload a RIS or MEDLINE file to add citations not found by Semantic Scholar"
+        >
+          + Manual Import
+        </button>
       </div>
 
       {/* ── New search form ────────────────────────────────────────────── */}
@@ -449,9 +674,20 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
                 </td>
                 <td style={{ padding: "0.6rem 0.75rem", textTransform: "capitalize" }}>{s.direction}</td>
                 <td style={{ padding: "0.6rem 0.75rem", color: "#5f6368" }}>
-                  {s.source_record_count != null ? s.source_record_count : "—"}
-                  {s.scope === "new" && <span style={{ marginLeft: "0.3rem", fontSize: "0.72rem", color: "#8f9198" }}>(new)</span>}
-                  {s.scope === "custom" && <span style={{ marginLeft: "0.3rem", fontSize: "0.72rem", color: "#8f9198" }}>(custom)</span>}
+                  {s.scope === "manual" ? (
+                    <span style={{
+                      display: "inline-block", padding: "0.1rem 0.5rem", borderRadius: "0.4rem",
+                      background: "#e8f5e9", color: "#2e7d32", fontSize: "0.72rem", fontWeight: 600,
+                    }}>
+                      Manual
+                    </span>
+                  ) : (
+                    <>
+                      {s.source_record_count != null ? s.source_record_count : "—"}
+                      {s.scope === "new" && <span style={{ marginLeft: "0.3rem", fontSize: "0.72rem", color: "#8f9198" }}>(new)</span>}
+                      {s.scope === "custom" && <span style={{ marginLeft: "0.3rem", fontSize: "0.72rem", color: "#8f9198" }}>(custom)</span>}
+                    </>
+                  )}
                 </td>
                 <td style={{ padding: "0.6rem 0.75rem" }}><StatusBadge status={s.status} /></td>
                 <td style={{ padding: "0.6rem 0.75rem" }}>{s.candidate_count ?? "—"}</td>
@@ -615,35 +851,36 @@ function CandidateScreeningView({
     decideMutation.mutate({ candidateId: c.id, decision: newSelected ? "include" : null });
   }
 
-  function selectAll() {
-    const candidates = candidatesPage?.items ?? [];
-    const allIds = candidates.filter(c => !c.import_job_id).map(c => c.id);
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      allIds.forEach(id => next.add(id));
-      return next;
-    });
-    // Fire decisions in background
-    for (const c of candidates) {
-      if (!c.import_job_id && !selectedIds.has(c.id)) {
-        decideMutation.mutate({ candidateId: c.id, decision: "include" });
+  const bulkMutation = useMutation({
+    mutationFn: (decision: "include" | null) =>
+      citationsApi.bulkSelect(projectId, searchId, {
+        decision,
+        direction: directionFilter !== "both" ? directionFilter : undefined,
+        source_record_id: sourceFilter ?? undefined,
+      }),
+    onSuccess: (_, decision) => {
+      // Optimistically sync local selection state then refresh from server
+      if (decision === "include") {
+        // Can't know all IDs across pages; mark everything in local set as selected
+        // and let the server query refresh confirm
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          (candidatesPage?.items ?? []).forEach(c => { if (!c.import_job_id) next.add(c.id); });
+          return next;
+        });
+      } else {
+        setSelectedIds(new Set());
       }
-    }
+      queryClient.invalidateQueries({ queryKey: ["citation-candidates", projectId, searchId] });
+    },
+  });
+
+  function selectAll() {
+    bulkMutation.mutate("include");
   }
 
   function deselectAll() {
-    const candidates = candidatesPage?.items ?? [];
-    const pageIds = candidates.map(c => c.id);
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      pageIds.forEach(id => next.delete(id));
-      return next;
-    });
-    for (const c of candidates) {
-      if (selectedIds.has(c.id)) {
-        decideMutation.mutate({ candidateId: c.id, decision: null });
-      }
-    }
+    bulkMutation.mutate(null);
   }
 
   // ── Early returns ────────────────────────────────────────────────────────

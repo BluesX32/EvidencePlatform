@@ -1,12 +1,15 @@
 import uuid
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_role, ANY_ROLE
+from app.dependencies import get_current_user, require_project_role, ANY_ROLE, ADMIN_ROLE
+from app.models.record import Record
+from app.models.record_source import RecordSource
 from app.models.user import User
 from app.repositories.overlap_repo import OverlapRepo
 from app.repositories.project_repo import ProjectRepo
@@ -98,8 +101,8 @@ class OverlapSummary(BaseModel):
     strategy_name: Optional[str]
 
 
-async def _require_project_access(project_id: uuid.UUID, user: User, db: AsyncSession):
-    await require_project_role(db, project_id, user.id, allowed=ANY_ROLE)
+async def _require_project_access(project_id: uuid.UUID, user: User, db: AsyncSession, allowed=ANY_ROLE):
+    await require_project_role(db, project_id, user.id, allowed=allowed)
     project = await ProjectRepo.get_by_id(db, project_id)
     return project
 
@@ -155,6 +158,57 @@ async def list_records(
         total_pages=total_pages,
         year_range=YearRange(min=year_range["min"], max=year_range["max"]),
     )
+
+
+@router.delete("/{project_id}/records/{record_id}", status_code=204)
+async def delete_record(
+    project_id: uuid.UUID,
+    record_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    """Permanently delete a record and all associated data (decisions, extractions, labels, etc.).
+
+    Requires admin role. The delete cascades via FK constraints; match_log and
+    dedup_pairs rows that reference the record's record_sources are cleaned up
+    first because those FKs are ON DELETE NO ACTION.
+    """
+    await _require_project_access(project_id, current_user, db, allowed=ADMIN_ROLE)
+
+    result = await db.execute(
+        select(Record).where(Record.id == record_id, Record.project_id == project_id)
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    # Collect this record's record_source IDs so we can clean up NO ACTION FKs
+    rs_result = await db.execute(
+        select(RecordSource.id).where(RecordSource.record_id == record_id)
+    )
+    rs_ids = [row.id for row in rs_result]
+
+    if rs_ids:
+        # match_log.record_src_id → NO ACTION (would block record_sources DELETE)
+        await db.execute(
+            text("DELETE FROM match_log WHERE record_src_id = ANY(:ids)"),
+            {"ids": rs_ids},
+        )
+        # dedup_pairs.source_a_id / source_b_id → NO ACTION
+        await db.execute(
+            text("DELETE FROM dedup_pairs WHERE source_a_id = ANY(:ids) OR source_b_id = ANY(:ids)"),
+            {"ids": rs_ids},
+        )
+
+    # match_log.new_record_id → NO ACTION (would block records DELETE)
+    await db.execute(
+        text("DELETE FROM match_log WHERE new_record_id = :rid"),
+        {"rid": record_id},
+    )
+
+    await db.delete(record)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{project_id}/overlap", response_model=OverlapSummary)

@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -223,6 +223,57 @@ async def start_search(
     return _search_to_response(search, project_id)
 
 
+@router.post("/searches/manual", status_code=201)
+async def manual_import(
+    project_id: uuid.UUID,
+    file: UploadFile = File(...),
+    direction: str = Form(...),
+    source_record_id: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CitationSearchResponse:
+    """Import a citation file (RIS or MEDLINE) manually as a citation source.
+
+    Unlike the automatic Semantic Scholar search, this endpoint accepts a
+    user-uploaded file and creates a completed CitationSearch synchronously.
+    Each record in the file becomes a CitationCandidate tagged with the
+    given direction (backward = references of the source paper; forward =
+    papers citing it) and optionally linked to a specific extracted paper.
+
+    Accepts: RIS (.ris) or MEDLINE/PubMed-tagged (.txt) files.
+    Returns: 201 with the completed CitationSearch (status='completed').
+    """
+    await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
+
+    if direction not in {"backward", "forward"}:
+        raise HTTPException(
+            status_code=400,
+            detail="direction must be 'backward' or 'forward'",
+        )
+
+    src_rec_id: Optional[uuid.UUID] = None
+    if source_record_id and source_record_id.strip():
+        try:
+            src_rec_id = uuid.UUID(source_record_id.strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="source_record_id is not a valid UUID"
+            )
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        search = await citation_service.create_manual_search(
+            db, project_id, current_user.id, direction, src_rec_id, file_bytes
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return _search_to_response(search, project_id)
+
+
 @router.get("/searches")
 async def list_searches(
     project_id: uuid.UUID,
@@ -250,18 +301,19 @@ async def get_search(
     return _search_to_response(search, project_id)
 
 
-@router.delete("/searches/{search_id}", status_code=204)
+@router.delete("/searches/{search_id}")
 async def delete_search(
     project_id: uuid.UUID,
     search_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> Response:
     """Delete a citation search and all its candidates."""
     await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
     deleted = await citation_service.delete_search(db, search_id, project_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Citation search not found")
+    return Response(status_code=204)
 
 
 @router.get("/searches/{search_id}/candidates")
@@ -308,19 +360,52 @@ async def list_candidates(
     )
 
 
-@router.delete("/searches/{search_id}/candidates/{candidate_id}", status_code=204)
+class BulkDecisionBody(BaseModel):
+    decision: Optional[str] = None   # "include" | null (clears all)
+    direction: Optional[str] = None  # filter: backward | forward | null = both
+    source_record_id: Optional[str] = None  # filter by source paper
+
+
+@router.post("/searches/{search_id}/candidates/bulk-select")
+async def bulk_select_candidates(
+    project_id: uuid.UUID,
+    search_id: uuid.UUID,
+    body: BulkDecisionBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Select or deselect all candidates matching the given filters.
+
+    Pass decision='include' to select all, decision=null to deselect all.
+    Optionally filter by direction or source_record_id.
+    """
+    await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
+    count = await citation_service.bulk_select_candidates(
+        db,
+        search_id=search_id,
+        project_id=project_id,
+        decision=body.decision,
+        direction_filter=body.direction,
+        source_record_id_filter=uuid.UUID(body.source_record_id) if body.source_record_id else None,
+        reviewer_id=current_user.id,
+    )
+    return {"updated": count}
+
+
+@router.delete("/searches/{search_id}/candidates/{candidate_id}")
 async def delete_candidate(
     project_id: uuid.UUID,
     search_id: uuid.UUID,
     candidate_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> Response:
     """Delete a single candidate from a search."""
     await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
     deleted = await citation_service.delete_candidate(db, search_id, candidate_id, project_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Candidate not found")
+    return Response(status_code=204)
 
 
 @router.patch("/searches/{search_id}/candidates/{candidate_id}")

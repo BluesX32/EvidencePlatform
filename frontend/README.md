@@ -8,15 +8,15 @@ React + TypeScript frontend for EvidencePlatform. Built with Vite and TanStack Q
 |-------|------|-------------|
 | `/` | ProjectsPage | Project list with creation entry point |
 | `/projects/new` | NewProjectPage | Project creation form |
-| `/projects/:id` | ProjectPage | Project overview: import, overlap, screening, extraction, labels, taxonomy |
+| `/projects/:id` | ProjectPage | Project overview — collapsible sections: corpora (with delete), screening criteria, extraction template, overlap strategy, labels, import history; module navigation grid |
 | `/projects/:id/import` | ImportPage | File upload (RIS, MEDLINE, BibTeX) and import history |
-| `/projects/:id/records` | RecordsPage | Paginated record browser |
+| `/projects/:id/records` | RecordsPage | Paginated record browser with per-record delete (admin) |
 | `/projects/:id/overlap` | OverlapPage | Cross-source overlap summary, Euler diagram, pairwise matrix, cluster list |
 | `/projects/:id/screen` | ScreeningWorkspace | Sequential and mixed-mode TA/FT/extraction workspace |
 | `/projects/:id/labels` | LabelsPage | Label management and per-label article list |
-| `/projects/:id/extractions` | ExtractionLibrary | Extraction library (TA+FT included papers with extractions only); "Citation Search" button triggers snowballing |
+| `/projects/:id/extractions` | ExtractionLibrary | Extraction library (TA+FT included papers with extractions only); "Citation Search" link navigates to citation sourcing |
 | `/projects/:id/citations` | CitationSourcingPage | Citation search history — list of past runs; new search form with direction, scope, and custom paper selection |
-| `/projects/:id/citations/:searchId` | CitationSourcingPage | Candidate review — checkbox selection, select-all, filter by source article, delete candidates, import selected |
+| `/projects/:id/citations/:searchId` | CitationSourcingPage | Candidate review — checkbox selection, select-all (all pages, server-side), filter by source article, delete candidates, import selected |
 | `/projects/:id/thematic` | ThematicAnalysis | Codebook themes, codes, evidence assignments |
 | `/projects/:id/ontology` | OntologyPage | Hierarchical concept graph with 3D view |
 | `/projects/:id/llm-screening` | LLMScreeningPage | LLM-assisted screening runs and results |
