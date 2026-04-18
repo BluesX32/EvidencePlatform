@@ -34,9 +34,9 @@ Traditional systematic reviews are labor-intensive and prone to inconsistency: d
 ## Core Capabilities
 
 ### 1. Multi-Source Literature Import
-Import and parse citation files from any major database. The parser engine handles **RIS**, **MEDLINE/PubMed**, **BibTeX**, and similar formats with automatic encoding detection (UTF-8, Latin-1) and zero-space tag normalization. Duplicate author-formatting variants and malformed DOIs are corrected at ingestion.
+Import and parse citation files from any major database. The parser engine handles **RIS**, **MEDLINE/PubMed**, and similar formats with automatic encoding detection (UTF-8, Latin-1) and zero-space tag normalization. Duplicate author-formatting variants and malformed DOIs are corrected at ingestion.
 
-Each import is tagged to a **corpus** (e.g. PubMed 2024, Embase, Cochrane). Corpora and individual records can be permanently deleted by project admins — deleting a corpus removes its exclusively-owned records from the project; records shared with other corpora are preserved.
+Each import is tagged to a named **Source** (e.g. PubMed 2024, Embase, Scopus). Sources can be deleted by project admins; records that exist only in the deleted source are removed while records shared with other sources are preserved.
 
 ### 2. Intelligent Deduplication
 A three-tier **Union-Find deduplication engine** identifies duplicate records across sources using configurable matching strategies:
@@ -73,20 +73,18 @@ AI-powered screening runs that process the entire corpus against project inclusi
 | Provider | Models |
 |---|---|
 | Anthropic (direct) | Claude Sonnet 4.6, Claude Haiku 4.5, Claude Opus 4.6 |
-| OpenAI via OpenRouter | GPT-4o, GPT-4.1, GPT-5.4 Pro |
-| Google via OpenRouter | Gemini 2.0 Flash, Gemini 2.5 Pro, Gemini 3.x Preview |
-| Meta via OpenRouter | Llama 4 Scout (10M context), Llama 4 Maverick |
-| DeepSeek via OpenRouter | DeepSeek V3, V3.2, R1 (reasoning) |
-| Mistral via OpenRouter | Mistral Large 2512, Ministral 8B |
-| Alibaba via OpenRouter | Qwen 3.5 Plus, Qwen 3 Max (Thinking) |
-| NVIDIA via OpenRouter | Nemotron 3 Super (free tier) |
-| Cohere via OpenRouter | Command A (open weights, 256k context) |
+| OpenAI via OpenRouter | GPT-4o, GPT-4.1 |
+| Google via OpenRouter | Gemini 2.0 Flash, Gemini 2.5 Pro |
+| Meta via OpenRouter | Llama 4 Scout, Llama 4 Maverick |
+| DeepSeek via OpenRouter | DeepSeek V3, R1 (reasoning) |
+| Mistral via OpenRouter | Mistral Large, Ministral 8B |
+| Others via OpenRouter | Qwen 3, Command A, Nemotron |
 
-Each run produces per-record decisions (include / exclude / uncertain) with rationale, matched thematic codes, and newly suggested concepts. Results feed directly into the screening pipeline or can be reviewed and merged independently. Cost and time estimates are shown before launch; all LLM inputs and outputs are logged with model version for audit.
+Each run produces per-record decisions (include / exclude / uncertain) with rationale, matched thematic codes, and newly suggested concepts. Results feed directly into the screening pipeline or can be reviewed and merged independently. Cost and time estimates are shown before launch; all LLM inputs and outputs are logged with model version for audit. Multi-agent pipeline mode dispatches specialized sub-agents per record for higher-quality extraction.
 
 ### 6. Team Collaboration & Consensus
 Multi-reviewer workflows with:
-- **Project membership** — invite-by-token system with role-based access (owner / member)
+- **Project membership** — invite-by-token system with role-based access (admin / reviewer)
 - **Dual-reviewer isolation** — each reviewer's decisions are stored independently with partial unique indexes
 - **Conflict detection** — automatic identification of disagreeing TA or FT decisions across reviewers
 - **Adjudication** — owners can adjudicate conflicts and record final consensus decisions
@@ -94,90 +92,369 @@ Multi-reviewer workflows with:
 - **Team screening stats** — agreement rates, decision distributions, and coverage per reviewer
 
 ### 7. Structured Data Extraction
-Reviewers extract structured evidence from included full-text records using a flexible JSONB schema. The **Extraction Library** shows only papers that were included at both the title-abstract and full-text screening stages and have been extracted — papers that merely passed one stage or have no extraction are excluded. The library provides:
+Reviewers extract structured evidence from included full-text records using a flexible JSONB schema. The **Extraction Library** shows only papers that were included at both the title-abstract and full-text screening stages and have been extracted. The library provides:
 - Inline edit panel — edit any field without leaving the list
 - Search and filter — by source, label, or free text
 - Full metadata enrichment — title, authors, year, DOI, source names per item
 
 ### 8. Citation Sourcing (Snowballing)
-After data extraction, researchers can discover additional eligible papers through automated citation snowballing — a standard systematic review methodology. For each paper in the Extraction Library (TA+FT included AND extracted), the platform resolves its Semantic Scholar ID and fetches the complete reference list (backward sourcing) and all papers that cite it (forward sourcing). Results are cross-deduplicated across all source papers, checked against records already in the project, and presented for researcher review.
+After data extraction, researchers can discover additional eligible papers through automated citation snowballing — a standard systematic review methodology. For each paper in the Extraction Library (TA+FT included AND extracted), the platform resolves its Semantic Scholar ID and fetches the complete reference list (backward sourcing) and all papers that cite it (forward sourcing). Results are cross-deduplicated, checked against existing project records, and presented for researcher review.
 
-- **Backward sourcing** — fetches the full reference lists of extracted papers; each reference is a candidate
+- **Backward sourcing** — fetches the full reference lists of extracted papers
 - **Forward sourcing** — fetches papers that cite each extracted paper via the Semantic Scholar API
-- **Manual import** — upload a RIS or MEDLINE file directly into the citation sourcing library when Semantic Scholar does not cover a database or paper set; each import is tagged with a direction (backward = references, forward = citing) and optionally linked to a specific extracted source paper; creates a completed citation search immediately (no background task)
-- **Extraction Library cohort** — sourcing always starts from the validated set: TA=include, FT=include, AND extracted; candidates are never based on partially-screened papers
-- **Robust paper resolution** — multi-tier S2 ID resolution: (1) DOI with full prefix normalisation (`doi.org`, `dx.doi.org`, `doi:`) and URL encoding; (2) PMID with regex extraction for annotated formats like `"12345678 [pubmed]"`; (3) title + year search with ±2-year window (handles online-first vs print-year gaps), ±5-year fallback for pre-print pipelines, and a no-year pass when year is absent
-- **Direction-aware deduplication** — the same paper can correctly appear as both a backward reference and a forward citation; cross-paper dedup collapses duplicates within the same direction (unique index on `search_id + direction + doi/pmid/s2_paper_id`)
-- **Cohort scoping** — four modes: *All* (every paper in the Extraction Library), *New* (papers not yet used as source in any prior completed search), *Custom* (researcher selects specific papers via a checklist), or *Manual* (file upload); supports iterative snowballing across multiple rounds
-- **Project membership check** — candidates already present in the project are flagged with an amber "Already in project" badge and a disabled checkbox; their `in_project` flag is automatically reset if the corpus that contained them is later deleted
-- **Checkbox selection** — select individual papers or use Select All (across all pages, server-side) to mark candidates; papers already in the project have their checkbox disabled
-- **Named per-article sources** — each import batch is grouped by the source article that led to the discovery and given a descriptive Source name (e.g. *← Refs: Smith 2020* or *→ Citing: Jones 2021*); this name appears in the Extraction Library's Sources column so the provenance chain is always visible
-- **Delete candidates** — remove individual candidates or entire search runs to keep the workspace clean
-- **Filter by source article** — view only candidates discovered from a specific extracted paper
-- **Search history** — every run is logged with timestamp, direction, scope, source paper count, candidate count, and already-in-project count; manual imports are marked with a distinct "Manual" badge
-- **Pagination reliability** — uses S2's `next` cursor to drive page iteration; a partial page on an intermediate page no longer causes early termination
-- **Rate-limit resilience** — automatic 429 retry schedule: 30 s → 60 s → 120 s; one failing record never aborts the rest of the loop
-- **Semantic Scholar integration** — uses the free Semantic Scholar Graph API (1 RPS without key; 100 RPS with a free API key set via `SEMANTIC_SCHOLAR_API_KEY`)
-- **Background execution** — the automated fetch runs asynchronously; the UI polls every 3 seconds and shows a live status badge; manual imports complete synchronously and navigate directly to the candidate review page
+- **Manual import** — upload a RIS or MEDLINE file directly into the citation sourcing library when Semantic Scholar does not cover a database or paper; tagged with direction and optionally linked to a specific source paper; appending to an existing search is supported
+- **Cohort scoping** — four modes: *All*, *New* (papers not yet sourced), *Custom* (researcher selects specific papers), or *Manual* (file upload)
+- **Direction-aware deduplication** — same paper can correctly appear as both backward and forward; unique index on `search_id + direction + doi/pmid/s2_paper_id`
+- **Robust S2 resolution** — DOI (full prefix normalisation), PMID (regex extraction), title + year search (±2yr / ±5yr / no-year fallback)
+- **Rate-limit resilience** — automatic 429 retry: 30s → 60s → 120s; one failing record never aborts the loop
+- **Named per-article sources** — each import batch is grouped by source article and given a descriptive Source name (e.g. *← Refs: Smith 2020*); provenance is visible in the Extraction Library
+- **Filter by source article** — source article filter buttons are derived directly from candidates in the database, so manually appended papers always appear alongside automatically discovered ones
+- **Search history** — every run logged with timestamp, direction, scope, source paper count, candidate count, and already-in-project count
 
 ### 9. Thematic Analysis (Taxonomy)
-A code-based thematic synthesis module for building and managing an evolving **taxonomy of themes**. Concepts extracted from papers are gathered and organized into themes and sub-codes — answering the question *what patterns emerge across the literature?*:
+A code-based thematic synthesis module for building and managing an evolving **taxonomy of themes**:
 - Create and organize themes and sub-codes
 - Assign codes to extracted evidence segments
 - View all evidence assigned to a given code
-- Track codebook history — every change is logged with timestamp and author
+- Track codebook history — every change logged with timestamp and author
 - Saturation tracking — consecutive records without new code assignments surfaced as a progress indicator
 
 ### 10. Label System
-Project-scoped **personal tags** with custom names and colors. Labels are entirely user-defined and carry no predefined structure — researchers use them to organize and retrieve papers however suits their workflow (sub-populations, study designs, methodological flags, reading status, etc.). Labels can be:
+Project-scoped **personal tags** with custom names and colors. Labels are entirely user-defined and carry no predefined structure — researchers use them to organize and retrieve papers however suits their workflow. Labels can be:
 - Assigned to any article at any screening stage
-- Created inline during screening (new labels are saved immediately to the project)
+- Created inline during screening
 - Browsed on the dedicated **Labels page** — per-label article counts, filtered article lists, and progress stats
 
-Labels are independent of taxonomy and ontology: they are not required to be linked to themes or structured dimensions.
-
 ### 11. Ontology
-A **hierarchical concept graph** for organizing the structural dimensions of an evidence base — levels of analysis, intervention types, outcome categories, populations, and other domain-specific dimensions. Unlike labels (personal/flexible) and thematic codes (bottom-up from evidence), the ontology is **partially pre-defined** and provides shared vocabulary across a project.
+A **hierarchical concept graph** for organizing the structural dimensions of an evidence base — levels of analysis, intervention types, outcome categories, populations, and other domain-specific dimensions.
 
 - Hierarchical node tree with arbitrary depth (forest structure)
 - Node namespaces: `level`, `dimension`, `concept`, `population`, `intervention`, `outcome`, `other`
 - Drag-and-drop reparenting with cycle detection
 - Sync levels from project criteria
 - Export / import full ontology as JSON
-- **Concept tagging during screening** — tag papers with ontology concepts inline; new concepts created during screening are saved to the project ontology for future use
+- Concept tagging during screening — inline; new concepts saved to ontology for future use
 - 3D graph view for exploring large taxonomies
-- Color-coding per node or namespace
-
-Researchers are not required to use all three organization systems (labels, taxonomy, ontology) in a single study — each is independently optional.
-
----
-
-## Citation Sourcing Loop
-
-Citation sourcing closes the feedback loop between extraction and import: papers discovered through snowballing re-enter the import pipeline and are subject to the same deduplication, overlap detection, and screening workflow as records imported from databases. This ensures a single, auditable provenance chain for every record in the project regardless of how it was discovered.
 
 ### 12. PDF Viewer and Annotation
-Full-text PDFs are uploaded per record or per cluster and stored server-side (one per record/cluster). A floating, draggable PDF viewer opens inline during the FT screening stage and provides:
-
-- **Page navigation** — previous/next page with current-page indicator
-- **Freehand drawing** — pen tool with configurable color and stroke width; strokes are saved to the database and persist across sessions
-- **Eraser tool** — remove individual drawn strokes; clear-page button wipes all drawings on the current page
-- **Text selection and anchored notes** — select any text passage in select mode; a popup appears to add a note; the selection is stored as a normalised highlight (fractional `{x,y,w,h}` coordinates) and rendered as a persistent yellow overlay on the PDF; clicking a highlight opens the associated note in the notes drawer; clicking a note jumps to its page
-- **Notes drawer** — collapsible panel at the bottom of the viewer listing all annotations for the document with page badges, quoted text previews, and delete controls
-- **Drag to reposition / drag left edge to resize** — the panel floats at a configurable position within the viewport
-- **Download** — direct download of the uploaded PDF from the viewer header
+Full-text PDFs are uploaded per record or per cluster and stored server-side. A floating, draggable PDF viewer opens inline during the FT screening stage:
+- Page navigation — previous/next with current-page indicator
+- Freehand drawing — pen tool with configurable color and stroke width; strokes persist across sessions
+- Eraser tool — remove individual drawn strokes; clear-page button
+- Text selection and anchored notes — select any passage; stored as normalized highlight ({x,y,w,h}) with persistent yellow overlay; clicking a highlight opens the associated note
+- Notes drawer — collapsible panel listing all annotations with page badges, quoted text previews, and delete controls
+- Drag to reposition / resize — floats at a configurable position within the viewport
 
 ---
 
 ## Three Orthogonal Organization Systems
 
-EvidencePlatform provides three distinct, independently optional systems for organizing literature. They serve different purposes and can be used together or separately:
-
 | System | Purpose | Structure | Defined by |
 |---|---|---|---|
-| **Labels** | Personal retrieval tags | Flat list, no hierarchy | Entirely user-defined; created freely |
+| **Labels** | Personal retrieval tags | Flat list, no hierarchy | Entirely user-defined |
 | **Taxonomy** (Thematic Analysis) | Bottom-up concept synthesis | Themes → sub-codes | Researcher builds from evidence |
 | **Ontology** | Structural dimensions of the field | Hierarchical tree (forest) | Partially pre-defined + extensible |
+
+---
+
+## Workflow at a Glance
+
+```
+Import literature (RIS / MEDLINE)
+        ↓
+Auto-deduplication within each source
+        ↓
+Cross-source overlap detection + visualization
+        ↓
+Title-abstract screening (manual or LLM-assisted)
+  → tag with labels and ontology concepts inline
+        ↓
+Full-text screening + PDF annotation
+  → tag with labels and ontology concepts inline
+        ↓
+Structured data extraction
+        ↓
+Citation sourcing (backward + forward snowballing)
+  → screen new candidates inline
+  → import approved papers → re-enter pipeline
+        ↓
+Thematic coding + saturation analysis (taxonomy)
+        ↓
+Evidence synthesis output
+```
+
+Every stage generates a complete audit trail. At any point, a project owner can export decisions, review LLM run logs, inspect deduplication clusters, and reproduce the entire pipeline from source files.
+
+---
+
+## Relational Database Diagram
+
+The platform uses PostgreSQL with 32 tables across 30 versioned Alembic migrations. The diagram below shows every table and its foreign-key relationships. PK = primary key · FK = foreign key · nullable FKs shown with dashed lines.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              USERS & PROJECTS                                   │
+│                                                                                 │
+│  ┌──────────────┐         ┌──────────────────────────────────────────────────┐  │
+│  │    users     │         │                   projects                       │  │
+│  │──────────────│         │──────────────────────────────────────────────────│  │
+│  │ id (PK)      │◄────────│ created_by (FK→users)                            │  │
+│  │ email        │         │ id (PK)                                          │  │
+│  │ password_hash│         │ name                                             │  │
+│  │ name         │         │ description                                      │  │
+│  │ api_keys     │         │ criteria (JSONB)                                 │  │
+│  │ created_at   │         │ extraction_template (JSONB)                      │  │
+│  └──────────────┘         │ llm_config (JSONB)                               │  │
+│                           │ created_at · updated_at                          │  │
+│                           └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           TEAM COLLABORATION                                    │
+│                                                                                 │
+│  ┌─────────────────────┐   ┌────────────────────────┐   ┌──────────────────┐   │
+│  │   project_members   │   │  project_invitations   │   │consensus_decision│   │
+│  │─────────────────────│   │────────────────────────│   │──────────────────│   │
+│  │ id (PK)             │   │ id (PK)                │   │ id (PK)          │   │
+│  │ project_id (FK)     │   │ project_id (FK)        │   │ project_id (FK)  │   │
+│  │ user_id (FK→users)  │   │ invited_by (FK→users)  │   │ record_id (FK)?  │   │
+│  │ invited_by (FK)?    │   │ email                  │   │ cluster_id (FK)? │   │
+│  │ role                │   │ role                   │   │ stage (TA|FT)    │   │
+│  │ status              │   │ token (UNIQUE)         │   │ decision         │   │
+│  └─────────────────────┘   │ status                 │   │ adjudicator_id   │   │
+│                            └────────────────────────┘   └──────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         IMPORT & RECORD PIPELINE                                │
+│                                                                                 │
+│  ┌──────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐   │
+│  │   sources    │    │   import_jobs   │    │           records            │   │
+│  │──────────────│    │─────────────────│    │──────────────────────────────│   │
+│  │ id (PK)      │◄───│ source_id (FK)? │    │ id (PK)                      │   │
+│  │ project_id   │    │ id (PK)         │    │ project_id (FK)              │   │
+│  │ name         │    │ project_id (FK) │    │ title · abstract             │   │
+│  │ created_at   │    │ created_by (FK) │    │ authors · year · journal     │   │
+│  └──────────────┘    │ filename        │    │ doi · issn · pmid            │   │
+│         ▲            │ file_format     │    │ volume · pages               │   │
+│         │            │ status          │    │ normalized_doi               │   │
+│         │            │ record_count    │    │ match_key · match_basis      │   │
+│         │            └────────┬────────┘    │ keywords · source_format     │   │
+│         │                     │             │ created_at                   │   │
+│         │                     │             └──────────────────────────────┘   │
+│         │                     ▼                          ▲                     │
+│         │          ┌─────────────────────────────────────┤                     │
+│         │          │         record_sources              │                     │
+│         │          │─────────────────────────────────────│                     │
+│         └──────────│ source_id (FK→sources)              │                     │
+│                    │ id (PK)                             │                     │
+│                    │ record_id (FK→records) ─────────────┘                     │
+│                    │ import_job_id (FK)                                        │
+│                    │ raw_data (JSONB)                                          │
+│                    │ norm_title · norm_first_author                            │
+│                    │ match_year · match_doi                                    │
+│                    └─────────────────────────────────────────────────────────  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      DEDUPLICATION & OVERLAP                                    │
+│                                                                                 │
+│  ┌──────────────────────┐    ┌─────────────────────┐    ┌──────────────────┐   │
+│  │   match_strategies   │    │     dedup_jobs       │    │    match_log     │   │
+│  │──────────────────────│    │─────────────────────│    │──────────────────│   │
+│  │ id (PK)              │◄───│ strategy_id (FK)     │◄───│ dedup_job_id(FK) │   │
+│  │ project_id (FK)      │    │ id (PK)              │    │ id (PK)          │   │
+│  │ name · preset        │    │ project_id (FK)      │    │ record_src_id    │   │
+│  │ config (JSONB)       │    │ created_by (FK)      │    │ old_record_id?   │   │
+│  │ selected_fields      │    │ status               │    │ new_record_id    │   │
+│  │ is_active            │    │ records_before/after │    │ match_key        │   │
+│  └──────────────────────┘    │ merges               │    │ action           │   │
+│            ▲                 └──────────────────────┘    └──────────────────┘   │
+│            │                                                                    │
+│  ┌─────────┴────────────────┐    ┌──────────────────────────────────────────┐  │
+│  │  overlap_strategy_runs   │    │            overlap_clusters              │  │
+│  │──────────────────────────│    │──────────────────────────────────────────│  │
+│  │ id (PK)                  │    │ id (PK)                                  │  │
+│  │ project_id (FK)          │    │ project_id (FK)                          │  │
+│  │ strategy_id (FK)?        │    │ job_id (FK→dedup_jobs)?                  │  │
+│  │ status                   │    │ scope (within_source|cross_source)       │  │
+│  │ within/cross counts      │    │ match_tier · match_basis                 │  │
+│  │ params_snapshot (JSONB)  │    │ similarity_score                         │  │
+│  └──────────────────────────┘    │ origin (auto|manual|mixed)               │  │
+│                                  │ locked                                   │  │
+│                                  └───────────────────┬──────────────────────┘  │
+│                                                      │                         │
+│                                       ┌──────────────▼────────────────────┐   │
+│                                       │     overlap_cluster_members        │   │
+│                                       │────────────────────────────────────│   │
+│                                       │ id (PK)                            │   │
+│                                       │ cluster_id (FK→overlap_clusters)   │   │
+│                                       │ record_source_id (FK→rec_sources)  │   │
+│                                       │ source_id (FK→sources)             │   │
+│                                       │ role (canonical|duplicate)         │   │
+│                                       │ added_by (auto|user) · note        │   │
+│                                       └────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     SCREENING, EXTRACTION & CLAIMS                              │
+│                                                                                 │
+│  ┌──────────────────────────────────┐   ┌────────────────────────────────────┐ │
+│  │       screening_decisions        │   │         extraction_records         │ │
+│  │──────────────────────────────────│   │────────────────────────────────────│ │
+│  │ id (PK)                          │   │ id (PK)                            │ │
+│  │ project_id (FK)                  │   │ project_id (FK)                    │ │
+│  │ record_id (FK→records)?          │   │ record_id (FK→records)?            │ │
+│  │ cluster_id (FK→ov_clusters)?     │   │ cluster_id (FK→ov_clusters)?       │ │
+│  │ stage (TA|FT)                    │   │ extracted_json (JSONB)             │ │
+│  │ decision (include|exclude)       │   │ reviewer_id (FK→users)?            │ │
+│  │ reason_code · notes              │   │ created_at                         │ │
+│  │ reviewer_id (FK→users)?          │   └────────────────────────────────────┘ │
+│  │ created_at                       │                                          │
+│  └──────────────────────────────────┘   ┌────────────────────────────────────┐ │
+│                                         │        screening_claims            │ │
+│  ┌──────────────────────────────────┐   │────────────────────────────────────│ │
+│  │        screening_queues          │   │ id (PK)                            │ │
+│  │──────────────────────────────────│   │ project_id (FK)                    │ │
+│  │ id (PK)                          │   │ record_id (FK)?                    │ │
+│  │ project_id (FK)                  │   │ cluster_id (FK)?                   │ │
+│  │ reviewer_id (FK→users)           │   │ reviewer_id (FK→users)?            │ │
+│  │ source_id (text: uuid or "all")  │   │ claimed_at (30-min TTL)            │ │
+│  │ stage · seed                     │   └────────────────────────────────────┘ │
+│  │ slots (JSONB) · position         │                                          │
+│  └──────────────────────────────────┘                                          │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     ANNOTATIONS, LABELS & PDF                                   │
+│                                                                                 │
+│  ┌──────────────────────────┐   ┌─────────────────────┐   ┌────────────────┐  │
+│  │    record_annotations    │   │   project_labels    │   │ fulltext_pdfs  │  │
+│  │──────────────────────────│   │─────────────────────│   │────────────────│  │
+│  │ id (PK)                  │   │ id (PK)             │   │ id (PK)        │  │
+│  │ project_id (FK)          │   │ project_id (FK)     │◄──│ project_id(FK) │  │
+│  │ record_id (FK)?          │   │ name · color        │   │ record_id(FK)? │  │
+│  │ cluster_id (FK)?         │   └──────────┬──────────┘   │cluster_id(FK)? │  │
+│  │ selected_text · comment  │              │              │ original_fname │  │
+│  │ reviewer_id (FK)?        │   ┌──────────▼──────────┐   │ storage_path   │  │
+│  │ page_num                 │   │    record_labels     │   │ file_size      │  │
+│  │ highlight_rects (JSONB)  │   │─────────────────────│   │ drawing_data   │  │
+│  │ created_at               │   │ id (PK)             │   │ uploaded_by(FK)│  │
+│  └──────────────────────────┘   │ project_id (FK)     │   └────────────────┘  │
+│                                 │ record_id (FK)?     │                        │
+│                                 │ cluster_id (FK)?    │                        │
+│                                 │ label_id (FK)       │                        │
+│                                 │ reviewer_id (FK)?   │                        │
+│                                 └─────────────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     ONTOLOGY & THEMATIC ANALYSIS                                │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                          ontology_nodes                                  │  │
+│  │──────────────────────────────────────────────────────────────────────────│  │
+│  │ id (PK)  │  project_id (FK)  │  parent_id (FK→self)?  │  name           │  │
+│  │ namespace (level|dimension|concept|population|intervention|outcome|other) │  │
+│  │ description · color · position · created_at · updated_at                 │  │
+│  └──────┬──────────────────────────────────────────────┬─────────────────── ┘  │
+│         │                                              │                        │
+│  ┌──────▼───────────────────┐        ┌────────────────▼───────────────────┐   │
+│  │      ontology_edges      │        │          record_concepts            │   │
+│  │──────────────────────────│        │────────────────────────────────────│   │
+│  │ id (PK)                  │        │ id (PK)                            │   │
+│  │ project_id (FK)          │        │ project_id (FK)                    │   │
+│  │ source_id (FK→on_nodes)  │        │ record_id (FK→records)?            │   │
+│  │ target_id (FK→on_nodes)  │        │ cluster_id (FK→ov_clusters)?       │   │
+│  │ label · color            │        │ node_id (FK→ontology_nodes)        │   │
+│  └──────────────────────────┘        │ assigned_by (FK→users)?            │   │
+│                                      └────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────┐  ┌────────────────────────────────────┐  │
+│  │       code_extractions          │  │       thematic_history             │  │
+│  │─────────────────────────────────│  │────────────────────────────────────│  │
+│  │ id (PK)                         │  │ id (PK)                            │  │
+│  │ project_id (FK)                 │  │ project_id (FK)                    │  │
+│  │ code_id (FK→ontology_nodes)     │  │ code_id (FK→on_nodes)?             │  │
+│  │ extraction_id (FK→extr_records) │  │ code_name (snapshot)               │  │
+│  │ snippet_text · note             │  │ action · old/new theme id/name     │  │
+│  │ assigned_by (FK→users)?         │  │ changed_by (FK→users)?             │  │
+│  └─────────────────────────────────┘  └────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          LLM SCREENING                                          │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                       llm_screening_runs                                 │  │
+│  │──────────────────────────────────────────────────────────────────────────│  │
+│  │ id (PK)  │  project_id (FK)  │  triggered_by (FK→users)?                │  │
+│  │ source_id (FK→sources)?  │  model  │  status  │  mode                   │  │
+│  │ total/processed/included/excluded/uncertain counts                        │  │
+│  │ input_tokens · output_tokens · estimated/actual_cost_usd                 │  │
+│  │ agent_mode (single|multi-agent)  │  agent_pipeline (JSONB)               │  │
+│  │ saturation_threshold · stopped_at_saturation                             │  │
+│  │ started_at · completed_at · created_at                                   │  │
+│  └──────────────────────────────┬───────────────────────────────────────────┘  │
+│                                 │                                               │
+│                    ┌────────────▼──────────────────────────────────────────┐   │
+│                    │              llm_screening_results                     │   │
+│                    │──────────────────────────────────────────────────────  │   │
+│                    │ id (PK)  │  run_id (FK)  │  project_id (FK)           │   │
+│                    │ record_id (FK→records)?  │  cluster_id (FK)?          │   │
+│                    │ ta_decision · ta_reason  │  ft_decision · ft_reason   │   │
+│                    │ matched_codes (JSONB)  │  new_concepts (JSONB)        │   │
+│                    │ extracted_json (JSONB) │  agent_outputs (JSONB)       │   │
+│                    │ reviewed_by (FK→users)?  │  review_action             │   │
+│                    │ input_tokens · output_tokens · model                  │   │
+│                    └────────────────────────────────────────────────────── ┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         CITATION SOURCING                                       │
+│                                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                        citation_searches                                 │  │
+│  │──────────────────────────────────────────────────────────────────────────│  │
+│  │ id (PK)  │  project_id (FK)  │  triggered_by (FK→users)?                │  │
+│  │ status (pending|running|completed|failed)                                 │  │
+│  │ direction (backward|forward|both)                                         │  │
+│  │ scope (all|new|custom|manual)                                             │  │
+│  │ source_record_count  │  source_record_ids (JSONB)                        │  │
+│  │ candidate_count  │  already_in_project_count                             │  │
+│  │ error_msg  │  created_at  │  completed_at                                │  │
+│  └──────────────────────────────┬───────────────────────────────────────────┘  │
+│                                 │                                               │
+│                    ┌────────────▼──────────────────────────────────────────┐   │
+│                    │              citation_candidates                        │   │
+│                    │──────────────────────────────────────────────────────  │   │
+│                    │ id (PK)  │  search_id (FK)  │  project_id (FK)        │   │
+│                    │ direction (backward|forward)                           │   │
+│                    │ source_record_id (FK→records)?  ← which paper led here│   │
+│                    │ s2_paper_id  │  title  │  abstract  │  authors        │   │
+│                    │ year  │  doi  │  pmid  │  journal                     │   │
+│                    │ in_project  │  project_record_id (FK→records)?        │   │
+│                    │ decision (include|null)                                │   │
+│                    │ decided_by (FK→users)?  │  decided_at  │  notes       │   │
+│                    │ import_job_id (FK→import_jobs)?                       │   │
+│                    │ created_at                                             │   │
+│                    │                                                        │   │
+│                    │ UNIQUE: (search_id, direction, doi) WHERE doi ≠ NULL  │   │
+│                    │ UNIQUE: (search_id, direction, pmid) WHERE pmid ≠ NULL│   │
+│                    │ UNIQUE: (search_id, direction, s2_paper_id) WHERE ≠ ∅ │   │
+│                    └────────────────────────────────────────────────────── ┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Structural Patterns
+
+**Record vs. Cluster polymorphism** — Eight tables (`screening_decisions`, `extraction_records`, `screening_claims`, `record_annotations`, `record_labels`, `record_concepts`, `fulltext_pdfs`, `llm_screening_results`, `consensus_decisions`) link to *either* a single `records` row (standalone paper) *or* an `overlap_clusters` row (clustered group), enforced via a CHECK constraint and partial unique indexes on each nullable FK column.
+
+**JSONB for flexible schemas** — Extraction data, LLM outputs, overlap configs, strategy snapshots, PDF drawing strokes, and citation search inputs are stored as typed JSONB rather than additional tables, avoiding schema churn while retaining queryability.
+
+**Partial unique indexes** — Used throughout to enforce business rules that depend on NULL values: e.g., a reviewer can have at most one TA decision per record (`UNIQUE WHERE record_id IS NOT NULL`), and each citation candidate is direction-scoped (`UNIQUE (search_id, direction, doi) WHERE doi IS NOT NULL`).
+
+**Advisory locking** — Import and deduplication mutations acquire a per-project PostgreSQL advisory lock (`pg_try_advisory_lock`) to serialize writes without blocking reads.
 
 ---
 
@@ -194,7 +471,7 @@ EvidencePlatform provides three distinct, independently optional systems for org
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
 | Schema migrations | Alembic (30 versioned migrations) |
-| Citation sourcing | Semantic Scholar Graph API (httpx async client; 1–100 RPS) |
+| Citation sourcing | Semantic Scholar Graph API (httpx async; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |
 
@@ -206,37 +483,6 @@ EvidencePlatform provides three distinct, independently optional systems for org
 - **Deterministic dedup** — same inputs always produce the same dedup clusters
 - **LLM auditability** — model ID, prompt, response, and token counts logged per record per run
 - **Migration safety** — all schema changes are versioned; raw imported data is never mutated
-
----
-
-## Workflow at a Glance
-
-```
-Import literature (RIS / MEDLINE / BibTeX)
-        ↓
-Auto-deduplication within each source
-        ↓
-Cross-source overlap detection + visualization
-        ↓
-Title-abstract screening (manual or LLM-assisted)
-  → tag with labels and ontology concepts inline
-        ↓
-Full-text screening
-  → tag with labels and ontology concepts inline
-        ↓
-Structured data extraction
-  → tag with labels and ontology concepts inline
-        ↓
-Citation sourcing (backward + forward snowballing)
-  → screen new candidates inline
-  → import approved papers → re-enter pipeline
-        ↓
-Thematic coding + saturation analysis (taxonomy)
-        ↓
-Evidence synthesis output
-```
-
-Every stage generates a complete audit trail. At any point, a project owner can export decisions, review LLM run logs, inspect deduplication clusters, and reproduce the entire pipeline from source files.
 
 ---
 
@@ -254,7 +500,7 @@ Every stage generates a complete audit trail. At any point, a project owner can 
 
 ## Current Status
 
-EvidencePlatform is under active development as open-source research infrastructure, emerging from evidence synthesis methodology research at Johns Hopkins University. The core screening, deduplication, extraction, thematic analysis, ontology, and team collaboration modules are fully implemented and covered by a comprehensive automated test suite.
+EvidencePlatform is under active development as open-source research infrastructure, emerging from evidence synthesis methodology research at Johns Hopkins University. The core screening, deduplication, extraction, thematic analysis, ontology, team collaboration, LLM-assisted screening, and citation sourcing modules are fully implemented and covered by a comprehensive automated test suite (30 migrations, 32 tables, 485+ backend tests).
 
 ---
 
