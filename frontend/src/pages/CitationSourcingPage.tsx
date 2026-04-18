@@ -270,7 +270,7 @@ function ManualImportModal({
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [direction, setDirection] = useState<"backward" | "forward">("backward");
-  const [sourceRecordId, setSourceRecordId] = useState<string>("");
+  const [selectedExtractionId, setSelectedExtractionId] = useState<string>("");
 
   const { data: libItems = [] } = useQuery<ExtractionLibraryItem[]>({
     queryKey: ["extractions-library", projectId],
@@ -280,11 +280,12 @@ function ManualImportModal({
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
+      const recordId = libItems.find(i => i.id === selectedExtractionId)?.record_id ?? undefined;
       return citationsApi.manualImport(
         projectId,
         file,
         direction,
-        sourceRecordId || undefined,
+        recordId,
       );
     },
     onSuccess: res => {
@@ -389,22 +390,20 @@ function ManualImportModal({
               Source paper <span style={{ fontSize: "0.75rem", fontWeight: 400, color: "#80868b" }}>(recommended)</span>
             </label>
             <select
-              value={sourceRecordId}
-              onChange={e => setSourceRecordId(e.target.value)}
+              value={selectedExtractionId}
+              onChange={e => setSelectedExtractionId(e.target.value)}
               style={{
                 width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.4rem",
                 border: "1px solid #dadce0", fontSize: "0.84rem", background: "white",
               }}
             >
               <option value="">— Select the extracted paper these citations relate to —</option>
-              {libItems.map(item => {
-                const id = item.record_id ?? item.cluster_id ?? item.id;
-                return (
-                  <option key={id} value={id}>
-                    {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
-                  </option>
-                );
-              })}
+              {libItems.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
+                  {item.record_id === null ? " (cluster)" : ""}
+                </option>
+              ))}
             </select>
             <div style={{ fontSize: "0.75rem", color: "#80868b", marginTop: "0.2rem" }}>
               Linking to a source paper keeps provenance visible in the Extraction Library.
@@ -750,7 +749,7 @@ function AppendCandidatesModal({
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [direction, setDirection] = useState<"backward" | "forward">("backward");
-  const [sourceRecordId, setSourceRecordId] = useState<string>("");
+  const [selectedExtractionId, setSelectedExtractionId] = useState<string>("");
 
   const { data: libItems = [] } = useQuery<ExtractionLibraryItem[]>({
     queryKey: ["extractions-library", projectId],
@@ -760,8 +759,9 @@ function AppendCandidatesModal({
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
+      const recordId = libItems.find(i => i.id === selectedExtractionId)?.record_id ?? undefined;
       return citationsApi.appendCandidates(
-        projectId, searchId, file, direction, sourceRecordId || undefined,
+        projectId, searchId, file, direction, recordId,
       );
     },
     onSuccess: res => {
@@ -861,22 +861,20 @@ function AppendCandidatesModal({
               Source paper <span style={{ fontSize: "0.75rem", fontWeight: 400, color: "#80868b" }}>(recommended)</span>
             </label>
             <select
-              value={sourceRecordId}
-              onChange={e => setSourceRecordId(e.target.value)}
+              value={selectedExtractionId}
+              onChange={e => setSelectedExtractionId(e.target.value)}
               style={{
                 width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.4rem",
                 border: "1px solid #dadce0", fontSize: "0.84rem", background: "white",
               }}
             >
               <option value="">— Select the extracted paper these references belong to —</option>
-              {libItems.map(item => {
-                const id = item.record_id ?? item.cluster_id ?? item.id;
-                return (
-                  <option key={id} value={id}>
-                    {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
-                  </option>
-                );
-              })}
+              {libItems.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
+                  {item.record_id === null ? " (cluster)" : ""}
+                </option>
+              ))}
             </select>
           </div>
 

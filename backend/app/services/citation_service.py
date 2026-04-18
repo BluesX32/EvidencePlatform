@@ -284,45 +284,48 @@ async def list_source_articles(
 ) -> List[Dict[str, Any]]:
     """Return the distinct source records used as input for this search.
 
-    Loads the source_record_ids stored on the CitationSearch row and returns
-    basic metadata (id, title, year, authors) for each record so the frontend
-    can render a filter UI grouped by origin paper.
+    Queries citation_candidates directly so that manually appended candidates
+    (added via append_manual_candidates) appear alongside automatically sourced
+    ones — regardless of whether search.source_record_ids was updated.
     """
-    search = await get_search(db, search_id, project_id)
-    if search is None or not search.source_record_ids:
-        return []
-
-    raw_ids = search.source_record_ids  # list of UUID strings
-    if not raw_ids:
-        return []
-
-    try:
-        uuids = [uuid.UUID(str(r)) for r in raw_ids]
-    except Exception:
-        return []
-
-    result = await db.execute(
-        select(Record).where(Record.id.in_(uuids))
+    # Distinct non-null source_record_ids actually present in candidates
+    ids_result = await db.execute(
+        select(CitationCandidate.source_record_id)
+        .where(
+            CitationCandidate.search_id == search_id,
+            CitationCandidate.project_id == project_id,
+            CitationCandidate.source_record_id.isnot(None),
+        )
+        .distinct()
     )
-    records = list(result.scalars().all())
+    record_ids = [row[0] for row in ids_result]
+
+    if not record_ids:
+        return []
+
+    records_result = await db.execute(
+        select(Record).where(Record.id.in_(record_ids))
+    )
+    records_by_id = {r.id: r for r in records_result.scalars().all()}
 
     out = []
-    for r in records:
-        # Candidate count for this source record within the search
+    for rid in record_ids:
+        r = records_by_id.get(rid)
+        if r is None:
+            continue
         cnt_result = await db.execute(
             select(text("count(*)")).select_from(
                 select(CitationCandidate).where(
                     CitationCandidate.search_id == search_id,
-                    CitationCandidate.source_record_id == r.id,
+                    CitationCandidate.source_record_id == rid,
                 ).subquery()
             )
         )
-        cnt = cnt_result.scalar_one()
         out.append({
-            "record_id": str(r.id),
+            "record_id": str(rid),
             "title": r.title,
             "year": r.year,
-            "candidate_count": cnt,
+            "candidate_count": cnt_result.scalar_one(),
         })
     return out
 
@@ -1292,6 +1295,11 @@ async def create_manual_search(
     from app.parsers import parse_file
     from app.parsers.base import normalize_doi
 
+    if source_record_id is not None:
+        exists = await db.get(Record, source_record_id)
+        if exists is None or exists.project_id != project_id:
+            source_record_id = None
+
     parse_result = parse_file(file_bytes)
     if parse_result.valid_count == 0:
         raise ValueError(
@@ -1432,6 +1440,11 @@ async def append_manual_candidates(
     search = await db.get(CitationSearch, search_id)
     if search is None or search.project_id != project_id:
         raise LookupError("Citation search not found")
+
+    if source_record_id is not None:
+        exists = await db.get(Record, source_record_id)
+        if exists is None or exists.project_id != project_id:
+            source_record_id = None  # silently clear invalid FK rather than crash
 
     parse_result = parse_file(file_bytes)
     if parse_result.valid_count == 0:
