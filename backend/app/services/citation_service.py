@@ -1405,3 +1405,146 @@ async def create_manual_search(
     await db.commit()
     await db.refresh(search)
     return search
+
+
+async def append_manual_candidates(
+    db: AsyncSession,
+    search_id: uuid.UUID,
+    project_id: uuid.UUID,
+    direction: str,
+    source_record_id: Optional[uuid.UUID],
+    file_bytes: bytes,
+) -> dict:
+    """Parse a citation file and append its records as candidates to an existing search.
+
+    Unlike ``create_manual_search``, this does not create a new CitationSearch row.
+    Instead it inserts parsed records directly into the given search's candidate list.
+    The partial unique indexes on (search_id, direction, doi/pmid/s2_paper_id) ensure
+    that duplicates already in this search are silently skipped via ON CONFLICT DO NOTHING.
+
+    Returns a dict: {"added": N, "already_in_project": M, "duplicates_skipped": K}.
+    Raises ValueError if the file cannot be parsed or contains no valid records.
+    Raises LookupError if the search does not exist under this project.
+    """
+    from app.parsers import parse_file
+    from app.parsers.base import normalize_doi
+
+    search = await db.get(CitationSearch, search_id)
+    if search is None or search.project_id != project_id:
+        raise LookupError("Citation search not found")
+
+    parse_result = parse_file(file_bytes)
+    if parse_result.valid_count == 0:
+        raise ValueError(
+            parse_result.error_summary()
+            or "No valid records found in uploaded file. "
+               "Please use RIS (.ris) or MEDLINE/PubMed-tagged (.txt) format."
+        )
+
+    # Normalize parsed records; dedup within the file
+    candidates: List[dict] = []
+    seen_keys: set = set()
+
+    for rec in parse_result.records:
+        doi = normalize_doi(rec.get("doi"))
+        raw = rec.get("raw_data") or {}
+        pmid = None
+        for key in ("pmid", "AN", "pubmed_id", "accession_number"):
+            pmid = _extract_pmid(raw.get(key))
+            if pmid:
+                break
+
+        paper_id = doi or pmid or rec.get("title")
+        if not paper_id:
+            continue
+        key = f"{direction}:{paper_id}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        authors = rec.get("authors") or []
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(";") if a.strip()]
+
+        candidates.append({
+            "direction": direction,
+            "source_record_id": source_record_id,
+            "s2_paper_id": None,
+            "title": rec.get("title"),
+            "abstract": rec.get("abstract"),
+            "authors": authors or None,
+            "year": rec.get("year"),
+            "doi": doi,
+            "pmid": pmid,
+            "journal": rec.get("journal") or rec.get("secondary_title"),
+            "in_project": False,
+            "project_record_id": None,
+        })
+
+    candidates = await _dedup_against_project(db, project_id, candidates)
+
+    added = 0
+    already_in_project = 0
+    duplicates_skipped = 0
+
+    if candidates:
+        for i in range(0, len(candidates), _CHUNK_SIZE):
+            chunk = candidates[i : i + _CHUNK_SIZE]
+            rows = [
+                {
+                    "id": uuid.uuid4(),
+                    "search_id": search_id,
+                    "project_id": project_id,
+                    "direction": c["direction"],
+                    "source_record_id": c.get("source_record_id"),
+                    "s2_paper_id": None,
+                    "title": c.get("title"),
+                    "abstract": c.get("abstract"),
+                    "authors": c.get("authors"),
+                    "year": c.get("year"),
+                    "doi": c.get("doi"),
+                    "pmid": c.get("pmid"),
+                    "journal": c.get("journal"),
+                    "in_project": c.get("in_project", False),
+                    "project_record_id": c.get("project_record_id"),
+                }
+                for c in chunk
+            ]
+            result = await db.execute(
+                text("""
+                    INSERT INTO citation_candidates
+                        (id, search_id, project_id, direction, source_record_id,
+                         s2_paper_id, title, abstract, authors, year, doi, pmid, journal,
+                         in_project, project_record_id)
+                    VALUES
+                        (:id, :search_id, :project_id, :direction, :source_record_id,
+                         :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
+                         :in_project, :project_record_id)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id
+                """),
+                rows,
+            )
+            added += result.rowcount or 0
+
+        already_in_project = sum(1 for c in candidates if c.get("in_project"))
+        duplicates_skipped = len(candidates) - added
+
+        # Refresh aggregate counts on the search row
+        count_result = await db.execute(
+            text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
+            {"s": search_id},
+        )
+        in_proj_result = await db.execute(
+            text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s AND in_project = TRUE"),
+            {"s": search_id},
+        )
+        search.candidate_count = count_result.scalar_one()
+        search.already_in_project_count = in_proj_result.scalar_one()
+        await db.commit()
+
+    return {
+        "added": added,
+        "already_in_project": already_in_project,
+        "duplicates_skipped": duplicates_skipped,
+    }

@@ -1787,4 +1787,21 @@ export const citationsApi = {
       form,
     );
   },
+
+  appendCandidates: (
+    projectId: string,
+    searchId: string,
+    file: File,
+    direction: "backward" | "forward",
+    sourceRecordId?: string,
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("direction", direction);
+    if (sourceRecordId) form.append("source_record_id", sourceRecordId);
+    return api.post<{ added: number; already_in_project: number; duplicates_skipped: number }>(
+      `/projects/${projectId}/citations/searches/${searchId}/candidates/upload`,
+      form,
+    );
+  },
 };

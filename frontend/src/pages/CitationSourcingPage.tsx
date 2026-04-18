@@ -735,6 +735,174 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
   );
 }
 
+// ── Append-candidates modal ───────────────────────────────────────────────────
+
+function AppendCandidatesModal({
+  projectId,
+  searchId,
+  onClose,
+  onSuccess,
+}: {
+  projectId: string;
+  searchId: string;
+  onClose: () => void;
+  onSuccess: (result: { added: number; already_in_project: number; duplicates_skipped: number }) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [direction, setDirection] = useState<"backward" | "forward">("backward");
+  const [sourceRecordId, setSourceRecordId] = useState<string>("");
+
+  const { data: libItems = [] } = useQuery<ExtractionLibraryItem[]>({
+    queryKey: ["extractions-library", projectId],
+    queryFn: () => extractionLibraryApi.list(projectId).then(r => r.data),
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!file) throw new Error("No file selected");
+      return citationsApi.appendCandidates(
+        projectId, searchId, file, direction, sourceRecordId || undefined,
+      );
+    },
+    onSuccess: res => {
+      onSuccess(res.data);
+      onClose();
+    },
+  });
+
+  const errMsg =
+    mutation.isError
+      ? ((mutation.error as any)?.response?.data?.detail ?? (mutation.error as Error).message)
+      : null;
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+    }}>
+      <div style={{
+        background: "white", borderRadius: "0.75rem", padding: "1.5rem",
+        width: "min(540px, 94vw)", boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: "1rem", fontWeight: 700, color: "#202124" }}>
+              Add References to This Search
+            </h3>
+            <p style={{ margin: "0.3rem 0 0", fontSize: "0.82rem", color: "#5f6368", lineHeight: 1.5 }}>
+              Upload a RIS or MEDLINE file of papers that are missing from this search.
+              They will be added directly to the candidate list — duplicates are skipped automatically.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ marginLeft: "1rem", background: "none", border: "none", fontSize: "1.1rem", cursor: "pointer", color: "#5f6368", flexShrink: 0 }}
+          >✕</button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+          {/* File */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Citation file <span style={{ color: "#c5221f" }}>*</span>
+            </label>
+            <input
+              type="file"
+              accept=".ris,.txt,.bib"
+              onChange={e => setFile(e.target.files?.[0] ?? null)}
+              style={{ fontSize: "0.84rem", width: "100%" }}
+            />
+            <div style={{ fontSize: "0.75rem", color: "#80868b", marginTop: "0.2rem" }}>
+              Accepted formats: RIS (.ris) · MEDLINE/PubMed-tagged (.txt)
+            </div>
+          </div>
+
+          {/* Direction */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Direction <span style={{ color: "#c5221f" }}>*</span>
+            </label>
+            <div style={{ display: "flex", gap: "0.65rem" }}>
+              {(["backward", "forward"] as const).map(d => (
+                <label
+                  key={d}
+                  style={{
+                    flex: 1, display: "flex", alignItems: "center", gap: "0.5rem",
+                    padding: "0.5rem 0.75rem", borderRadius: "0.4rem", cursor: "pointer",
+                    border: `1.5px solid ${direction === d ? "#4f46e5" : "#dadce0"}`,
+                    background: direction === d ? "#ede9fe" : "white",
+                    fontSize: "0.84rem",
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="append-direction"
+                    value={d}
+                    checked={direction === d}
+                    onChange={() => setDirection(d)}
+                    style={{ accentColor: "#4f46e5" }}
+                  />
+                  <span>
+                    <strong>{d === "backward" ? "← Backward" : "→ Forward"}</strong>
+                    <span style={{ display: "block", fontSize: "0.74rem", color: "#5f6368" }}>
+                      {d === "backward"
+                        ? "References of an extracted paper"
+                        : "Papers that cite an extracted paper"}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Source paper */}
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#3c4043", marginBottom: "0.3rem" }}>
+              Source paper <span style={{ fontSize: "0.75rem", fontWeight: 400, color: "#80868b" }}>(recommended)</span>
+            </label>
+            <select
+              value={sourceRecordId}
+              onChange={e => setSourceRecordId(e.target.value)}
+              style={{
+                width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.4rem",
+                border: "1px solid #dadce0", fontSize: "0.84rem", background: "white",
+              }}
+            >
+              <option value="">— Select the extracted paper these references belong to —</option>
+              {libItems.map(item => {
+                const id = item.record_id ?? item.cluster_id ?? item.id;
+                return (
+                  <option key={id} value={id}>
+                    {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          {errMsg && (
+            <div style={{ padding: "0.5rem 0.75rem", borderRadius: "0.4rem", background: "#fce8e6", color: "#c5221f", fontSize: "0.82rem" }}>
+              {errMsg}
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.6rem", marginTop: "0.25rem" }}>
+            <button className="btn-secondary" onClick={onClose} disabled={mutation.isPending}>Cancel</button>
+            <button
+              className="btn-primary"
+              onClick={() => mutation.mutate()}
+              disabled={!file || mutation.isPending}
+            >
+              {mutation.isPending ? "Adding…" : "Add to Search"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Candidate screening view ──────────────────────────────────────────────────
 
 function CandidateScreeningView({
@@ -752,6 +920,8 @@ function CandidateScreeningView({
   const [sourceFilter, setSourceFilter] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
+  const [showAppend, setShowAppend] = useState(false);
+  const [appendResult, setAppendResult] = useState<{ added: number; duplicates_skipped: number } | null>(null);
   // Local set of selected candidate IDs (mirrors server decision='include')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [initialised, setInitialised] = useState(false);
@@ -915,6 +1085,22 @@ function CandidateScreeningView({
 
   return (
     <div style={{ padding: "1.5rem", maxWidth: 1060 }}>
+      {/* Append-candidates modal */}
+      {showAppend && (
+        <AppendCandidatesModal
+          projectId={projectId}
+          searchId={searchId}
+          onClose={() => setShowAppend(false)}
+          onSuccess={result => {
+            setAppendResult(result);
+            setShowAppend(false);
+            queryClient.invalidateQueries({ queryKey: ["citation-candidates", projectId, searchId] });
+            queryClient.invalidateQueries({ queryKey: ["citation-search", projectId, searchId] });
+            queryClient.invalidateQueries({ queryKey: ["citation-sources", projectId, searchId] });
+          }}
+        />
+      )}
+
       {/* Header */}
       <div style={{ marginBottom: "1rem" }}>
         <Link
@@ -934,6 +1120,14 @@ function CandidateScreeningView({
           <span style={{ fontSize: "0.8rem", color: "#9aa0a6" }}>
             {formatDateTime(search.created_at)}
           </span>
+          <button
+            className="btn-secondary"
+            onClick={() => { setShowAppend(true); setAppendResult(null); }}
+            style={{ marginLeft: "auto", fontSize: "0.8rem", whiteSpace: "nowrap" }}
+            title="Upload a RIS or MEDLINE file to add missing references to this search"
+          >
+            + Add References Manually
+          </button>
         </div>
 
         {search.status === "completed" && (
@@ -958,6 +1152,27 @@ function CandidateScreeningView({
           </p>
         )}
       </div>
+
+      {/* Append-candidates result banner */}
+      {appendResult && (
+        <div style={{
+          background: "#e6f4ea", border: "1px solid #ceead6", borderRadius: "0.45rem",
+          padding: "0.6rem 1rem", marginBottom: "0.75rem",
+          display: "flex", alignItems: "center", gap: "0.75rem",
+        }}>
+          <span style={{ fontSize: "1rem" }}>✓</span>
+          <span style={{ fontSize: "0.84rem", color: "#1e8e3e", flex: 1 }}>
+            <strong>{appendResult.added}</strong> reference{appendResult.added !== 1 ? "s" : ""} added
+            {appendResult.duplicates_skipped > 0 && (
+              <> · {appendResult.duplicates_skipped} already present (skipped)</>
+            )}
+          </span>
+          <button
+            onClick={() => setAppendResult(null)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#5f6368", fontSize: "1rem", padding: "0.1rem 0.3rem" }}
+          >✕</button>
+        </div>
+      )}
 
       {/* Filters */}
       {search.status === "completed" && (

@@ -484,6 +484,56 @@ async def import_selected(
     return {"message": f"Import started for {len(pending)} candidates"}
 
 
+@router.post("/searches/{search_id}/candidates/upload", status_code=200)
+async def upload_candidates_to_search(
+    project_id: uuid.UUID,
+    search_id: uuid.UUID,
+    file: UploadFile = File(...),
+    direction: str = Form(...),
+    source_record_id: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Append candidates from a citation file to an existing search.
+
+    Parses a RIS or MEDLINE file and inserts the records as additional candidates
+    in the specified search.  Duplicates already present in this search are silently
+    skipped (unique indexes on doi/pmid/s2_paper_id per search+direction).  The
+    search's candidate_count is updated automatically.
+
+    Returns: {"added": N, "already_in_project": M, "duplicates_skipped": K}
+    """
+    await _require_project(project_id, current_user, db, allowed=REVIEWER_ROLE)
+
+    if direction not in {"backward", "forward"}:
+        raise HTTPException(
+            status_code=400,
+            detail="direction must be 'backward' or 'forward'",
+        )
+
+    src_rec_id: Optional[uuid.UUID] = None
+    if source_record_id and source_record_id.strip():
+        try:
+            src_rec_id = uuid.UUID(source_record_id.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="source_record_id is not a valid UUID")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        result = await citation_service.append_manual_candidates(
+            db, search_id, project_id, direction, src_rec_id, file_bytes
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return result
+
+
 @router.get("/searches/{search_id}/sources")
 async def list_source_articles(
     project_id: uuid.UUID,
