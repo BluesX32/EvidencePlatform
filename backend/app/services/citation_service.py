@@ -51,7 +51,6 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote as _url_quote
 
 import httpx
 from sqlalchemy import delete, select, text, update
@@ -95,10 +94,9 @@ _DOI_PREFIXES = (
 def _clean_doi(doi: Optional[str]) -> Optional[str]:
     """Normalise a DOI for use in a Semantic Scholar lookup URL.
 
-    Strips common URL prefixes (doi.org, dx.doi.org, doi:), removes trailing
-    whitespace and stray punctuation, then percent-encodes characters that
-    are valid in a DOI but would otherwise corrupt an HTTP path segment
-    (parentheses, angle brackets, hash, etc.).
+    Strips common URL prefixes (doi.org, dx.doi.org, doi:) and removes
+    trailing whitespace and stray punctuation.  The cleaned DOI is returned
+    as-is; httpx handles any path-component encoding when the URL is built.
 
     Returns None for blank/None input.
     """
@@ -113,9 +111,7 @@ def _clean_doi(doi: Optional[str]) -> Optional[str]:
     doi = doi.strip().rstrip(".,; ")
     if not doi:
         return None
-    # Percent-encode characters that are valid inside a DOI but break URL paths.
-    # We keep the '/' that separates registrant from suffix (e.g. 10.1000/xyz).
-    return _url_quote(doi, safe="-./_:@!$&'()*+,;=~")
+    return doi
 
 
 def _extract_pmid(raw_value: Any) -> Optional[str]:
@@ -604,7 +600,9 @@ async def _do_citation_search(
         for record in records:
             try:
                 raw_data_rows = raw_data_by_record.get(record.id, [])
-                s2_id = await _resolve_s2_id(client, record, raw_data_rows, api_key)
+                s2_id = await _resolve_s2_id(
+                    client, record, raw_data_rows, api_key, sleep_interval
+                )
                 if s2_id is None:
                     skipped_records += 1
                     continue
@@ -622,7 +620,8 @@ async def _do_citation_search(
                     )
 
                 if direction in ("forward", "both"):
-                    await asyncio.sleep(sleep_interval)
+                    # No explicit sleep needed here — _fetch_paginated's first _s2_get
+                    # call already waits sleep_interval before firing.
                     cits = await _fetch_paginated(
                         client, f"{_S2_BASE}/paper/{s2_id}/citations", api_key, sleep_interval
                     )
@@ -633,8 +632,7 @@ async def _do_citation_search(
                         "Record %s (%r): %d forward citations fetched",
                         record.id, record.title and record.title[:40], len(cits),
                     )
-
-                await asyncio.sleep(sleep_interval)
+                # No sleep at end of record — the next iteration's first _s2_get sleeps.
 
             except Exception as exc:  # noqa: BLE001
                 # Isolate per-record failures so one bad record never kills the loop
@@ -892,20 +890,26 @@ async def _resolve_s2_id(
     record: Record,
     raw_data_rows: List[dict],
     api_key: Optional[str],
+    sleep_interval: float = 0.0,
 ) -> Optional[str]:
     """Resolve a project Record to a Semantic Scholar paper ID.
 
     Resolution order:
-      1. DOI  — cleaned and URL-safe-encoded before use in the S2 path
+      1. DOI  — URL prefixes (doi.org, dx.doi.org, doi:) stripped; used in S2 path
       2. PMID — extracted from raw_data with regex to handle annotated formats
       3. Title + year search — up to 10 candidates, ±2-year tolerance, then
-         ±5-year fallback so online-first / pre-print year gaps don't block resolution
+         ±5-year fallback, then no-year last resort so papers with mismatched
+         years in S2 are still resolved rather than silently skipped
+
+    ``sleep_interval`` is forwarded to every ``_s2_get`` call so each HTTP request
+    is preceded by the project-wide rate-limit delay — no extra sleeps needed here.
     """
     # 1. DOI
     cleaned_doi = _clean_doi(record.doi)
     if cleaned_doi:
         result = await _s2_get(
-            client, f"{_S2_BASE}/paper/DOI:{cleaned_doi}", {"fields": "paperId"}, api_key
+            client, f"{_S2_BASE}/paper/DOI:{cleaned_doi}", {"fields": "paperId"}, api_key,
+            sleep_before=sleep_interval,
         )
         if result and result.get("paperId"):
             logger.debug("Record %s resolved via DOI: %s", record.id, result["paperId"])
@@ -924,6 +928,7 @@ async def _resolve_s2_id(
                     f"{_S2_BASE}/paper/PMID:{pmid}",
                     {"fields": "paperId"},
                     api_key,
+                    sleep_before=sleep_interval,
                 )
                 if result and result.get("paperId"):
                     logger.debug("Record %s resolved via PMID %s: %s", record.id, pmid, result["paperId"])
@@ -937,6 +942,7 @@ async def _resolve_s2_id(
             f"{_S2_BASE}/paper/search",
             {"query": query, "fields": "paperId,title,year", "limit": 10},
             api_key,
+            sleep_before=sleep_interval,
         )
         if result:
             hits = result.get("data") or []
@@ -965,16 +971,17 @@ async def _resolve_s2_id(
                     )
                     return hit["paperId"]
 
-            # Pass 3: best-ranked S2 result regardless of year
-            #         Only use this if the record has no year at all (year=None)
-            if not record.year:
-                for hit in hits:
-                    if hit.get("paperId"):
-                        logger.info(
-                            "Record %s (no year) resolved via top title-search result: %s",
-                            record.id, hit["paperId"],
-                        )
-                        return hit["paperId"]
+            # Pass 3: top-ranked S2 result regardless of year — last resort.
+            # Year-filtered passes have already failed; using the best S2 match
+            # is better than returning None and skipping the paper entirely.
+            for hit in hits:
+                if hit.get("paperId"):
+                    logger.info(
+                        "Record %s resolved via title search (no year filter, last resort, "
+                        "record_year=%s, hit_year=%s): %s",
+                        record.id, record.year, hit.get("year"), hit["paperId"],
+                    )
+                    return hit["paperId"]
 
     logger.info(
         "Record %s (title=%r, doi=%r) could not be resolved to an S2 identifier — "
@@ -999,6 +1006,10 @@ async def _fetch_paginated(
     `next` field is more reliable than checking ``len(batch) < PAGE_SIZE``: S2 can
     return fewer items than the page size on intermediate pages (due to server-side
     filtering) and that used to cause early termination.
+
+    Rate limiting is fully delegated to ``_s2_get`` via ``sleep_before=sleep_interval``.
+    Every call — including the first — is preceded by the required interval so the
+    caller does not need to add any extra waits around this function.
     """
     results: List[dict] = []
     offset = 0
@@ -1008,6 +1019,7 @@ async def _fetch_paginated(
             client, url,
             {"fields": _S2_FIELDS, "limit": _PAGE_SIZE, "offset": offset},
             api_key,
+            sleep_before=sleep_interval,
         )
         if data is None:
             if page_num == 0:
@@ -1024,18 +1036,18 @@ async def _fetch_paginated(
         results.extend(batch)
         page_num += 1
 
-        # Use the S2 `next` cursor to drive pagination.  When `next` is absent
-        # the API has no more pages to offer.
         next_offset = data.get("next")
         if next_offset is None:
             break
         offset = next_offset
-        await asyncio.sleep(sleep_interval)
+        # No explicit sleep here — the next _s2_get call carries sleep_before
 
     return results
 
 
-_S2_RATE_LIMIT_BACKOFFS = (30, 60, 120)  # seconds between successive 429 retries
+# 429 retry schedule.  With proper pre-call rate limiting these should be rare;
+# keep them short so a single throttle burst doesn't stall the whole search.
+_S2_RATE_LIMIT_BACKOFFS = (5, 10, 20)  # seconds
 
 
 async def _s2_get(
@@ -1043,13 +1055,21 @@ async def _s2_get(
     url: str,
     params: dict,
     api_key: Optional[str],
+    sleep_before: float = 0.0,
 ) -> Optional[dict]:
     """Make one S2 API GET request with automatic 429 retry (up to 3 attempts).
 
-    Retry schedule on rate-limit: 30 s → 60 s → 120 s.  After three consecutive
-    429 responses the call gives up and returns None so the caller can decide
-    whether to break pagination or skip the record.
+    ``sleep_before`` is applied BEFORE the HTTP call so every call site can pass
+    the project-wide rate-limit interval and be guaranteed to respect it.
+    Centralising the sleep here means callers never need to add their own waits.
+
+    Retry schedule on rate-limit: 5 s → 10 s → 20 s.  These are short because
+    proper per-call spacing (sleep_before ≥ 1 s without API key) means 429s are
+    edge cases, not the norm.
     """
+    if sleep_before > 0:
+        await asyncio.sleep(sleep_before)
+
     headers = {}
     if api_key:
         headers["x-api-key"] = api_key
@@ -1057,15 +1077,19 @@ async def _s2_get(
     try:
         resp = await client.get(url, params=params, headers=headers)
 
-        # Retry loop for rate limiting
         for backoff in _S2_RATE_LIMIT_BACKOFFS:
             if resp.status_code != 429:
                 break
-            logger.warning("S2 rate limit hit for %s; backing off %ds", url, backoff)
+            logger.warning(
+                "S2 rate limit hit for %s; backing off %ds (sleep_before was %.2fs)",
+                url, backoff, sleep_before,
+            )
             await asyncio.sleep(backoff)
             resp = await client.get(url, params=params, headers=headers)
-        else:
-            # All retries exhausted
+
+        # Check after the loop in case all retries were exhausted (for/else would
+        # incorrectly discard a successful final retry, so we check explicitly).
+        if resp.status_code == 429:
             logger.error(
                 "S2 rate limit persists after %d retries for %s; giving up",
                 len(_S2_RATE_LIMIT_BACKOFFS), url,

@@ -751,6 +751,7 @@ function CandidateScreeningView({
   const [directionFilter, setDirectionFilter] = useState("both");
   const [sourceFilter, setSourceFilter] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importSuccess, setImportSuccess] = useState(false);
   // Local set of selected candidate IDs (mirrors server decision='include')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [initialised, setInitialised] = useState(false);
@@ -834,9 +835,11 @@ function CandidateScreeningView({
     mutationFn: () => citationsApi.importSelected(projectId, searchId),
     onSuccess: () => {
       setImporting(false);
-      navigate(`/projects/${projectId}/import`);
+      setImportSuccess(true);
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["citation-candidates", projectId, searchId] });
     },
-    onMutate: () => setImporting(true),
+    onMutate: () => { setImporting(true); setImportSuccess(false); },
     onError: () => setImporting(false),
   });
 
@@ -1082,8 +1085,29 @@ function CandidateScreeningView({
         </div>
       )}
 
+      {/* Import success banner */}
+      {importSuccess && (
+        <div style={{
+          background: "#e6f4ea", border: "1px solid #ceead6", borderRadius: "0.45rem",
+          padding: "0.75rem 1rem", display: "flex", alignItems: "center", gap: "0.75rem",
+        }}>
+          <span style={{ fontSize: "1rem" }}>✓</span>
+          <div style={{ flex: 1 }}>
+            <strong style={{ color: "#1e8e3e" }}>Import started.</strong>{" "}
+            <span style={{ fontSize: "0.84rem", color: "#3c4043" }}>
+              Papers are being processed through deduplication and will appear in your
+              Records and Extraction Library shortly.
+            </span>
+          </div>
+          <button
+            onClick={() => setImportSuccess(false)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#5f6368", fontSize: "1rem", padding: "0.1rem 0.3rem" }}
+          >✕</button>
+        </div>
+      )}
+
       {/* Import bar */}
-      {search.status === "completed" && (
+      {search.status === "completed" && !importSuccess && (
         <div style={{
           borderTop: "1px solid #e8eaed",
           paddingTop: "1rem",
