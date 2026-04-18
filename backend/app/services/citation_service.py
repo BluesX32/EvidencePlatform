@@ -1483,11 +1483,20 @@ async def append_manual_candidates(
 
     candidates = await _dedup_against_project(db, project_id, candidates)
 
+    already_in_project = sum(1 for c in candidates if c.get("in_project"))
     added = 0
-    already_in_project = 0
     duplicates_skipped = 0
 
     if candidates:
+        # Snapshot count before insert so we can calculate how many were actually added
+        # (ON CONFLICT DO NOTHING skips duplicates silently; executemany+asyncpg does not
+        # support RETURNING, so we measure the delta instead).
+        before_result = await db.execute(
+            text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
+            {"s": search_id},
+        )
+        before_count = before_result.scalar_one()
+
         for i in range(0, len(candidates), _CHUNK_SIZE):
             chunk = candidates[i : i + _CHUNK_SIZE]
             rows = [
@@ -1510,7 +1519,7 @@ async def append_manual_candidates(
                 }
                 for c in chunk
             ]
-            result = await db.execute(
+            await db.execute(
                 text("""
                     INSERT INTO citation_candidates
                         (id, search_id, project_id, direction, source_record_id,
@@ -1521,16 +1530,11 @@ async def append_manual_candidates(
                          :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
                          :in_project, :project_record_id)
                     ON CONFLICT DO NOTHING
-                    RETURNING id
                 """),
                 rows,
             )
-            added += result.rowcount or 0
 
-        already_in_project = sum(1 for c in candidates if c.get("in_project"))
-        duplicates_skipped = len(candidates) - added
-
-        # Refresh aggregate counts on the search row
+        # Measure how many rows were actually inserted and refresh search aggregates
         count_result = await db.execute(
             text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
             {"s": search_id},
@@ -1539,7 +1543,11 @@ async def append_manual_candidates(
             text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s AND in_project = TRUE"),
             {"s": search_id},
         )
-        search.candidate_count = count_result.scalar_one()
+        after_count = count_result.scalar_one()
+        added = after_count - before_count
+        duplicates_skipped = len(candidates) - added
+
+        search.candidate_count = after_count
         search.already_in_project_count = in_proj_result.scalar_one()
         await db.commit()
 

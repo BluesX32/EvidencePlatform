@@ -12,10 +12,13 @@ GET    /projects/{id}/citations/searches/{search_id}/sources           → sourc
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -530,6 +533,15 @@ async def upload_candidates_to_search(
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception(
+            "append_manual_candidates failed for search %s project %s: %s",
+            search_id, project_id, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload failed ({type(exc).__name__}): {exc}",
+        )
 
     return result
 
