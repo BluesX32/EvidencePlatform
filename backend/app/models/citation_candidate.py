@@ -34,11 +34,17 @@ class CitationCandidate(Base):
     )
     # backward | forward
     direction: Mapped[str] = mapped_column(String(20), nullable=False)
-    # Which extracted paper's reference/citation list surfaced this candidate
+    # Which extracted paper's reference/citation list surfaced this candidate (primary source)
     source_record_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("records.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # All source papers that led to this candidate (superset of source_record_id).
+    # Enables filtering by any source article, including when the same paper appears
+    # in multiple source papers' reference lists or is manually tagged to multiple sources.
+    source_record_ids: Mapped[list] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
     )
     # Semantic Scholar paper ID — last-resort dedup key
     s2_paper_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

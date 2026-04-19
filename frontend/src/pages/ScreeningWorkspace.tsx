@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode, ConceptTemplate } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
-import ConceptPicker from "../components/ConceptPicker";
+import ConceptExtractionForm from "../components/ConceptExtractionForm";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
@@ -919,7 +919,6 @@ function PaperCard({
       {showAnnotations && (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
-          <ConceptPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       )}
     </div>
@@ -2568,6 +2567,13 @@ function MixedPanel({
 
   const itemStartedAt = useRef<number>(Date.now());
 
+  const { data: mixedProject } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const mixedConceptTemplate = mixedProject?.concept_template ?? null;
+
   const fetchNext = useCallback(async () => {
     setLoading(true);
     setFetchError(null);
@@ -2946,6 +2952,17 @@ function MixedPanel({
             onGoBack={displayPos !== null && displayPos > 1 ? goToPrev : undefined}
             onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
           />
+          {/* Concept extraction form — shown after data extraction when concept_template is configured */}
+          {mixedConceptTemplate && mixedConceptTemplate.fields.length > 0 && (
+            <div style={{ marginTop: 16, padding: "0.85rem 1.1rem", border: "1px solid #e0e7ff", borderRadius: "0.5rem", background: "#fafafe" }}>
+              <ConceptExtractionForm
+                projectId={projectId}
+                template={mixedConceptTemplate}
+                recordId={item!.record_id}
+                clusterId={item!.cluster_id}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -2996,6 +3013,13 @@ function ExtractionPanel({
   const [pdfOpen, setPdfOpen] = useState(false);
 
   const itemStartedAt = useRef<number>(Date.now());
+
+  const { data: project } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId).then((r) => r.data),
+    staleTime: 60_000,
+  });
+  const conceptTemplate = project?.concept_template ?? null;
 
   const fetchNext = useCallback(async () => {
     setLoading(true);
@@ -3178,7 +3202,6 @@ function ExtractionPanel({
         <AnnotationsPanel projectId={projectId} item={item} />
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
           <LabelPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
-          <ConceptPicker projectId={projectId} recordId={item.record_id} clusterId={item.cluster_id} />
         </div>
       </div>
       {/* PDF access in extraction stage */}
@@ -3213,6 +3236,17 @@ function ExtractionPanel({
         onGoBack={displayPos !== null && displayPos > 1 ? goToPrev : undefined}
         onSkip={fetchNext} isPending={saveMutation.isPending} isError={saveMutation.isError} toggleChip={toggleChip}
       />
+      {/* Concept extraction form — shown below data extraction when concept_template is configured */}
+      {conceptTemplate && conceptTemplate.fields.length > 0 && (
+        <div style={{ marginTop: 16, padding: "0.85rem 1.1rem", border: "1px solid #e0e7ff", borderRadius: "0.5rem", background: "#fafafe" }}>
+          <ConceptExtractionForm
+            projectId={projectId}
+            template={conceptTemplate}
+            recordId={item.record_id}
+            clusterId={item.cluster_id}
+          />
+        </div>
+      )}
       {pdfOpen && item && <PDFViewerPanel projectId={projectId} item={item} onClose={() => setPdfOpen(false)} />}
     </div>
   );

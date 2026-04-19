@@ -53,6 +53,7 @@ import ExtractionLibrary from "./pages/ExtractionLibrary";
 import CitationSourcingPage from "./pages/CitationSourcingPage";
 import LabelsPage from "./pages/LabelsPage";
 import ThematicAnalysis from "./pages/ThematicAnalysis";
+import ConceptTaxonomyPage from "./pages/ConceptTaxonomyPage";
 import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import AppShell from "./components/AppShell";
@@ -121,7 +122,8 @@ export default function App() {
             <Route path="/projects/:id/citations/:searchId" element={<WithShell><CitationSourcingPage /></WithShell>} />
             <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
             <Route path="/projects/:id/ontology"     element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><OntologyPage /></Suspense></WithShell>} />
-            <Route path="/projects/:id/thematic"     element={<WithShell><ThematicAnalysis /></WithShell>} />
+            <Route path="/projects/:id/thematic"          element={<WithShell><ThematicAnalysis /></WithShell>} />
+            <Route path="/projects/:id/concept-taxonomy" element={<WithShell><ConceptTaxonomyPage /></WithShell>} />
             <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><LLMScreeningPage /></Suspense></WithShell>} />
             <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
             <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />

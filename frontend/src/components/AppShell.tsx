@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode,
+  Menu, PanelLeftClose, SearchCode, Layers,
 } from "lucide-react";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
 import { Cloud } from "lucide-react";
@@ -31,9 +31,10 @@ const PROJECT_NAV = [
   { path: "/screen",      icon: CheckSquare,     label: "Screening"    },
   { path: "/extractions", icon: FlaskConical,    label: "Extractions"  },
   { path: "/citations",   icon: SearchCode,      label: "Citation Search" },
-  { path: "/labels",      icon: Tag,             label: "Labels"       },
-  { path: "/thematic",    icon: GitBranch,       label: "Taxonomy"     },
-  { path: "/ontology",    icon: Network,         label: "Ontology"     },
+  { path: "/labels",             icon: Tag,       label: "Labels"           },
+  { path: "/thematic",          icon: GitBranch, label: "Thematic"         },
+  { path: "/concept-taxonomy",  icon: Layers,    label: "Concepts"         },
+  { path: "/ontology",          icon: Network,   label: "Ontology"         },
   { path: "/llm-screening", icon: Bot,           label: "LLM Screening"},
   { path: "/team",        icon: Users,           label: "Team"         },
   { path: "/consensus",   icon: Scale,           label: "Consensus"    },

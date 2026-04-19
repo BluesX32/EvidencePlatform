@@ -121,6 +121,61 @@ export interface ExtractionTemplate {
   rows: ExtractionTemplateRow[];
 }
 
+// ── Concept extraction template ───────────────────────────────────────────────
+
+export type ConceptFieldType = "entity" | "relation" | "metadata";
+export type ConceptInputType = "string" | "single_select" | "multi_select";
+
+export interface ConceptTemplateField {
+  id: string;                        // UUID, client-generated
+  label: string;                     // e.g. "Entity Name", "Relation Type"
+  field_type: ConceptFieldType;      // routes to taxonomy section
+  input_type: ConceptInputType;      // controls input widget
+  options: string[];                 // for select types
+  allow_custom_options?: boolean;
+  placeholder?: string;
+}
+
+export interface ConceptTemplate {
+  fields: ConceptTemplateField[];
+}
+
+export interface ConceptExtractionJson {
+  cells: Record<string, string | string[]>;  // field_id → value(s)
+  note?: string;
+}
+
+export interface ConceptExtractionRecord {
+  id: string;
+  project_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  extracted_json: ConceptExtractionJson;
+  reviewer_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConceptTaxonomyEntry {
+  value: string;
+  field_id: string;
+  field_label: string;
+  field_type: ConceptFieldType;
+  count: number;
+  record_ids: string[];
+}
+
+export interface ConceptTaxonomyAggregate {
+  entity: ConceptTaxonomyEntry[];
+  relation: ConceptTaxonomyEntry[];
+  metadata: ConceptTaxonomyEntry[];
+}
+
+export interface PushToOntologyResult {
+  created: number;
+  skipped: number;
+}
+
 export interface ProjectDetail extends Project {
   record_count: number;        // canonical records (unique after dedup)
   import_count: number;        // completed import jobs
@@ -128,6 +183,7 @@ export interface ProjectDetail extends Project {
   criteria: ProjectCriteria;
   my_role: "owner" | "admin" | "reviewer" | "observer";
   extraction_template: ExtractionTemplate | null;
+  concept_template: ConceptTemplate | null;
 }
 
 export interface ProjectListItem extends Project {
@@ -144,6 +200,33 @@ export const projectsApi = {
     api.patch<ProjectDetail>(`/projects/${id}/criteria`, body),
   updateExtractionTemplate: (id: string, rows: ExtractionTemplateRow[]) =>
     api.patch<ProjectDetail>(`/projects/${id}/extraction-template`, { rows }),
+  updateConceptTemplate: (id: string, fields: ConceptTemplateField[]) =>
+    api.patch<ProjectDetail>(`/projects/${id}/concept-template`, { fields }),
+};
+
+// ── Concept extraction API ────────────────────────────────────────────────────
+
+export const conceptExtractionApi = {
+  list: (projectId: string) =>
+    api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions`),
+
+  upsert: (
+    projectId: string,
+    body: { record_id?: string | null; cluster_id?: string | null; extracted_json: ConceptExtractionJson },
+  ) => api.post<ConceptExtractionRecord>(`/projects/${projectId}/concept-extractions`, body),
+
+  getItem: (
+    projectId: string,
+    params: { record_id?: string | null; cluster_id?: string | null },
+  ) => api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions/item`, { params }),
+
+  getAggregate: (projectId: string) =>
+    api.get<ConceptTaxonomyAggregate>(`/projects/${projectId}/concept-extractions/aggregate`),
+
+  pushToOntology: (
+    projectId: string,
+    items: Array<{ value: string; field_type: ConceptFieldType; namespace?: string; parent_id?: string | null }>,
+  ) => api.post<PushToOntologyResult>(`/projects/${projectId}/concept-extractions/push-to-ontology`, { items }),
 };
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -1662,6 +1745,8 @@ export interface CitationCandidate {
   search_id: string;
   direction: "backward" | "forward";
   source_record_id: string | null;
+  /** All source record IDs this candidate is attributed to (superset of source_record_id) */
+  source_record_ids: string[];
   s2_paper_id: string | null;
   title: string | null;
   abstract: string | null;
@@ -1777,11 +1862,13 @@ export const citationsApi = {
     file: File,
     direction: "backward" | "forward",
     sourceRecordId?: string,
+    sourceClusterId?: string,
   ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("direction", direction);
     if (sourceRecordId) form.append("source_record_id", sourceRecordId);
+    if (sourceClusterId) form.append("source_cluster_id", sourceClusterId);
     return api.post<CitationSearch>(
       `/projects/${projectId}/citations/searches/manual`,
       form,
@@ -1794,11 +1881,13 @@ export const citationsApi = {
     file: File,
     direction: "backward" | "forward",
     sourceRecordId?: string,
+    sourceClusterId?: string,
   ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("direction", direction);
     if (sourceRecordId) form.append("source_record_id", sourceRecordId);
+    if (sourceClusterId) form.append("source_cluster_id", sourceClusterId);
     return api.post<{ added: number; already_in_project: number; duplicates_skipped: number }>(
       `/projects/${projectId}/citations/searches/${searchId}/candidates/upload`,
       form,

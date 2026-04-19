@@ -280,12 +280,15 @@ function ManualImportModal({
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
-      const recordId = libItems.find(i => i.id === selectedExtractionId)?.record_id ?? undefined;
+      const item = libItems.find(i => i.id === selectedExtractionId);
+      const recordId = item?.record_id ?? undefined;
+      const clusterId = item?.cluster_id ?? undefined;
       return citationsApi.manualImport(
         projectId,
         file,
         direction,
         recordId,
+        clusterId,
       );
     },
     onSuccess: res => {
@@ -759,9 +762,11 @@ function AppendCandidatesModal({
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
-      const recordId = libItems.find(i => i.id === selectedExtractionId)?.record_id ?? undefined;
+      const item = libItems.find(i => i.id === selectedExtractionId);
+      const recordId = item?.record_id ?? undefined;
+      const clusterId = item?.cluster_id ?? undefined;
       return citationsApi.appendCandidates(
-        projectId, searchId, file, direction, recordId,
+        projectId, searchId, file, direction, recordId, clusterId,
       );
     },
     onSuccess: res => {

@@ -17,10 +17,10 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
-
-logger = logging.getLogger(__name__)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.dependencies import (
@@ -76,6 +76,7 @@ class CitationCandidateResponse(BaseModel):
     search_id: str
     direction: str
     source_record_id: Optional[str]
+    source_record_ids: List[str]
     s2_paper_id: Optional[str]
     title: Optional[str]
     abstract: Optional[str]
@@ -138,6 +139,7 @@ def _candidate_to_response(c: Any) -> CitationCandidateResponse:
         search_id=str(c.search_id),
         direction=c.direction,
         source_record_id=str(c.source_record_id) if c.source_record_id else None,
+        source_record_ids=[str(r) for r in (c.source_record_ids or [])],
         s2_paper_id=c.s2_paper_id,
         title=c.title,
         abstract=c.abstract,
@@ -164,6 +166,48 @@ async def _require_project(
     allowed=ANY_ROLE,
 ) -> None:
     await require_project_role(db, project_id, current_user.id, allowed=allowed)
+
+
+async def _resolve_source_record_id(
+    db: AsyncSession,
+    source_record_id: Optional[str],
+    source_cluster_id: Optional[str],
+) -> Optional[uuid.UUID]:
+    """Resolve a source paper reference to a records.id UUID.
+
+    Accepts either a direct record UUID (source_record_id) or a cluster UUID
+    (source_cluster_id). For clusters, returns the representative record_id
+    (the first member in cluster insertion order).  Returns None when neither
+    is provided or when the IDs are invalid.
+    """
+    from sqlalchemy import text as _text
+
+    if source_record_id and source_record_id.strip():
+        try:
+            return uuid.UUID(source_record_id.strip())
+        except ValueError:
+            return None
+
+    if source_cluster_id and source_cluster_id.strip():
+        try:
+            cluster_id = uuid.UUID(source_cluster_id.strip())
+        except ValueError:
+            return None
+        result = await db.execute(
+            _text("""
+                SELECT rs.record_id
+                FROM overlap_cluster_members ocm
+                JOIN record_sources rs ON rs.id = ocm.record_source_id
+                WHERE ocm.cluster_id = :cid
+                ORDER BY ocm.id
+                LIMIT 1
+            """),
+            {"cid": cluster_id},
+        )
+        row = result.first()
+        return row.record_id if row else None
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +276,7 @@ async def manual_import(
     file: UploadFile = File(...),
     direction: str = Form(...),
     source_record_id: Optional[str] = Form(None),
+    source_cluster_id: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CitationSearchResponse:
@@ -242,6 +287,10 @@ async def manual_import(
     Each record in the file becomes a CitationCandidate tagged with the
     given direction (backward = references of the source paper; forward =
     papers citing it) and optionally linked to a specific extracted paper.
+
+    source_record_id: UUID of a records row (for standalone records)
+    source_cluster_id: UUID of an overlap_cluster (for clustered records —
+        resolved to the cluster's representative record_id automatically)
 
     Accepts: RIS (.ris) or MEDLINE/PubMed-tagged (.txt) files.
     Returns: 201 with the completed CitationSearch (status='completed').
@@ -254,14 +303,7 @@ async def manual_import(
             detail="direction must be 'backward' or 'forward'",
         )
 
-    src_rec_id: Optional[uuid.UUID] = None
-    if source_record_id and source_record_id.strip():
-        try:
-            src_rec_id = uuid.UUID(source_record_id.strip())
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="source_record_id is not a valid UUID"
-            )
+    src_rec_id = await _resolve_source_record_id(db, source_record_id, source_cluster_id)
 
     file_bytes = await file.read()
     if not file_bytes:
@@ -494,15 +536,20 @@ async def upload_candidates_to_search(
     file: UploadFile = File(...),
     direction: str = Form(...),
     source_record_id: Optional[str] = Form(None),
+    source_cluster_id: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
     """Append candidates from a citation file to an existing search.
 
     Parses a RIS or MEDLINE file and inserts the records as additional candidates
-    in the specified search.  Duplicates already present in this search are silently
-    skipped (unique indexes on doi/pmid/s2_paper_id per search+direction).  The
-    search's candidate_count is updated automatically.
+    in the specified search.  Papers already present in this search have their
+    source_record_ids array updated (so they appear under the correct source article
+    filter) rather than being silently skipped.  The search's candidate_count is
+    updated automatically.
+
+    source_record_id: UUID of a records row (standalone records)
+    source_cluster_id: UUID of an overlap_cluster (resolved to representative record_id)
 
     Returns: {"added": N, "already_in_project": M, "duplicates_skipped": K}
     """
@@ -514,12 +561,7 @@ async def upload_candidates_to_search(
             detail="direction must be 'backward' or 'forward'",
         )
 
-    src_rec_id: Optional[uuid.UUID] = None
-    if source_record_id and source_record_id.strip():
-        try:
-            src_rec_id = uuid.UUID(source_record_id.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="source_record_id is not a valid UUID")
+    src_rec_id = await _resolve_source_record_id(db, source_record_id, source_cluster_id)
 
     file_bytes = await file.read()
     if not file_bytes:

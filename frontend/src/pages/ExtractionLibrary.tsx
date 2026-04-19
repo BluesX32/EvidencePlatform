@@ -1,16 +1,19 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { extractionLibraryApi, projectsApi, screeningApi } from "../api/client";
+import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi } from "../api/client";
 import type {
   ExtractionLibraryItem,
   ExtractionJson,
   ExtractionTemplateRow,
   ScreeningNextItem,
+  ConceptTemplate,
+  ConceptExtractionRecord,
 } from "../api/client";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
+import ConceptExtractionForm from "../components/ConceptExtractionForm";
 
 // ---------------------------------------------------------------------------
 // Constants (same vocabulary as ScreeningWorkspace)
@@ -132,19 +135,38 @@ function TablePreview({
 // Inline edit panel
 // ---------------------------------------------------------------------------
 
+function ConceptPreview({ ce, template }: { ce: ConceptExtractionRecord | undefined; template: ConceptTemplate | null }) {
+  if (!template || template.fields.length === 0) return <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>;
+  if (!ce) return <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>;
+  const cells = ce.extracted_json.cells ?? {};
+  const filled = template.fields.filter((f) => {
+    const v = cells[f.id];
+    return Array.isArray(v) ? v.length > 0 : !!(v ?? "").trim();
+  });
+  return (
+    <span style={{ fontSize: "0.75rem", color: filled.length === template.fields.length ? "#6d28d9" : "#5f6368" }}>
+      {filled.length}/{template.fields.length}
+    </span>
+  );
+}
+
 function EditPanel({
   item,
   projectId,
   templateRows,
+  conceptTemplate,
   onClose,
 }: {
   item: ExtractionLibraryItem;
   projectId: string;
   templateRows: ExtractionTemplateRow[];
+  conceptTemplate: ConceptTemplate | null;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [confirmExclude, setConfirmExclude] = useState(false);
+  const [excludeReason, setExcludeReason] = useState("");
 
   // Build a minimal ScreeningNextItem-compatible object for PDF components
   const pdfItem: ScreeningNextItem = {
@@ -223,6 +245,21 @@ function EditPanel({
         extracted_json: updatedJson,
       });
     },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["extractions-library", projectId] });
+      onClose();
+    },
+  });
+
+  const excludeMutation = useMutation({
+    mutationFn: () =>
+      screeningApi.submitDecision(projectId, {
+        record_id: item.record_id ?? null,
+        cluster_id: item.cluster_id ?? null,
+        stage: "FT",
+        decision: "exclude",
+        notes: excludeReason.trim() || undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["extractions-library", projectId] });
       onClose();
@@ -456,8 +493,25 @@ function EditPanel({
         )}
       </div>
 
+      {/* ── Concept extraction ────────────────────────────────────────────── */}
+      {conceptTemplate && conceptTemplate.fields.length > 0 && (
+        <div style={{ marginBottom: "1rem" }}>
+          <div style={{ fontSize: "0.8rem", fontWeight: 700, color: "#3c4043", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Concept Extraction
+          </div>
+          <div style={{ border: "1px solid #e0e7ff", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", background: "#fafafe" }}>
+            <ConceptExtractionForm
+              projectId={projectId}
+              template={conceptTemplate}
+              recordId={item.record_id ?? undefined}
+              clusterId={item.cluster_id ?? undefined}
+            />
+          </div>
+        </div>
+      )}
+
       {/* ── Actions ───────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
         <button
           className="btn-primary"
           disabled={saveMutation.isPending}
@@ -473,6 +527,65 @@ function EditPanel({
         >
           Cancel
         </button>
+        <div style={{ marginLeft: "auto" }}>
+          {!confirmExclude ? (
+            <button
+              onClick={() => setConfirmExclude(true)}
+              style={{
+                fontSize: "0.82rem", fontWeight: 600,
+                padding: "0.35rem 0.85rem", borderRadius: "0.375rem",
+                border: "1px solid #fca5a5",
+                background: "#fff5f5", color: "#c5221f", cursor: "pointer",
+              }}
+            >
+              Exclude from library
+            </button>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", background: "#fff5f5", border: "1px solid #fca5a5", borderRadius: "0.5rem", padding: "0.7rem 0.9rem" }}>
+              <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#c5221f" }}>
+                Exclude this paper? It will be removed from the extraction library.
+              </span>
+              <input
+                type="text"
+                value={excludeReason}
+                onChange={(e) => setExcludeReason(e.target.value)}
+                placeholder="Reason (optional)"
+                style={{
+                  fontSize: "0.82rem", padding: "0.3rem 0.5rem",
+                  border: "1px solid #fca5a5", borderRadius: "0.25rem",
+                  fontFamily: "inherit",
+                }}
+              />
+              <div style={{ display: "flex", gap: "0.4rem" }}>
+                <button
+                  onClick={() => excludeMutation.mutate()}
+                  disabled={excludeMutation.isPending}
+                  style={{
+                    fontSize: "0.82rem", fontWeight: 600,
+                    padding: "0.3rem 0.75rem", borderRadius: "0.25rem",
+                    border: "none", background: "#c5221f", color: "#fff", cursor: "pointer",
+                  }}
+                >
+                  {excludeMutation.isPending ? "Excluding…" : "Confirm exclude"}
+                </button>
+                <button
+                  onClick={() => { setConfirmExclude(false); setExcludeReason(""); }}
+                  style={{
+                    fontSize: "0.82rem", padding: "0.3rem 0.75rem", borderRadius: "0.25rem",
+                    border: "1px solid #dadce0", background: "#fff", color: "#374151", cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                {excludeMutation.isError && (
+                  <span style={{ color: "#c5221f", fontSize: "0.78rem", alignSelf: "center" }}>
+                    Failed — please retry.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
         {saveMutation.isError && (
           <span style={{ color: "#c5221f", fontSize: "0.82rem" }}>
             Save failed — please retry.
@@ -508,6 +621,18 @@ export default function ExtractionLibrary() {
     enabled: !!projectId,
   });
   const templateRows: ExtractionTemplateRow[] = project?.extraction_template?.rows ?? [];
+  const conceptTemplate: ConceptTemplate | null = project?.concept_template ?? null;
+
+  const { data: conceptExtractions = [] } = useQuery({
+    queryKey: ["concept-extractions-list", projectId],
+    queryFn: () => conceptExtractionApi.list(projectId!).then((r) => r.data),
+    enabled: !!projectId,
+  });
+
+  // Build lookup: record_id or cluster_id → ConceptExtractionRecord
+  const conceptMap = new Map<string, ConceptExtractionRecord>(
+    conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
+  );
 
   // ── Client-side filter ───────────────────────────────────────────────────
   const visible = items.filter((item) => {
@@ -538,10 +663,14 @@ export default function ExtractionLibrary() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  // Grid columns: Title | Year | Sources | Table | Levels | Dims | Notes
-  const COLS = templateRows.length > 0
-    ? "1fr 52px 110px 80px 140px 110px 28px"
-    : "1fr 52px 110px 140px 110px 28px";
+  const hasConceptTemplate = conceptTemplate && conceptTemplate.fields.length > 0;
+  // Grid columns: Title | Year | Sources | [Table] | [Concepts] | Levels | Dims | Notes
+  const COLS = [
+    "1fr", "52px", "110px",
+    ...(templateRows.length > 0 ? ["80px"] : []),
+    ...(hasConceptTemplate ? ["70px"] : []),
+    "140px", "110px", "28px",
+  ].join(" ");
 
   return (
     <div className="page">
@@ -648,6 +777,7 @@ export default function ExtractionLibrary() {
               <span>Year</span>
               <span>Sources</span>
               {templateRows.length > 0 && <span>Table</span>}
+              {hasConceptTemplate && <span>Concepts</span>}
               <span>Levels</span>
               <span>Dimensions</span>
               <span></span>
@@ -714,6 +844,16 @@ export default function ExtractionLibrary() {
                       </div>
                     )}
 
+                    {/* Concept extraction indicator */}
+                    {hasConceptTemplate && (
+                      <div style={{ paddingTop: "0.1rem" }}>
+                        <ConceptPreview
+                          ce={conceptMap.get(item.record_id ?? item.cluster_id ?? "")}
+                          template={conceptTemplate}
+                        />
+                      </div>
+                    )}
+
                     {/* Levels chips */}
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
                       {levels.length > 0
@@ -742,6 +882,7 @@ export default function ExtractionLibrary() {
                       item={item}
                       projectId={projectId}
                       templateRows={templateRows}
+                      conceptTemplate={conceptTemplate}
                       onClose={() => setExpandedId(null)}
                     />
                   )}

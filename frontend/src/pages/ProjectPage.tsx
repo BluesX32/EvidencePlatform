@@ -14,7 +14,7 @@ import {
   screeningApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
-import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource } from "../api/client";
+import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource, ConceptTemplateField, ConceptFieldType, ConceptInputType } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
 
@@ -484,6 +484,9 @@ export default function ProjectPage() {
   const [templatePasteText, setTemplatePasteText] = useState("");
   const [templatePasteOpen, setTemplatePasteOpen] = useState(false);
 
+  // Concept template state
+  const [conceptFields, setConceptFields] = useState<ConceptTemplateField[]>([]);
+
   // ── Data queries ──────────────────────────────────────────────────────────
 
   const { data: project, isLoading: loadingProject } = useQuery({
@@ -555,6 +558,13 @@ export default function ProjectPage() {
       setTemplateRows(project.extraction_template.rows);
     }
   }, [project?.extraction_template]);
+
+  // Sync concept template fields from server data
+  useEffect(() => {
+    if (project?.concept_template?.fields) {
+      setConceptFields(project.concept_template.fields);
+    }
+  }, [project?.concept_template]);
 
   const activeStrategy = strategies?.find((s) => s.is_active);
   const lastDedupJob = dedupJobs?.[0];
@@ -640,6 +650,18 @@ export default function ProjectPage() {
     },
     onError: () => {
       setToast({ message: "Failed to save template.", type: "error" });
+    },
+  });
+
+  const conceptTemplateMutation = useMutation({
+    mutationFn: (fields: ConceptTemplateField[]) =>
+      projectsApi.updateConceptTemplate(id!, fields),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      setToast({ message: "Concept template saved.", type: "success" });
+    },
+    onError: () => {
+      setToast({ message: "Failed to save concept template.", type: "error" });
     },
   });
 
@@ -1536,6 +1558,171 @@ export default function ProjectPage() {
                 </div>
               </div>
             )}
+          </div>
+        </CollapsibleSection>
+
+        {/* ── Concept Extraction Template ───────────────────────────────────── */}
+        <CollapsibleSection
+          id="concept-template"
+          title="Concept Extraction Template"
+          subtitle="Define entities, relations, and other concept fields to extract from included papers"
+          defaultOpen={false}
+          badge={conceptFields.length > 0 ? conceptFields.length : undefined}
+        >
+          <p className="muted" style={{ marginBottom: "1rem" }}>
+            Define the concept fields to extract from each included paper. Fields tagged as{" "}
+            <strong>Entity</strong> will populate the entity taxonomy; fields tagged as{" "}
+            <strong>Relation</strong> will populate the relation taxonomy. Both can then be pushed
+            to the Ontology. This form appears in the screening workspace after data extraction.
+          </p>
+
+          <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", background: "#fafafa", overflow: "hidden" }}>
+            {/* Table header */}
+            {conceptFields.length > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 130px 1fr 32px", gap: "0.5rem", padding: "0.5rem 0.6rem 0.5rem 1rem", background: "#f1f3f4", borderBottom: "1px solid #dadce0", fontSize: "0.75rem", fontWeight: 700, color: "#5f6368", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                <span>Field Label</span>
+                <span>Field Type</span>
+                <span>Input Type</span>
+                <span>Options (for selects)</span>
+                <span />
+              </div>
+            )}
+
+            {/* Rows */}
+            <div style={{ padding: conceptFields.length > 0 ? "0.5rem 1rem" : "0" }}>
+              {conceptFields.map((field, idx) => {
+                const isSelect = field.input_type === "single_select" || field.input_type === "multi_select";
+                const fieldTypeColor = field.field_type === "entity" ? "#4f46e5" : field.field_type === "relation" ? "#0891b2" : "#6b7280";
+
+                return (
+                  <div key={field.id} style={{ marginBottom: "0.6rem", border: "1px solid #e8eaed", borderRadius: "0.375rem", background: "#fff", overflow: "hidden" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 130px 1fr 32px", gap: "0.5rem", alignItems: "center", padding: "0.4rem 0.6rem" }}>
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="e.g. Entity Name…"
+                        value={field.label}
+                        onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, label: e.target.value } : f))}
+                        style={{ fontSize: "0.84rem" }}
+                      />
+                      <select
+                        value={field.field_type}
+                        onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, field_type: e.target.value as ConceptFieldType } : f))}
+                        style={{ fontSize: "0.84rem", padding: "0.3rem 0.45rem", border: `1px solid ${fieldTypeColor}`, borderRadius: "0.25rem", background: "#fff", color: fieldTypeColor, fontWeight: 600 }}
+                      >
+                        <option value="entity">Entity</option>
+                        <option value="relation">Relation</option>
+                        <option value="metadata">Metadata</option>
+                      </select>
+                      <select
+                        value={field.input_type}
+                        onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, input_type: e.target.value as ConceptInputType } : f))}
+                        style={{ fontSize: "0.84rem", padding: "0.3rem 0.45rem", border: "1px solid #dadce0", borderRadius: "0.25rem", background: "#fff" }}
+                      >
+                        <option value="string">Free text</option>
+                        <option value="single_select">Single select</option>
+                        <option value="multi_select">Multi select</option>
+                      </select>
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder={isSelect ? "opt1, opt2…" : "—"}
+                        disabled={!isSelect}
+                        value={field.options.join(", ")}
+                        onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } : f))}
+                        style={{ fontSize: "0.84rem", background: !isSelect ? "#f3f4f6" : "#fff", color: !isSelect ? "#aaa" : undefined }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setConceptFields((prev) => prev.filter((_, i) => i !== idx))}
+                        title="Remove field"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#c5221f", fontSize: "1rem", lineHeight: 1, padding: "0.2rem" }}
+                      >×</button>
+                    </div>
+                    {/* Extra options */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem", padding: "0.25rem 0.6rem 0.35rem", borderTop: "1px solid #f1f3f4", background: "#fafafa" }}>
+                      {isSelect && (
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.76rem", color: "#5f6368", cursor: "pointer", userSelect: "none" }}>
+                          <input
+                            type="checkbox"
+                            checked={field.allow_custom_options ?? false}
+                            onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, allow_custom_options: e.target.checked } : f))}
+                            style={{ accentColor: "#4f46e5" }}
+                          />
+                          Allow reviewers to add custom options
+                        </label>
+                      )}
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="Placeholder hint…"
+                        value={field.placeholder ?? ""}
+                        onChange={(e) => setConceptFields((prev) => prev.map((f, i) => i === idx ? { ...f, placeholder: e.target.value } : f))}
+                        style={{ fontSize: "0.78rem", maxWidth: 200 }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer actions */}
+            <div style={{ padding: "0.75rem 1rem", borderTop: conceptFields.length > 0 ? "1px solid #e8eaed" : undefined, display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              {/* Quick-add entity / relation buttons */}
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: "0.82rem" }}
+                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "entity", input_type: "string", options: [], allow_custom_options: false }])}
+              >
+                + Entity field
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: "0.82rem" }}
+                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "relation", input_type: "string", options: [], allow_custom_options: false }])}
+              >
+                + Relation field
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: "0.82rem" }}
+                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "metadata", input_type: "string", options: [], allow_custom_options: false }])}
+              >
+                + Other field
+              </button>
+
+              {/* Preset for ontology construction */}
+              {conceptFields.length === 0 && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ fontSize: "0.82rem", borderStyle: "dashed" }}
+                  onClick={() => setConceptFields([
+                    { id: crypto.randomUUID(), label: "Entity Name", field_type: "entity", input_type: "string", options: [], allow_custom_options: false, placeholder: "e.g. COVID-19, mortality…" },
+                    { id: crypto.randomUUID(), label: "Entity Type", field_type: "entity", input_type: "single_select", options: ["Disease", "Phenotype", "Gene", "Drug", "Pathway", "Process", "Other"], allow_custom_options: true },
+                    { id: crypto.randomUUID(), label: "Relation Type", field_type: "relation", input_type: "single_select", options: ["causes", "associates_with", "inhibits", "activates", "part_of", "is_a", "other"], allow_custom_options: true },
+                    { id: crypto.randomUUID(), label: "Source Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at start of relation…" },
+                    { id: crypto.randomUUID(), label: "Target Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at end of relation…" },
+                  ])}
+                >
+                  ✦ Load ontology preset
+                </button>
+              )}
+
+              <div style={{ marginLeft: "auto" }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={conceptTemplateMutation.isPending}
+                  onClick={() => conceptTemplateMutation.mutate(conceptFields)}
+                >
+                  {conceptTemplateMutation.isPending ? "Saving…" : "Save template"}
+                </button>
+              </div>
+            </div>
           </div>
         </CollapsibleSection>
 

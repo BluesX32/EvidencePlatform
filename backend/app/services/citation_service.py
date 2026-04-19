@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import any_, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -252,7 +252,10 @@ async def list_candidates(
     if direction_filter and direction_filter != "both":
         base_q = base_q.where(CitationCandidate.direction == direction_filter)
     if source_record_id_filter is not None:
-        base_q = base_q.where(CitationCandidate.source_record_id == source_record_id_filter)
+        # Filter: source_record_id_filter = ANY(source_record_ids)
+        base_q = base_q.where(
+            source_record_id_filter == any_(CitationCandidate.source_record_ids)
+        )
 
     count_result = await db.execute(
         select(text("count(*)")).select_from(base_q.subquery())
@@ -284,21 +287,23 @@ async def list_source_articles(
 ) -> List[Dict[str, Any]]:
     """Return the distinct source records used as input for this search.
 
-    Queries citation_candidates directly so that manually appended candidates
-    (added via append_manual_candidates) appear alongside automatically sourced
-    ones — regardless of whether search.source_record_ids was updated.
+    Queries the source_record_ids array column so that:
+    - Papers referenced by multiple source papers are counted under each
+    - Manually appended candidates appear correctly under their source article
+    - Cluster-based sources (resolved to representative record_id) are included
     """
-    # Distinct non-null source_record_ids actually present in candidates
+    # Unnest the source_record_ids arrays to get all distinct record IDs
     ids_result = await db.execute(
-        select(CitationCandidate.source_record_id)
-        .where(
-            CitationCandidate.search_id == search_id,
-            CitationCandidate.project_id == project_id,
-            CitationCandidate.source_record_id.isnot(None),
-        )
-        .distinct()
+        text("""
+            SELECT DISTINCT unnest(source_record_ids) AS record_id
+            FROM citation_candidates
+            WHERE search_id = :search_id
+              AND project_id = :project_id
+              AND cardinality(source_record_ids) > 0
+        """),
+        {"search_id": search_id, "project_id": project_id},
     )
-    record_ids = [row[0] for row in ids_result]
+    record_ids = [row[0] for row in ids_result if row[0] is not None]
 
     if not record_ids:
         return []
@@ -313,13 +318,15 @@ async def list_source_articles(
         r = records_by_id.get(rid)
         if r is None:
             continue
+        # Count candidates attributed to this source (value = ANY(source_record_ids))
         cnt_result = await db.execute(
-            select(text("count(*)")).select_from(
-                select(CitationCandidate).where(
-                    CitationCandidate.search_id == search_id,
-                    CitationCandidate.source_record_id == rid,
-                ).subquery()
-            )
+            text("""
+                SELECT COUNT(*) FROM citation_candidates
+                WHERE search_id = :s
+                  AND project_id = :p
+                  AND CAST(:rid AS UUID) = ANY(source_record_ids)
+            """),
+            {"s": search_id, "p": project_id, "rid": str(rid)},
         )
         out.append({
             "record_id": str(rid),
@@ -388,7 +395,9 @@ async def bulk_select_candidates(
     if direction_filter and direction_filter != "both":
         stmt = stmt.where(CitationCandidate.direction == direction_filter)
     if source_record_id_filter is not None:
-        stmt = stmt.where(CitationCandidate.source_record_id == source_record_id_filter)
+        stmt = stmt.where(
+            source_record_id_filter == any_(CitationCandidate.source_record_ids)
+        )
 
     now = datetime.now(timezone.utc)
     stmt = stmt.values(
@@ -669,6 +678,7 @@ async def _do_citation_search(
                         "project_id": project_id,
                         "direction": c["direction"],
                         "source_record_id": c.get("source_record_id"),
+                        "source_record_ids": c.get("source_record_ids") or [],
                         "s2_paper_id": c.get("s2_paper_id"),
                         "title": c.get("title"),
                         "abstract": c.get("abstract"),
@@ -686,10 +696,12 @@ async def _do_citation_search(
                     text("""
                         INSERT INTO citation_candidates
                             (id, search_id, project_id, direction, source_record_id,
+                             source_record_ids,
                              s2_paper_id, title, abstract, authors, year, doi, pmid, journal,
                              in_project, project_record_id)
                         VALUES
                             (:id, :search_id, :project_id, :direction, :source_record_id,
+                             :source_record_ids,
                              :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
                              :in_project, :project_record_id)
                         ON CONFLICT DO NOTHING
@@ -1125,7 +1137,7 @@ def _merge_candidate(
     The direction is included in the key so the same paper can appear as both a
     backward reference and a forward citation — two separate candidate rows.
     Within the same direction, the same paper referenced by multiple source records
-    collapses to one entry (first source_record_id wins).
+    collapses to one entry; all source record IDs are accumulated in source_record_ids.
     """
     if not paper:
         return
@@ -1143,7 +1155,11 @@ def _merge_candidate(
     key = f"{direction}:{paper_id}"
 
     if key in candidates:
-        return  # already have this paper for this direction (first-seen wins)
+        # Paper already seen in this direction — accumulate additional source
+        existing = candidates[key]
+        if source_record_id and source_record_id not in existing["source_record_ids"]:
+            existing["source_record_ids"].append(source_record_id)
+        return
 
     authors = [a.get("name", "") for a in (paper.get("authors") or []) if a.get("name")]
     journal_info = paper.get("journal") or {}
@@ -1151,7 +1167,8 @@ def _merge_candidate(
 
     candidates[key] = {
         "direction": direction,
-        "source_record_id": source_record_id,
+        "source_record_id": source_record_id,   # primary source (first seen)
+        "source_record_ids": [source_record_id] if source_record_id else [],  # all sources
         "s2_paper_id": s2_id,
         "title": paper.get("title"),
         "abstract": paper.get("abstract"),
@@ -1335,10 +1352,12 @@ async def create_manual_search(
         if isinstance(authors, str):
             authors = [a.strip() for a in authors.split(";") if a.strip()]
 
+        src_ids = [source_record_id] if source_record_id else []
         candidates.append(
             {
                 "direction": direction,
                 "source_record_id": source_record_id,
+                "source_record_ids": src_ids,
                 "s2_paper_id": None,
                 "title": rec.get("title"),
                 "abstract": rec.get("abstract"),
@@ -1382,6 +1401,7 @@ async def create_manual_search(
                     "project_id": project_id,
                     "direction": c["direction"],
                     "source_record_id": c.get("source_record_id"),
+                    "source_record_ids": c.get("source_record_ids") or [],
                     "s2_paper_id": None,
                     "title": c.get("title"),
                     "abstract": c.get("abstract"),
@@ -1399,10 +1419,12 @@ async def create_manual_search(
                 text("""
                     INSERT INTO citation_candidates
                         (id, search_id, project_id, direction, source_record_id,
+                         source_record_ids,
                          s2_paper_id, title, abstract, authors, year, doi, pmid, journal,
                          in_project, project_record_id)
                     VALUES
                         (:id, :search_id, :project_id, :direction, :source_record_id,
+                         :source_record_ids,
                          :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
                          :in_project, :project_record_id)
                     ON CONFLICT DO NOTHING
@@ -1479,9 +1501,11 @@ async def append_manual_candidates(
         if isinstance(authors, str):
             authors = [a.strip() for a in authors.split(";") if a.strip()]
 
+        src_ids = [source_record_id] if source_record_id else []
         candidates.append({
             "direction": direction,
             "source_record_id": source_record_id,
+            "source_record_ids": src_ids,
             "s2_paper_id": None,
             "title": rec.get("title"),
             "abstract": rec.get("abstract"),
@@ -1501,53 +1525,132 @@ async def append_manual_candidates(
     duplicates_skipped = 0
 
     if candidates:
-        # Snapshot count before insert so we can calculate how many were actually added
-        # (ON CONFLICT DO NOTHING skips duplicates silently; executemany+asyncpg does not
-        # support RETURNING, so we measure the delta instead).
-        before_result = await db.execute(
-            text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
-            {"s": search_id},
-        )
-        before_count = before_result.scalar_one()
+        # ── Step 1: find existing candidates by DOI or PMID (same direction) ──
+        # Papers already in this search must have their source_record_ids updated
+        # rather than silently skipped — this ensures manual imports are attributed
+        # to the correct source article even if the paper was already found by S2.
 
-        for i in range(0, len(candidates), _CHUNK_SIZE):
-            chunk = candidates[i : i + _CHUNK_SIZE]
-            rows = [
-                {
-                    "id": uuid.uuid4(),
-                    "search_id": search_id,
-                    "project_id": project_id,
-                    "direction": c["direction"],
-                    "source_record_id": c.get("source_record_id"),
-                    "s2_paper_id": None,
-                    "title": c.get("title"),
-                    "abstract": c.get("abstract"),
-                    "authors": c.get("authors"),
-                    "year": c.get("year"),
-                    "doi": c.get("doi"),
-                    "pmid": c.get("pmid"),
-                    "journal": c.get("journal"),
-                    "in_project": c.get("in_project", False),
-                    "project_record_id": c.get("project_record_id"),
-                }
-                for c in chunk
-            ]
-            await db.execute(
+        all_dois = [c["doi"] for c in candidates if c.get("doi")]
+        all_pmids = [c["pmid"] for c in candidates if c.get("pmid")]
+
+        existing_by_doi: Dict[str, uuid.UUID] = {}   # doi → candidate.id
+        existing_by_pmid: Dict[str, uuid.UUID] = {}  # pmid → candidate.id
+
+        if all_dois:
+            doi_res = await db.execute(
                 text("""
-                    INSERT INTO citation_candidates
-                        (id, search_id, project_id, direction, source_record_id,
-                         s2_paper_id, title, abstract, authors, year, doi, pmid, journal,
-                         in_project, project_record_id)
-                    VALUES
-                        (:id, :search_id, :project_id, :direction, :source_record_id,
-                         :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
-                         :in_project, :project_record_id)
-                    ON CONFLICT DO NOTHING
+                    SELECT id, doi FROM citation_candidates
+                    WHERE search_id = :s AND direction = :d AND doi = ANY(:dois)
                 """),
-                rows,
+                {"s": search_id, "d": direction, "dois": all_dois},
             )
+            for row in doi_res:
+                existing_by_doi[row.doi] = row.id
 
-        # Measure how many rows were actually inserted and refresh search aggregates
+        if all_pmids:
+            pmid_res = await db.execute(
+                text("""
+                    SELECT id, pmid FROM citation_candidates
+                    WHERE search_id = :s AND direction = :d
+                      AND pmid = ANY(:pmids) AND doi IS NULL
+                """),
+                {"s": search_id, "d": direction, "pmids": all_pmids},
+            )
+            for row in pmid_res:
+                existing_by_pmid[row.pmid] = row.id
+
+        # ── Step 2: split into "insert new" vs "update existing" ──────────────
+        to_insert: List[dict] = []
+        to_update_ids: List[uuid.UUID] = []  # existing candidate IDs needing source update
+
+        for c in candidates:
+            existing_id = existing_by_doi.get(c.get("doi") or "") or existing_by_pmid.get(c.get("pmid") or "")
+            if existing_id:
+                to_update_ids.append(existing_id)
+                duplicates_skipped += 1
+            else:
+                to_insert.append(c)
+
+        # ── Step 3: append source_record_id to existing candidates ────────────
+        if to_update_ids and source_record_id:
+            for i in range(0, len(to_update_ids), _CHUNK_SIZE):
+                chunk_ids = to_update_ids[i : i + _CHUNK_SIZE]
+                await db.execute(
+                    update(CitationCandidate)
+                    .where(
+                        CitationCandidate.id.in_(chunk_ids),
+                        # Only update if not already attributed to this source
+                        ~(source_record_id == any_(CitationCandidate.source_record_ids)),
+                    )
+                    .values(
+                        source_record_ids=func.array_append(
+                            CitationCandidate.source_record_ids, source_record_id
+                        )
+                    )
+                )
+
+        # ── Step 4: insert truly new candidates ───────────────────────────────
+        if to_insert:
+            before_result = await db.execute(
+                text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
+                {"s": search_id},
+            )
+            before_count = before_result.scalar_one()
+
+            for i in range(0, len(to_insert), _CHUNK_SIZE):
+                chunk = to_insert[i : i + _CHUNK_SIZE]
+                rows = [
+                    {
+                        "id": uuid.uuid4(),
+                        "search_id": search_id,
+                        "project_id": project_id,
+                        "direction": c["direction"],
+                        "source_record_id": c.get("source_record_id"),
+                        "source_record_ids": c.get("source_record_ids") or [],
+                        "s2_paper_id": None,
+                        "title": c.get("title"),
+                        "abstract": c.get("abstract"),
+                        "authors": c.get("authors"),
+                        "year": c.get("year"),
+                        "doi": c.get("doi"),
+                        "pmid": c.get("pmid"),
+                        "journal": c.get("journal"),
+                        "in_project": c.get("in_project", False),
+                        "project_record_id": c.get("project_record_id"),
+                    }
+                    for c in chunk
+                ]
+                await db.execute(
+                    text("""
+                        INSERT INTO citation_candidates
+                            (id, search_id, project_id, direction, source_record_id,
+                             source_record_ids,
+                             s2_paper_id, title, abstract, authors, year, doi, pmid, journal,
+                             in_project, project_record_id)
+                        VALUES
+                            (:id, :search_id, :project_id, :direction, :source_record_id,
+                             :source_record_ids,
+                             :s2_paper_id, :title, :abstract, :authors, :year, :doi, :pmid, :journal,
+                             :in_project, :project_record_id)
+                        ON CONFLICT DO NOTHING
+                    """),
+                    rows,
+                )
+
+            after_result = await db.execute(
+                text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
+                {"s": search_id},
+            )
+            added = after_result.scalar_one() - before_count
+        else:
+            # All candidates were updates of existing rows (no inserts)
+            after_count_result = await db.execute(
+                text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
+                {"s": search_id},
+            )
+            _ = after_count_result.scalar_one()  # fetch to keep session clean
+
+        # ── Step 5: refresh search aggregate counts ───────────────────────────
         count_result = await db.execute(
             text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s"),
             {"s": search_id},
@@ -1556,11 +1659,7 @@ async def append_manual_candidates(
             text("SELECT COUNT(*) FROM citation_candidates WHERE search_id = :s AND in_project = TRUE"),
             {"s": search_id},
         )
-        after_count = count_result.scalar_one()
-        added = after_count - before_count
-        duplicates_skipped = len(candidates) - added
-
-        search.candidate_count = after_count
+        search.candidate_count = count_result.scalar_one()
         search.already_in_project_count = in_proj_result.scalar_one()
         await db.commit()
 
