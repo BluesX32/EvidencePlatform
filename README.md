@@ -55,7 +55,7 @@ docker compose version  # Docker Compose version v2+
 ### 2. Clone the repository
 
 ```bash
-git clone https://github.com/your-org/EvidencePlatform.git
+git clone https://github.com/BluesX32/EvidencePlatform.git
 cd EvidencePlatform
 ```
 
