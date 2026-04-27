@@ -28,6 +28,7 @@ from app.models.screening_queue import ScreeningQueue
 from app.models.record_concept import RecordConcept
 from app.models.citation_search import CitationSearch
 from app.models.citation_candidate import CitationCandidate
+from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 
 __all__ = [
     "User",
@@ -62,4 +63,5 @@ __all__ = [
     "RecordConcept",
     "CitationSearch",
     "CitationCandidate",
+    "ConceptTaxonomyNode",
 ]

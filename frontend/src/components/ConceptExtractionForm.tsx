@@ -4,7 +4,7 @@
  * Fields are grouped by field_type: Entity Fields, Relation Fields, Other.
  * Shown in ScreeningWorkspace after data extraction when a concept_template exists.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   conceptExtractionApi,
@@ -65,6 +65,7 @@ function FieldInput({
   }
 
   if (field.input_type === "single_select") {
+    const customSelected = strVal && !field.options.includes(strVal) ? strVal : null;
     return (
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
         {field.options.map((opt) => (
@@ -82,19 +83,31 @@ function FieldInput({
             {opt}
           </button>
         ))}
-        {field.allow_custom_options && (
-          <CustomOptionInput
-            selected={strVal}
-            options={field.options}
-            onSelect={onChange}
-            multi={false}
-          />
+        {/* Render selected custom value that isn't in predefined options */}
+        {customSelected && (
+          <button
+            onClick={() => onChange("")}
+            style={{
+              padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
+              border: "1.5px solid #4f46e5", background: "#4f46e5",
+              color: "#fff", fontWeight: 600,
+            }}
+          >
+            {customSelected} ✕
+          </button>
         )}
+        <CustomOptionInput
+          selected={strVal}
+          options={field.options}
+          onSelect={onChange}
+          multi={false}
+        />
       </div>
     );
   }
 
   // multi_select
+  const customValues = arrVal.filter((v) => !field.options.includes(v));
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
       {field.options.map((opt) => {
@@ -115,14 +128,26 @@ function FieldInput({
           </button>
         );
       })}
-      {field.allow_custom_options && (
-        <CustomOptionInput
-          selected={arrVal}
-          options={field.options}
-          onSelect={onChange}
-          multi={true}
-        />
-      )}
+      {/* Render selected custom values not in predefined options */}
+      {customValues.map((v) => (
+        <button
+          key={v}
+          onClick={() => onChange(arrVal.filter((x) => x !== v))}
+          style={{
+            padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
+            border: "1.5px solid #4f46e5", background: "#4f46e5",
+            color: "#fff", fontWeight: 600,
+          }}
+        >
+          {v} ✕
+        </button>
+      ))}
+      <CustomOptionInput
+        selected={arrVal}
+        options={field.options}
+        onSelect={onChange}
+        multi={true}
+      />
     </div>
   );
 }
@@ -197,8 +222,9 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
 
   const [form, setForm] = useState<ConceptExtractionJson>(EMPTY_CE);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // True only when form was changed by the user (not by loading existing data)
+  const userEdited = useRef(false);
 
-  // Load existing extraction on mount
   const { data: existing } = useQuery({
     queryKey: ["concept-extraction-item", projectId, itemKey],
     queryFn: () =>
@@ -209,7 +235,9 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
     enabled: !!itemKey,
   });
 
+  // Load existing data — mark as NOT user-edited so auto-save doesn't fire
   useEffect(() => {
+    userEdited.current = false;
     if (existing) setForm(existing.extracted_json || EMPTY_CE);
     else setForm(EMPTY_CE);
   }, [existing, itemKey]);
@@ -222,11 +250,20 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
         extracted_json: form,
       }),
     onSuccess: () => {
+      userEdited.current = false;
       qc.invalidateQueries({ queryKey: ["concept-extraction-item", projectId, itemKey] });
       qc.invalidateQueries({ queryKey: ["concept-taxonomy-aggregate", projectId] });
+      qc.invalidateQueries({ queryKey: ["concept-extractions-list", projectId] });
       onSaved?.();
     },
   });
+
+  // Auto-save 600 ms after the last user-initiated change
+  useEffect(() => {
+    if (!userEdited.current || !itemKey) return;
+    const timer = setTimeout(() => { saveMut.mutate(); }, 600);
+    return () => clearTimeout(timer);
+  }, [form]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const fields = template.fields ?? [];
   const sections: Record<string, ConceptTemplateField[]> = { entity: [], relation: [], metadata: [] };
@@ -236,7 +273,13 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
   }
 
   function setCell(fieldId: string, value: string | string[]) {
+    userEdited.current = true;
     setForm((prev) => ({ ...prev, cells: { ...prev.cells, [fieldId]: value } }));
+  }
+
+  function setNote(note: string) {
+    userEdited.current = true;
+    setForm((prev) => ({ ...prev, note }));
   }
 
   const sectionOrder = ["entity", "relation", "metadata"] as const;
@@ -247,25 +290,10 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
         <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Concept Extraction
         </span>
-        <button
-          onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending}
-          style={{
-            fontSize: 12, padding: "3px 12px", borderRadius: 4,
-            border: "none", background: "#4f46e5", color: "#fff",
-            cursor: "pointer", fontWeight: 600,
-          }}
-        >
-          {saveMut.isPending ? "Saving…" : "Save"}
-        </button>
+        <span style={{ fontSize: 11, color: saveMut.isPending ? "#6b7280" : saveMut.isError ? "#dc2626" : saveMut.isSuccess ? "#16a34a" : "#9ca3af" }}>
+          {saveMut.isPending ? "Saving…" : saveMut.isError ? "Save failed — retry?" : saveMut.isSuccess ? "Saved ✓" : ""}
+        </span>
       </div>
-
-      {saveMut.isError && (
-        <p style={{ fontSize: 12, color: "#dc2626", marginBottom: 8 }}>Save failed — please try again.</p>
-      )}
-      {saveMut.isSuccess && (
-        <p style={{ fontSize: 12, color: "#16a34a", marginBottom: 8 }}>Saved ✓</p>
-      )}
 
       {sectionOrder.map((sectionKey) => {
         const sectionFields = sections[sectionKey];
@@ -319,7 +347,7 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
         </label>
         <textarea
           value={form.note ?? ""}
-          onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+          onChange={(e) => setNote(e.target.value)}
           rows={2}
           placeholder="Optional notes…"
           style={{

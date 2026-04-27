@@ -45,58 +45,16 @@ function PaginationStrip({
   onPageSizeChange: (ps: number) => void;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: "0.6rem",
-        alignItems: "center",
-        flexWrap: "wrap",
-        margin: "0.5rem 0",
-        fontSize: "0.85rem",
-        color: "#3c4043",
-      }}
-    >
-      <button
-        className="btn-secondary"
-        style={{ padding: "0.2rem 0.7rem", fontSize: "0.82rem" }}
-        disabled={page <= 1}
-        onClick={() => onPageChange(page - 1)}
-      >
-        ← Prev
-      </button>
-
-      <span>
-        Page <strong>{page}</strong> / {totalPages}
-      </span>
-
-      <button
-        className="btn-secondary"
-        style={{ padding: "0.2rem 0.7rem", fontSize: "0.82rem" }}
-        disabled={page >= totalPages}
-        onClick={() => onPageChange(page + 1)}
-      >
-        Next →
-      </button>
-
-      <span style={{ marginLeft: "0.4rem", color: "#80868b" }}>
-        {totalItems.toLocaleString()} paper groups total
-      </span>
-
-      <label
-        style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.35rem" }}
-      >
-        <span style={{ color: "#5f6368" }}>Per page:</span>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          style={{
-            fontSize: "0.82rem",
-            padding: "0.15rem 0.4rem",
-            border: "1px solid #dadce0",
-            borderRadius: "0.25rem",
-            background: "#fff",
-          }}
-        >
+    <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap",
+        margin: "0.5rem 0", fontSize: "0.85rem", color: "var(--text)" }}>
+      <button className="btn-ghost btn-sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>← Prev</button>
+      <span>Page <strong>{page}</strong> / {totalPages}</span>
+      <button className="btn-ghost btn-sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>Next →</button>
+      <span style={{ marginLeft: "0.4rem", color: "var(--text-muted)" }}>{totalItems.toLocaleString()} paper groups total</span>
+      <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.35rem" }}>
+        <span style={{ color: "var(--text-secondary)", fontSize: "0.82rem" }}>Per page:</span>
+        <select value={pageSize} onChange={e => onPageSizeChange(Number(e.target.value))}
+          style={{ fontSize: "0.82rem" }}>
           <option value={25}>25</option>
           <option value={50}>50</option>
           <option value={100}>100</option>
@@ -320,14 +278,36 @@ export default function OverlapPage() {
     lastCompletedDedup &&
     lastCompletedDedup.strategy_id !== activeStrategy.id;
 
-  // Stable color map: source_id → hex color (matches EulerDiagram colours)
+  // Filter to database sources only for the Euler diagram.
+  // Citation-chain sources (← Refs / → Citing) have names with those prefixes and
+  // create conflicting spring forces that collapse the layout into concentric circles.
+  const dbVisualData = useMemo(() => {
+    if (!visualData) return null;
+    const isCitationSource = (name: string) =>
+      name.startsWith("← ") || name.startsWith("→ ") ||
+      name.startsWith("← ") || name.startsWith("→ ");
+    const dbSources = visualData.sources.filter((s) => !isCitationSource(s.name));
+    if (dbSources.length < 2) return null;
+    const origIdx = (id: string) => visualData.sources.findIndex((s) => s.id === id);
+    const matrix = dbSources.map((s1) =>
+      dbSources.map((s2) => {
+        if (s1.id === s2.id) return 0;
+        const i = origIdx(s1.id), j = origIdx(s2.id);
+        return visualData.matrix[i]?.[j] ?? 0;
+      })
+    );
+    return { ...visualData, sources: dbSources, matrix };
+  }, [visualData]);
+
+  // Stable color map: source_id → hex color (matches EulerDiagram colours).
+  // Keyed from dbSources so colors are consistent between legend and diagram.
   const sourceColorMap = useMemo(() => {
     const map: Record<string, string> = {};
-    (visualData?.sources ?? []).forEach((s, i) => {
+    (dbVisualData?.sources ?? []).forEach((s, i) => {
       map[s.id] = SOURCE_COLORS[i % SOURCE_COLORS.length];
     });
     return map;
-  }, [visualData?.sources]);
+  }, [dbVisualData?.sources]);
 
   const allClusters: OverlapClusterDetail[] = clustersData?.clusters ?? [];
   const totalItems  = clustersData?.total_items ?? 0;
@@ -465,82 +445,67 @@ export default function OverlapPage() {
             </section>
 
             {/* ── Overlap map (Euler diagram) ───────────────────────────────── */}
-            {visualData && visualData.sources.length >= 2 && (
+            {dbVisualData && (
               <section style={{ marginBottom: "2rem" }}>
                 <h3>Overlap map</h3>
                 <p className="muted" style={{ marginBottom: "0.75rem" }}>
-                  Each circle represents one database. Circle size is proportional to
-                  total records; overlapping areas reflect pairwise shared paper-group
-                  counts. Click a circle to filter the paper groups below.
+                  Each circle represents one database source. Circle area is proportional to
+                  total records; overlapping regions reflect pairwise shared paper-group counts.
+                  Click a source to filter the paper groups below.
                 </p>
 
-                {/* Source legend */}
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "0.6rem",
-                    marginBottom: "0.6rem",
-                  }}
-                >
-                  {visualData.sources.map((s, i) => {
-                    const color = SOURCE_COLORS[i % SOURCE_COLORS.length];
-                    const isSelected = selectedSourceId === s.id;
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => setSelectedSourceId(isSelected ? null : s.id)}
-                        title={`${isSelected ? "Clear filter: " : "Filter by: "}${s.name}`}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.35rem",
-                          padding: "0.2rem 0.55rem",
-                          borderRadius: "1rem",
-                          border: `1.5px solid ${isSelected ? color : color + "88"}`,
-                          background: isSelected ? color + "22" : "transparent",
-                          cursor: "pointer",
-                          fontSize: "0.78rem",
-                          fontWeight: isSelected ? 700 : 500,
-                          color: "#3c4043",
-                        }}
-                      >
-                        <span
+                {/* Two-column: legend left, diagram right */}
+                <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
+                  {/* Source legend — database sources only */}
+                  <div style={{
+                    width: 196, flexShrink: 0,
+                    display: "flex", flexDirection: "column", gap: "0.35rem",
+                  }}>
+                    <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.15rem" }}>
+                      Databases
+                    </div>
+                    {dbVisualData.sources.map((s, i) => {
+                      const color = SOURCE_COLORS[i % SOURCE_COLORS.length];
+                      const isSelected = selectedSourceId === s.id;
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => setSelectedSourceId(isSelected ? null : s.id)}
+                          title={`${isSelected ? "Clear filter: " : "Filter by: "}${s.name}`}
                           style={{
-                            width: 10,
-                            height: 10,
-                            borderRadius: "50%",
-                            background: color,
-                            flexShrink: 0,
+                            display: "flex", alignItems: "center", gap: "0.4rem",
+                            padding: "0.3rem 0.55rem", borderRadius: "var(--radius)",
+                            border: `1.5px solid ${isSelected ? color : "var(--border)"}`,
+                            background: isSelected ? color + "1a" : "var(--surface)",
+                            cursor: "pointer", fontSize: "0.8rem",
+                            fontWeight: isSelected ? 700 : 400,
+                            color: isSelected ? color : "var(--text)",
+                            textAlign: "left", width: "100%",
                           }}
-                        />
-                        {s.name}
+                        >
+                          <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                          <span className="truncate" style={{ flex: 1 }}>{s.name}</span>
+                        </button>
+                      );
+                    })}
+                    {selectedSourceId && (
+                      <button onClick={() => setSelectedSourceId(null)} className="btn-ghost btn-sm"
+                        style={{ marginTop: "0.25rem", color: "var(--danger)", fontSize: "0.78rem" }}>
+                        ✕ Clear filter
                       </button>
-                    );
-                  })}
-                  {selectedSourceId && (
-                    <button
-                      onClick={() => setSelectedSourceId(null)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "#c5221f",
-                        fontSize: "0.78rem",
-                        padding: "0.2rem 0.3rem",
-                      }}
-                    >
-                      ✕ Clear
-                    </button>
-                  )}
-                </div>
+                    )}
+                  </div>
 
-                <EulerDiagram
-                  visualData={visualData}
-                  sourceTotals={data.sources}
-                  selectedSourceId={selectedSourceId}
-                  onSourceClick={setSelectedSourceId}
-                />
+                  {/* Diagram — takes remaining width */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <EulerDiagram
+                      visualData={dbVisualData}
+                      sourceTotals={data.sources}
+                      selectedSourceId={selectedSourceId}
+                      onSourceClick={setSelectedSourceId}
+                    />
+                  </div>
+                </div>
               </section>
             )}
 

@@ -176,6 +176,50 @@ export interface PushToOntologyResult {
   skipped: number;
 }
 
+// ── Concept taxonomy (hierarchy + merge) ─────────────────────────────────────
+
+export interface ConceptTaxonomyNode {
+  id: string;
+  project_id: string;
+  name: string;
+  field_id: string;
+  field_type: ConceptFieldType;
+  parent_id: string | null;
+  aliases: string[];
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConceptMergeRequest {
+  node_ids: string[];
+  extra_values?: Array<{ name: string; field_id: string; field_type: string }>;
+  canonical_name: string;
+  field_id: string;
+}
+
+export const conceptTaxonomyApi = {
+  listNodes: (projectId: string) =>
+    api.get<ConceptTaxonomyNode[]>(`/projects/${projectId}/concept-taxonomy/nodes`),
+
+  getOrCreateNode: (
+    projectId: string,
+    body: { name: string; field_id: string; field_type: string; description?: string },
+  ) => api.post<ConceptTaxonomyNode>(`/projects/${projectId}/concept-taxonomy/nodes`, body),
+
+  updateNode: (
+    projectId: string,
+    nodeId: string,
+    body: { name?: string; parent_id?: string | null; description?: string; clear_parent?: boolean },
+  ) => api.patch<ConceptTaxonomyNode>(`/projects/${projectId}/concept-taxonomy/nodes/${nodeId}`, body),
+
+  deleteNode: (projectId: string, nodeId: string) =>
+    api.delete(`/projects/${projectId}/concept-taxonomy/nodes/${nodeId}`),
+
+  mergeNodes: (projectId: string, body: ConceptMergeRequest) =>
+    api.post<ConceptTaxonomyNode>(`/projects/${projectId}/concept-taxonomy/merge`, body),
+};
+
 export interface ProjectDetail extends Project {
   record_count: number;        // canonical records (unique after dedup)
   import_count: number;        // completed import jobs
@@ -1002,6 +1046,8 @@ export const ONTOLOGY_NAMESPACES = [
   "dimension",
   "relationships",
   "thematic",
+  "theme",
+  "code",
 ] as const;
 
 export type OntologyNamespace = (typeof ONTOLOGY_NAMESPACES)[number];

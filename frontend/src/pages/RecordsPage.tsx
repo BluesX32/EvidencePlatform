@@ -29,26 +29,16 @@ const SORT_OPTIONS: { value: string; label: string }[] = [
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 
-// ── Small helpers ─────────────────────────────────────────────────────────────
+// ── Filter chip ───────────────────────────────────────────────────────────────
 
 function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
-    <span style={{
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "0.3rem",
-      background: "#e8f0fe",
-      border: "1px solid #c5d9f5",
-      borderRadius: "1rem",
-      padding: "0.15rem 0.55rem 0.15rem 0.65rem",
-      fontSize: "0.82rem",
-      color: "#1a73e8",
-    }}>
-      {label}
+    <span className="badge badge-brand" style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}>
+      <span className="truncate" style={{ maxWidth: 200 }}>{label}</span>
       <button
         onClick={onRemove}
-        style={{ background: "none", border: "none", cursor: "pointer",
-                 fontSize: "0.9rem", lineHeight: 1, padding: 0, color: "#555" }}
+        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem",
+                 lineHeight: 1, padding: "0 0 0 2px", color: "var(--brand)", display: "flex" }}
         title="Remove filter"
       >
         ✕
@@ -63,7 +53,6 @@ export default function RecordsPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // ── URL-persisted state ──────────────────────────────────────────────────
   const page       = parseInt(searchParams.get("page") ?? "1");
   const perPage    = parseInt(searchParams.get("per_page") ?? "50");
   const sort       = searchParams.get("sort") ?? "year_desc";
@@ -79,19 +68,14 @@ export default function RecordsPage() {
   const hasExtraction = hasExtractRaw === "true" ? true : hasExtractRaw === "false" ? false : undefined;
 
   const queryClient = useQueryClient();
-
-  // ── UI-only state ────────────────────────────────────────────────────────
   const [searchInput, setSearchInput] = useState(q);
   const [showFilters, setShowFilters] = useState(false);
 
   const deleteMutation = useMutation({
     mutationFn: (recordId: string) => recordsApi.delete(projectId!, recordId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["records", projectId] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["records", projectId] }),
   });
 
-  // Sync search input → URL with debounce
   useEffect(() => {
     const t = setTimeout(() => {
       setSearchParams((prev) => {
@@ -104,23 +88,18 @@ export default function RecordsPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // ── Column visibility — localStorage per project ─────────────────────────
   const columnsKey = `${projectId}-columns`;
   const [columns, setColumns] = useState<ColumnVisibility>(() => {
     try {
       const stored = localStorage.getItem(columnsKey);
       return stored ? (JSON.parse(stored) as ColumnVisibility) : DEFAULT_COLUMNS;
-    } catch {
-      return DEFAULT_COLUMNS;
-    }
+    } catch { return DEFAULT_COLUMNS; }
   });
-
   function handleColumnsChange(c: ColumnVisibility) {
     setColumns(c);
     try { localStorage.setItem(columnsKey, JSON.stringify(c)); } catch { /* ignore */ }
   }
 
-  // ── Data queries ─────────────────────────────────────────────────────────
   const { data: sources } = useQuery({
     queryKey: ["sources", projectId],
     queryFn: () => sourcesApi.list(projectId!).then((r) => r.data),
@@ -132,16 +111,10 @@ export default function RecordsPage() {
                taStatus, ftStatus, hasExtractRaw],
     queryFn: () =>
       recordsApi.list(projectId!, {
-        page,
-        per_page: perPage,
-        q: q || undefined,
-        sort,
+        page, per_page: perPage, q: q || undefined, sort,
         source_ids: sourceIds.length > 0 ? sourceIds : undefined,
-        year_min: yearMin,
-        year_max: yearMax,
-        ta_status: taStatus,
-        ft_status: ftStatus,
-        has_extraction: hasExtraction,
+        year_min: yearMin, year_max: yearMax,
+        ta_status: taStatus, ft_status: ftStatus, has_extraction: hasExtraction,
       }).then((r) => r.data),
     enabled: !!projectId,
     placeholderData: (prev) => prev,
@@ -149,31 +122,14 @@ export default function RecordsPage() {
 
   const yr = data?.year_range;
 
-  // ── URL mutators ─────────────────────────────────────────────────────────
   const setSort = useCallback((s: string) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("sort", s);
-      next.set("page", "1");
-      return next;
-    });
+    setSearchParams(prev => { const n = new URLSearchParams(prev); n.set("sort", s); n.set("page", "1"); return n; });
   }, [setSearchParams]);
-
   const setPage = useCallback((p: number) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("page", String(p));
-      return next;
-    });
+    setSearchParams(prev => { const n = new URLSearchParams(prev); n.set("page", String(p)); return n; });
   }, [setSearchParams]);
-
   const setPerPage = useCallback((n: number) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("per_page", String(n));
-      next.set("page", "1");
-      return next;
-    });
+    setSearchParams(prev => { const nx = new URLSearchParams(prev); nx.set("per_page", String(n)); nx.set("page", "1"); return nx; });
   }, [setSearchParams]);
 
   function toggleSourceId(id: string) {
@@ -181,311 +137,174 @@ export default function RecordsPage() {
       const next = new URLSearchParams(prev);
       const current = prev.getAll("source_ids");
       next.delete("source_ids");
-      if (current.includes(id)) {
-        current.filter((x) => x !== id).forEach((x) => next.append("source_ids", x));
-      } else {
-        [...current, id].forEach((x) => next.append("source_ids", x));
-      }
+      (current.includes(id) ? current.filter(x => x !== id) : [...current, id]).forEach(x => next.append("source_ids", x));
       next.set("page", "1");
       return next;
     });
-  }
-
-  function setYearMin(v: string) {
-    setSearchParams((prev) => setParam(prev, "year_min", v || undefined));
-  }
-  function setYearMax(v: string) {
-    setSearchParams((prev) => setParam(prev, "year_max", v || undefined));
-  }
-  function setTaStatus(v: string) {
-    setSearchParams((prev) => setParam(prev, "ta_status", v || undefined));
-  }
-  function setFtStatus(v: string) {
-    setSearchParams((prev) => setParam(prev, "ft_status", v || undefined));
-  }
-  function setHasExtraction(v: string) {
-    setSearchParams((prev) => setParam(prev, "has_extraction", v || undefined));
   }
 
   function clearAllFilters() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
-      next.delete("source_ids");
-      next.delete("year_min");
-      next.delete("year_max");
-      next.delete("ta_status");
-      next.delete("ft_status");
-      next.delete("has_extraction");
+      ["source_ids", "year_min", "year_max", "ta_status", "ft_status", "has_extraction"].forEach(k => next.delete(k));
       next.set("page", "1");
       return next;
     });
   }
 
-  // ── Active filter chips ──────────────────────────────────────────────────
   const chips: { label: string; onRemove: () => void }[] = [];
-
-  if (sourceIds.length > 0) {
-    sourceIds.forEach((sid) => {
-      const name = sources?.find((s) => s.id === sid)?.name ?? sid;
-      chips.push({
-        label: `Source: ${name}`,
-        onRemove: () => toggleSourceId(sid),
-      });
-    });
-  }
+  sourceIds.forEach(sid => {
+    chips.push({ label: `Source: ${sources?.find(s => s.id === sid)?.name ?? sid}`, onRemove: () => toggleSourceId(sid) });
+  });
   if (yearMin !== undefined || yearMax !== undefined) {
-    const yearLabel =
-      yearMin && yearMax ? `Year: ${yearMin}–${yearMax}` :
-      yearMin ? `Year ≥ ${yearMin}` :
-      `Year ≤ ${yearMax}`;
     chips.push({
-      label: yearLabel,
-      onRemove: () => {
-        setSearchParams((prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("year_min");
-          next.delete("year_max");
-          return next;
-        });
-      },
+      label: yearMin && yearMax ? `Year: ${yearMin}–${yearMax}` : yearMin ? `Year ≥ ${yearMin}` : `Year ≤ ${yearMax}`,
+      onRemove: () => setSearchParams(prev => { const n = new URLSearchParams(prev); n.delete("year_min"); n.delete("year_max"); return n; }),
     });
   }
-  if (taStatus) {
-    chips.push({
-      label: `TA: ${taStatus}`,
-      onRemove: () => setSearchParams((prev) => setParam(prev, "ta_status", undefined)),
-    });
-  }
-  if (ftStatus) {
-    chips.push({
-      label: `FT: ${ftStatus}`,
-      onRemove: () => setSearchParams((prev) => setParam(prev, "ft_status", undefined)),
-    });
-  }
-  if (hasExtraction !== undefined) {
-    chips.push({
-      label: hasExtraction ? "Has extraction" : "No extraction",
-      onRemove: () => setSearchParams((prev) => setParam(prev, "has_extraction", undefined)),
-    });
-  }
+  if (taStatus) chips.push({ label: `TA: ${taStatus}`, onRemove: () => setSearchParams(p => setParam(p, "ta_status", undefined)) });
+  if (ftStatus) chips.push({ label: `FT: ${ftStatus}`, onRemove: () => setSearchParams(p => setParam(p, "ft_status", undefined)) });
+  if (hasExtraction !== undefined) chips.push({ label: hasExtraction ? "Has extraction" : "No extraction", onRemove: () => setSearchParams(p => setParam(p, "has_extraction", undefined)) });
 
   const hasActiveFilters = chips.length > 0;
+
+  const labelStyle: React.CSSProperties = { fontSize: "0.82rem", fontWeight: 600, color: "var(--text-secondary)" };
 
   return (
     <div className="page">
       <header className="page-header">
-        <Link to={`/projects/${projectId}`} className="back-link">← Project</Link>
+        <div className="page-title">
+          <Link to={`/projects/${projectId}`} className="back-link">← Project</Link>
+          <h1>Records</h1>
+          <span className="subtitle">{isLoading ? "Loading…" : `${data?.total ?? 0} records`}</span>
+        </div>
         <Link to={`/projects/${projectId}/import`} className="btn-primary">Import more</Link>
       </header>
-      <main>
-        {/* ── Toolbar ───────────────────────────────────────────────────── */}
-        <div className="records-toolbar" style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-          <input
-            type="search"
-            className="search-input"
-            placeholder="Search by title or author…"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            style={{ flex: "1 1 200px", minWidth: "160px" }}
-          />
 
-          {/* Sort */}
-          <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.85rem", color: "#5f6368" }}>
-            Sort:
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-              style={{ fontSize: "0.85rem", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.5rem" }}
-            >
-              {SORT_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </label>
-
-          {/* Page size */}
-          <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.85rem", color: "#5f6368" }}>
-            Show:
-            <select
-              value={perPage}
-              onChange={(e) => setPerPage(parseInt(e.target.value))}
-              style={{ fontSize: "0.85rem", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.5rem" }}
-            >
-              {PAGE_SIZE_OPTIONS.map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-          </label>
-
-          {/* Filters toggle */}
-          <button
-            className="btn-ghost"
-            style={{ fontSize: "0.85rem", position: "relative" }}
-            onClick={() => setShowFilters((v) => !v)}
-          >
-            Filters {hasActiveFilters ? `(${chips.length})` : ""} {showFilters ? "▴" : "▾"}
-          </button>
-
-          <span className="muted" style={{ marginLeft: "auto" }}>
-            {isLoading ? "Loading…" : `${data?.total ?? 0} records`}
-          </span>
-        </div>
-
-        {/* ── Filter panel ─────────────────────────────────────────────────── */}
-        {showFilters && (
-          <div style={{
-            border: "1px solid #dadce0",
-            borderRadius: "0.5rem",
-            padding: "1rem",
-            marginBottom: "0.75rem",
-            background: "#fafafa",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-            gap: "1rem",
-          }}>
-            {/* Sources */}
-            {sources && sources.length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
-                  Source
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-                  {sources.map((s) => (
-                    <label key={s.id} style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={sourceIds.includes(s.id)}
-                        onChange={() => toggleSourceId(s.id)}
-                      />
-                      {s.name}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Year range */}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
-                Year range{yr && (yr.min || yr.max) ? ` (${yr.min ?? "?"}–${yr.max ?? "?"})` : ""}
-              </div>
-              <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                <input
-                  type="number"
-                  placeholder={yr?.min ? String(yr.min) : "From"}
-                  value={yearMinRaw ?? ""}
-                  onChange={(e) => setYearMin(e.target.value)}
-                  style={{ width: "80px", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.4rem", fontSize: "0.85rem" }}
-                />
-                <span style={{ color: "#888" }}>–</span>
-                <input
-                  type="number"
-                  placeholder={yr?.max ? String(yr.max) : "To"}
-                  value={yearMaxRaw ?? ""}
-                  onChange={(e) => setYearMax(e.target.value)}
-                  style={{ width: "80px", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.4rem", fontSize: "0.85rem" }}
-                />
-              </div>
-            </div>
-
-            {/* TA Status */}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
-                TA Status
-              </div>
-              <select
-                value={taStatus ?? ""}
-                onChange={(e) => setTaStatus(e.target.value)}
-                style={{ width: "100%", fontSize: "0.85rem", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.5rem" }}
-              >
-                <option value="">All</option>
-                <option value="unscreened">Unscreened</option>
-                <option value="included">Included</option>
-                <option value="excluded">Excluded</option>
-              </select>
-            </div>
-
-            {/* FT Status */}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
-                Full-text Status
-              </div>
-              <select
-                value={ftStatus ?? ""}
-                onChange={(e) => setFtStatus(e.target.value)}
-                style={{ width: "100%", fontSize: "0.85rem", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.5rem" }}
-              >
-                <option value="">All</option>
-                <option value="unscreened">Unreviewed</option>
-                <option value="included">Included</option>
-                <option value="excluded">Excluded</option>
-              </select>
-            </div>
-
-            {/* Extraction */}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: "0.82rem", color: "#5f6368", marginBottom: "0.4rem" }}>
-                Extraction
-              </div>
-              <select
-                value={hasExtractRaw ?? ""}
-                onChange={(e) => setHasExtraction(e.target.value)}
-                style={{ width: "100%", fontSize: "0.85rem", border: "1px solid #dadce0", borderRadius: "0.375rem", padding: "0.25rem 0.5rem" }}
-              >
-                <option value="">All</option>
-                <option value="true">Has extraction</option>
-                <option value="false">No extraction</option>
-              </select>
-            </div>
-
-            {/* Clear all */}
-            {hasActiveFilters && (
-              <div style={{ display: "flex", alignItems: "flex-end" }}>
-                <button
-                  className="btn-ghost"
-                  style={{ fontSize: "0.82rem", color: "#d93025" }}
-                  onClick={clearAllFilters}
-                >
-                  Clear all filters
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── Active filter chips ─────────────────────────────────────────── */}
-        {chips.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.75rem" }}>
-            {chips.map((chip, i) => (
-              <FilterChip key={i} label={chip.label} onRemove={chip.onRemove} />
-            ))}
-          </div>
-        )}
-
-        {/* ── Table ─────────────────────────────────────────────────────────── */}
-        <RecordsTable
-          records={data?.records ?? []}
-          sort={sort}
-          onSortChange={setSort}
-          isLoading={isLoading}
-          columns={columns}
-          onColumnsChange={handleColumnsChange}
-          onDelete={(id) => deleteMutation.mutate(id)}
+      {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
+      <div className="toolbar">
+        <input
+          type="search"
+          className="search-input"
+          placeholder="Search by title or author…"
+          value={searchInput}
+          onChange={e => setSearchInput(e.target.value)}
+          style={{ flex: "1 1 200px", minWidth: 160 }}
         />
+        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", ...labelStyle }}>
+          Sort:
+          <select value={sort} onChange={e => setSort(e.target.value)} style={{ fontSize: "0.85rem" }}>
+            {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", ...labelStyle }}>
+          Show:
+          <select value={perPage} onChange={e => setPerPage(parseInt(e.target.value))} style={{ fontSize: "0.85rem" }}>
+            {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <button className="btn-ghost btn-sm" onClick={() => setShowFilters(v => !v)}>
+          Filters{hasActiveFilters ? ` (${chips.length})` : ""} {showFilters ? "▴" : "▾"}
+        </button>
+      </div>
 
-        {/* ── Pagination ────────────────────────────────────────────────────── */}
-        {data && data.total_pages > 1 && (
-          <div className="pagination">
-            <button onClick={() => setPage(page - 1)} disabled={page <= 1} className="btn-ghost">
-              Previous
-            </button>
-            <span>Page {page} of {data.total_pages}</span>
-            <button onClick={() => setPage(page + 1)} disabled={page >= data.total_pages} className="btn-ghost">
-              Next
-            </button>
+      {/* ── Filter panel ─────────────────────────────────────────────────────── */}
+      {showFilters && (
+        <div style={{
+          border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
+          padding: "1rem", marginBottom: "0.75rem", background: "var(--surface-2)",
+          display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "1rem",
+        }}>
+          {sources && sources.length > 0 && (
+            <div>
+              <div style={labelStyle} className="section-title">Source</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.4rem" }}>
+                {sources.map(s => (
+                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem", cursor: "pointer" }}>
+                    <input type="checkbox" checked={sourceIds.includes(s.id)} onChange={() => toggleSourceId(s.id)} />
+                    <span className="truncate">{s.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          <div>
+            <div style={labelStyle} className="section-title">
+              Year{yr && (yr.min || yr.max) ? ` (${yr.min ?? "?"}–${yr.max ?? "?"})` : ""}
+            </div>
+            <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginTop: "0.4rem" }}>
+              <input type="number" placeholder={yr?.min ? String(yr.min) : "From"}
+                value={yearMinRaw ?? ""} onChange={e => setSearchParams(p => setParam(p, "year_min", e.target.value || undefined))}
+                style={{ width: 76, fontSize: "0.85rem" }} />
+              <span style={{ color: "var(--text-muted)" }}>–</span>
+              <input type="number" placeholder={yr?.max ? String(yr.max) : "To"}
+                value={yearMaxRaw ?? ""} onChange={e => setSearchParams(p => setParam(p, "year_max", e.target.value || undefined))}
+                style={{ width: 76, fontSize: "0.85rem" }} />
+            </div>
           </div>
-        )}
-      </main>
+          <div>
+            <div style={labelStyle} className="section-title">TA Status</div>
+            <select value={taStatus ?? ""} onChange={e => setSearchParams(p => setParam(p, "ta_status", e.target.value || undefined))}
+              style={{ width: "100%", marginTop: "0.4rem", fontSize: "0.85rem" }}>
+              <option value="">All</option>
+              <option value="unscreened">Unscreened</option>
+              <option value="included">Included</option>
+              <option value="excluded">Excluded</option>
+            </select>
+          </div>
+          <div>
+            <div style={labelStyle} className="section-title">Full-text Status</div>
+            <select value={ftStatus ?? ""} onChange={e => setSearchParams(p => setParam(p, "ft_status", e.target.value || undefined))}
+              style={{ width: "100%", marginTop: "0.4rem", fontSize: "0.85rem" }}>
+              <option value="">All</option>
+              <option value="unscreened">Unreviewed</option>
+              <option value="included">Included</option>
+              <option value="excluded">Excluded</option>
+            </select>
+          </div>
+          <div>
+            <div style={labelStyle} className="section-title">Extraction</div>
+            <select value={hasExtractRaw ?? ""} onChange={e => setSearchParams(p => setParam(p, "has_extraction", e.target.value || undefined))}
+              style={{ width: "100%", marginTop: "0.4rem", fontSize: "0.85rem" }}>
+              <option value="">All</option>
+              <option value="true">Has extraction</option>
+              <option value="false">No extraction</option>
+            </select>
+          </div>
+          {hasActiveFilters && (
+            <div style={{ display: "flex", alignItems: "flex-end" }}>
+              <button className="btn-danger btn-sm" onClick={clearAllFilters}>Clear all filters</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Active filter chips ──────────────────────────────────────────────── */}
+      {chips.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.75rem" }}>
+          {chips.map((chip, i) => <FilterChip key={i} label={chip.label} onRemove={chip.onRemove} />)}
+        </div>
+      )}
+
+      {/* ── Table ───────────────────────────────────────────────────────────── */}
+      <RecordsTable
+        records={data?.records ?? []}
+        sort={sort}
+        onSortChange={setSort}
+        isLoading={isLoading}
+        columns={columns}
+        onColumnsChange={handleColumnsChange}
+        onDelete={id => deleteMutation.mutate(id)}
+      />
+
+      {/* ── Pagination ──────────────────────────────────────────────────────── */}
+      {data && data.total_pages > 1 && (
+        <div className="pagination">
+          <button onClick={() => setPage(page - 1)} disabled={page <= 1} className="btn-ghost btn-sm">Previous</button>
+          <span>Page {page} of {data.total_pages}</span>
+          <button onClick={() => setPage(page + 1)} disabled={page >= data.total_pages} className="btn-ghost btn-sm">Next</button>
+        </div>
+      )}
     </div>
   );
 }

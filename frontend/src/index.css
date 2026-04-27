@@ -90,6 +90,29 @@ p  { margin: 0 0 .75rem; }
 .error   { color: var(--danger); font-size: .875rem; margin: .5rem 0; }
 .success { color: var(--success); font-weight: 600; }
 
+/* Text overflow helpers */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Flex children that need to shrink */
+.min-w-0 { min-width: 0; }
+
 /* ── App Shell ───────────────────────────────────────────────────────────── */
 .app-shell {
   display: flex;
@@ -292,6 +315,32 @@ p  { margin: 0 0 .75rem; }
   background: rgba(255,255,255,.07);
   margin: .5rem .75rem;
 }
+
+/* ── Draggable nav items ─────────────────────────────────────────────────── */
+.sidebar-nav-item {
+  border-radius: var(--radius);
+  transition: opacity .15s, background .1s;
+}
+.sidebar-nav-item.is-dragging {
+  opacity: .35;
+}
+.sidebar-nav-item.is-drag-over > .sidebar-link {
+  background: rgba(255,255,255,.10);
+  outline: 1.5px dashed rgba(165,180,252,.5);
+  outline-offset: -1px;
+}
+/* Grip handle — hidden until hover */
+.drag-grip {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0;
+  color: #4b5563;
+  transition: opacity .15s;
+  flex-shrink: 0;
+  margin-right: -2px;
+}
+.sidebar-nav-item:hover .drag-grip { opacity: .6; }
+.sidebar--collapsed .drag-grip { display: none; }
 
 /* ── Shell main content ──────────────────────────────────────────────────── */
 .shell-main {
@@ -778,6 +827,7 @@ select {
   font-weight: 700;
   text-transform: lowercase;
   letter-spacing: .01em;
+  white-space: nowrap;
 }
 .status-badge.completed  { background: var(--success-light); color: var(--success); border: 1px solid var(--success-border); }
 .status-badge.failed     { background: var(--danger-light);  color: var(--danger);  border: 1px solid var(--danger-border); }
@@ -794,7 +844,14 @@ select {
   background: var(--surface-2);
   color: var(--text-secondary);
   border: 1px solid var(--border);
+  white-space: nowrap;
 }
+/* Semantic badge variants */
+.badge-success { background: var(--success-light); color: var(--success); border-color: var(--success-border); }
+.badge-danger  { background: var(--danger-light);  color: var(--danger);  border-color: var(--danger-border); }
+.badge-warning { background: var(--warning-light); color: var(--warning); border-color: var(--warning-border); }
+.badge-info    { background: var(--info-light);    color: var(--info);    border-color: #bae6fd; }
+.badge-brand   { background: var(--brand-light);   color: var(--brand);   border-color: var(--brand-border); }
 
 /* ── Upload zone ─────────────────────────────────────────────────────────── */
 .upload-zone {
@@ -1023,7 +1080,36 @@ select {
   font-weight: 600;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: opacity .15s;
+  transition: opacity .15s, background .15s;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip-brand   { background: var(--brand-light);   color: var(--brand);   border-color: var(--brand-border); }
+.chip-success { background: var(--success-light); color: var(--success); border-color: var(--success-border); }
+.chip-danger  { background: var(--danger-light);  color: var(--danger);  border-color: var(--danger-border); }
+.chip-warning { background: var(--warning-light); color: var(--warning); border-color: var(--warning-border); }
+.chip-neutral { background: var(--surface-2);     color: var(--text-secondary); border-color: var(--border); }
+
+/* ── Toolbar (filter/search bar above tables) ────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.toolbar-right { margin-left: auto; display: flex; align-items: center; gap: .5rem; }
+
+/* ── Info panel / aside box ──────────────────────────────────────────────── */
+.info-panel {
+  background: var(--info-light);
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  font-size: .875rem;
+  color: var(--info);
 }
 
 /* ── Alert banners ───────────────────────────────────────────────────────── */

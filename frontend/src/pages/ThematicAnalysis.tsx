@@ -69,6 +69,7 @@ function CreateThemeModal({
     mutationFn: () => thematicApi.createTheme(projectId, { name: name.trim(), color }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
       onClose();
     },
   });
@@ -146,6 +147,7 @@ function CreateCodeModal({
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
       onClose();
     },
   });
@@ -246,6 +248,7 @@ function AssignModal({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["code-evidence", projectId, codeId] });
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
       onClose();
     },
   });
@@ -382,7 +385,10 @@ function CodeDetail({
         theme_id: themeId ?? undefined,
         clear_theme: themeId === null,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["thematic", projectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
+    },
   });
 
   const saveMut = useMutation({
@@ -393,6 +399,7 @@ function CodeDetail({
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
       setEditing(false);
     },
   });
@@ -401,6 +408,7 @@ function CodeDetail({
     mutationFn: () => thematicApi.deleteCode(projectId, code.id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
       onDeselect();
     },
   });
@@ -410,6 +418,7 @@ function CodeDetail({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["code-evidence", projectId, code.id] });
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
     },
   });
 
@@ -698,7 +707,10 @@ function ThemeSection({
 
   const renameMut = useMutation({
     mutationFn: (name: string) => thematicApi.updateTheme(projectId, theme.id, { name }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["thematic", projectId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
+    },
   });
 
   function handleRename() {
@@ -855,6 +867,7 @@ export default function ThematicAnalysis() {
         setSelectedThemeId(null);
       }
       qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+      qc.invalidateQueries({ queryKey: ["ontology", projectId] });
     },
   });
 

@@ -146,7 +146,10 @@ export default function OntologyPage() {
     enabled: !!projectId,
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["ontology", projectId] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["ontology", projectId] });
+    qc.invalidateQueries({ queryKey: ["thematic", projectId] });
+  };
   const invalidateEdges = () => qc.invalidateQueries({ queryKey: ["ontology-edges", projectId] });
 
   // ── Derived ─────────────────────────────────────────────────────────────
@@ -519,6 +522,7 @@ export default function OntologyPage() {
                 </div>
               ) : (
                 <OntologyCanvas2D
+                  projectId={projectId!}
                   nodes={visibleNodes}
                   edges={edges}
                   selectedId={selectedId}

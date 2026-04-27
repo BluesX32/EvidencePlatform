@@ -275,6 +275,7 @@ const nodeTypes = { ontologyNode: OntologyNodeCard };
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface Props {
+  projectId: string;
   nodes: OntologyNode[];
   edges: OntologyEdge[];
   selectedId: string | null;
@@ -289,9 +290,34 @@ interface Props {
   onReparent: (nodeId: string, newParentId: string | null) => void;
 }
 
+// ── localStorage helpers ──────────────────────────────────────────────────────
+
+function storageKey(projectId: string) {
+  return `ep_ontology_positions_${projectId}`;
+}
+
+function loadPositions(projectId: string): Map<string, { x: number; y: number }> {
+  try {
+    const raw = localStorage.getItem(storageKey(projectId));
+    if (!raw) return new Map();
+    return new Map(Object.entries(JSON.parse(raw)));
+  } catch {
+    return new Map();
+  }
+}
+
+function savePositions(projectId: string, map: Map<string, { x: number; y: number }>) {
+  try {
+    localStorage.setItem(storageKey(projectId), JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // localStorage quota exceeded — silently ignore
+  }
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function OntologyCanvas2D({
+  projectId,
   nodes,
   edges,
   selectedId,
@@ -323,6 +349,12 @@ export default function OntologyCanvas2D({
   serverNodesRef.current = nodes;
   const dragTargetRef = useRef<string | null>(null);
 
+  // User-positioned nodes: loaded from localStorage on mount so positions survive
+  // both server refetches and page navigation.
+  const manualPositions = useRef<Map<string, { x: number; y: number }>>(
+    loadPositions(projectId)
+  );
+
   // ── Build descendants set for a given node ────────────────────────────────
   const getDescendants = useCallback((nodeId: string): Set<string> => {
     const all = serverNodesRef.current;
@@ -341,12 +373,14 @@ export default function OntologyCanvas2D({
 
   // ── Effect: rebuild layout when tree structure changes ────────────────────
   useEffect(() => {
-    const positions = computeDagreLayout(nodes);
+    const dagrePositions = computeDagreLayout(nodes);
 
     const newRFNodes: RFOntologyNode[] = nodes.map((n) => ({
       id: n.id,
       type: "ontologyNode" as const,
-      position: positions.get(n.id) ?? { x: 0, y: 0 },
+      // Prefer the user's last manual position; fall back to Dagre only for nodes
+      // that have never been manually moved (e.g. newly created nodes).
+      position: manualPositions.current.get(n.id) ?? dagrePositions.get(n.id) ?? { x: 0, y: 0 },
       data: {
         node: n,
         isSelected: n.id === selectedId,
@@ -445,14 +479,22 @@ export default function OntologyCanvas2D({
   const onNodeDragStop = useCallback((_event: React.MouseEvent, draggedNode: RFOntologyNode) => {
     const targetId = dragTargetRef.current;
     if (targetId) {
+      // Dropped onto another node → reparent. Clear manual position so Dagre
+      // can place it correctly within the new subtree on next layout.
+      manualPositions.current.delete(draggedNode.id);
+      savePositions(projectId, manualPositions.current);
       const isDesc = getDescendants(draggedNode.id).has(targetId);
       if (!isDesc) {
         onReparent(draggedNode.id, targetId);
       }
+    } else {
+      // Free positional drag — save where the user left it.
+      manualPositions.current.set(draggedNode.id, draggedNode.position);
+      savePositions(projectId, manualPositions.current);
     }
     dragTargetRef.current = null;
     setDragTargetId(null);
-  }, [getDescendants, onReparent]);
+  }, [getDescendants, onReparent, projectId]);
 
   // ── Connection — only allow rel→rel to create relationship edges ──────────
 

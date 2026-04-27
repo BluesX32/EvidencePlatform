@@ -40,7 +40,7 @@ router = APIRouter(prefix="/projects/{project_id}/ontology", tags=["ontology"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-VALID_NAMESPACES = {"level", "dimension", "relationships", "thematic"}
+VALID_NAMESPACES = {"level", "dimension", "relationships", "thematic", "theme", "code"}
 
 
 async def _require_project(project_id: uuid.UUID, current_user: User, db: AsyncSession):

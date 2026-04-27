@@ -14,31 +14,47 @@ import { useParams, useLocation, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
-  FlaskConical, Tag, Network, GitBranch, Bot, LogOut, FolderOpen, ChevronLeft,
+  FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers,
+  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud,
 } from "lucide-react";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
-import { Cloud } from "lucide-react";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 
 const PROJECT_NAV = [
-  { path: "",             icon: LayoutDashboard, label: "Overview"     },
-  { path: "/import",      icon: Upload,          label: "Import"       },
-  { path: "/records",     icon: BookOpen,        label: "Records"      },
-  { path: "/overlap",     icon: GitMerge,        label: "Overlap"      },
-  { path: "/screen",      icon: CheckSquare,     label: "Screening"    },
-  { path: "/extractions", icon: FlaskConical,    label: "Extractions"  },
-  { path: "/citations",   icon: SearchCode,      label: "Citation Search" },
-  { path: "/labels",             icon: Tag,       label: "Labels"           },
-  { path: "/thematic",          icon: GitBranch, label: "Thematic"         },
-  { path: "/concept-taxonomy",  icon: Layers,    label: "Concepts"         },
-  { path: "/ontology",          icon: Network,   label: "Ontology"         },
-  { path: "/llm-screening", icon: Bot,           label: "LLM Screening"},
-  { path: "/team",        icon: Users,           label: "Team"         },
-  { path: "/consensus",   icon: Scale,           label: "Consensus"    },
+  { path: "",                   icon: LayoutDashboard, label: "Overview"        },
+  { path: "/import",            icon: Upload,          label: "Import"          },
+  { path: "/records",           icon: BookOpen,        label: "Records"         },
+  { path: "/overlap",           icon: GitMerge,        label: "Overlap"         },
+  { path: "/screen",            icon: CheckSquare,     label: "Screening"       },
+  { path: "/extractions",       icon: FlaskConical,    label: "Extractions"     },
+  { path: "/prisma",            icon: BarChart2,       label: "PRISMA"          },
+  { path: "/citations",         icon: SearchCode,      label: "Citation Search" },
+  { path: "/labels",            icon: Tag,             label: "Labels"          },
+  { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts"        },
+  { path: "/ontology",          icon: Network,         label: "Ontology"        },
+  { path: "/llm-screening",     icon: Bot,             label: "LLM Screening"   },
+  { path: "/team",              icon: Users,           label: "Team"            },
+  { path: "/consensus",         icon: Scale,           label: "Consensus"       },
 ];
+
+const NAV_PATHS = PROJECT_NAV.map(n => n.path);
+const NAV_ORDER_KEY = "ep_nav_order";
+
+function loadNavOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(NAV_ORDER_KEY);
+    const saved: string[] = JSON.parse(raw || "null");
+    if (Array.isArray(saved)) {
+      // Keep saved order, append any new items not yet in it
+      const known = saved.filter(p => NAV_PATHS.includes(p));
+      const added = NAV_PATHS.filter(p => !known.includes(p));
+      return [...known, ...added];
+    }
+  } catch { /* ignore */ }
+  return NAV_PATHS;
+}
 
 // ── Keyboard shortcuts modal ──────────────────────────────────────────────
 
@@ -536,6 +552,37 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Draggable nav order (persisted to localStorage)
+  const [navOrder, setNavOrder] = useState<string[]>(loadNavOrder);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const orderedNav = navOrder
+    .map(p => PROJECT_NAV.find(n => n.path === p))
+    .filter((n): n is (typeof PROJECT_NAV)[number] => !!n);
+
+  function navDragStart(_e: React.DragEvent, idx: number) {
+    setDragIdx(idx);
+  }
+  function navDragOver(e: React.DragEvent, idx: number) {
+    e.preventDefault();
+    if (dragIdx !== null && dragIdx !== idx) setDragOverIdx(idx);
+  }
+  function navDrop(_e: React.DragEvent, idx: number) {
+    if (dragIdx === null || dragIdx === idx) return;
+    const next = [...navOrder];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(idx, 0, moved);
+    setNavOrder(next);
+    localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(next));
+    setDragIdx(null);
+    setDragOverIdx(null);
+  }
+  function navDragEnd() {
+    setDragIdx(null);
+    setDragOverIdx(null);
+  }
+
   useEffect(() => {
     function handleResize() {
       const w = window.innerWidth;
@@ -608,9 +655,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="sidebar-divider" />
 
             <nav className="sidebar-nav">
-              {PROJECT_NAV.map(({ path, icon: Icon, label }) => {
+              {orderedNav.map(({ path, icon: Icon, label }, idx) => {
                 const basePath = `/projects/${projectId}${path}`;
-                // For Screening, restore the last-used params from localStorage
                 let fullPath = basePath;
                 if (path === "/screen" && projectId) {
                   const saved = localStorage.getItem(`ep_screening_last_${projectId}`);
@@ -620,16 +666,30 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   path === ""
                     ? location.pathname === `/projects/${projectId}`
                     : location.pathname.startsWith(basePath);
+                const isDragging = dragIdx === idx;
+                const isOver = dragOverIdx === idx;
                 return (
-                  <Link
+                  <div
                     key={path}
-                    to={fullPath}
-                    className={`sidebar-link${isActive ? " active" : ""}`}
-                    onClick={() => { if (isMobile) setMobileOpen(false); }}
+                    className={`sidebar-nav-item${isDragging ? " is-dragging" : ""}${isOver ? " is-drag-over" : ""}`}
+                    draggable={!isMobile && !collapsed}
+                    onDragStart={e => navDragStart(e, idx)}
+                    onDragOver={e => navDragOver(e, idx)}
+                    onDrop={e => navDrop(e, idx)}
+                    onDragEnd={navDragEnd}
                   >
-                    <span className="sidebar-icon"><Icon size={15} /></span>
-                    <span className="sidebar-label">{label}</span>
-                  </Link>
+                    <Link
+                      to={fullPath}
+                      className={`sidebar-link${isActive ? " active" : ""}`}
+                      onClick={() => { if (isMobile) setMobileOpen(false); }}
+                    >
+                      <span className="drag-grip sidebar-label">
+                        <GripVertical size={11} />
+                      </span>
+                      <span className="sidebar-icon"><Icon size={15} /></span>
+                      <span className="sidebar-label">{label}</span>
+                    </Link>
+                  </div>
                 );
               })}
             </nav>

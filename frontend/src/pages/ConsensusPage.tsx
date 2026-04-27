@@ -1,171 +1,133 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
-import { GitMerge, ArrowLeft, CheckCircle, XCircle, AlertTriangle, Scale } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, Scale } from "lucide-react";
 import { consensusApi, teamApi } from "../api/client";
 import type { ConflictItem, ConsensusDecision, ReviewerDecision } from "../api/client";
+
+// ── Decision chip ─────────────────────────────────────────────────────────────
 
 function DecisionChip({ decision }: { decision: string }) {
   const isInclude = decision === "include";
   return (
-    <span
-      style={{
-        padding: "2px 10px",
-        borderRadius: 12,
-        fontSize: 12,
-        fontWeight: 600,
-        background: isInclude ? "#d1fae5" : "#fee2e2",
-        color: isInclude ? "#065f46" : "#991b1b",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-      }}
-    >
-      {isInclude ? <CheckCircle size={12} /> : <XCircle size={12} />}
+    <span className={`badge ${isInclude ? "badge-success" : "badge-danger"}`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {isInclude ? <CheckCircle size={11} /> : <XCircle size={11} />}
       {decision}
     </span>
   );
 }
 
-function ConflictCard({
-  conflict,
-  onAdjudicate,
-  isAdmin,
-}: {
+// ── Conflict card ─────────────────────────────────────────────────────────────
+
+function ConflictCard({ conflict, onAdjudicate, isAdmin }: {
   conflict: ConflictItem;
-  onAdjudicate: (conflict: ConflictItem, decision: string) => void;
+  onAdjudicate: (c: ConflictItem, decision: string) => void;
   isAdmin: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [pendingDecision, setPendingDecision] = useState<string | null>(null);
 
-  // Group decisions by stage
   const byStage: Record<string, ReviewerDecision[]> = {};
   for (const d of conflict.decisions) {
     if (!byStage[d.stage]) byStage[d.stage] = [];
     byStage[d.stage].push(d);
   }
 
-  const handleAdjudicate = (decision: string) => {
+  function handleAdjudicate(decision: string) {
     setPendingDecision(decision);
     onAdjudicate(conflict, decision);
-  };
+  }
 
   return (
-    <div
-      style={{
-        border: "1px solid #fcd34d",
-        borderRadius: 8,
-        background: "#fffbeb",
-        marginBottom: 12,
-        overflow: "hidden",
-      }}
-    >
+    <div style={{
+      border: "1px solid var(--warning-border)",
+      borderRadius: "var(--radius-lg)",
+      background: "var(--warning-light)",
+      marginBottom: "0.75rem",
+      overflow: "hidden",
+    }}>
       <div
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          padding: "12px 16px",
-          cursor: "pointer",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
+        onClick={() => setExpanded(v => !v)}
+        style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex",
+                 justifyContent: "space-between", alignItems: "center", gap: "0.75rem" }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <AlertTriangle size={16} color="#d97706" />
-          <div>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", minWidth: 0, flex: 1 }}>
+          <AlertTriangle size={15} color="var(--warning)" style={{ flexShrink: 0 }} />
+          <div className="min-w-0" style={{ flex: 1 }}>
+            <span style={{ fontSize: "0.84rem", fontWeight: 600, color: "var(--text)" }}>
               {conflict.item_type === "record" ? "Record" : "Cluster"} conflict · Stage {conflict.stage}
             </span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+            <span style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginLeft: "0.5rem" }}>
               ID: {conflict.item_id.slice(0, 8)}…
             </span>
           </div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {conflict.decisions.map((d, i) => (
-              <DecisionChip key={i} decision={d.decision} />
-            ))}
+          <div style={{ display: "flex", gap: "0.3rem", flexShrink: 0 }}>
+            {conflict.decisions.map((d, i) => <DecisionChip key={i} decision={d.decision} />)}
           </div>
         </div>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{expanded ? "▲" : "▼"}</span>
+        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>
+          {expanded ? "▲" : "▼"}
+        </span>
       </div>
 
       {expanded && (
-        <div style={{ padding: "0 16px 16px" }}>
-          {/* Per-reviewer breakdown */}
-          <div style={{ marginBottom: 12 }}>
+        <div style={{ padding: "0 1rem 1rem" }}>
+          <div style={{ marginBottom: "0.75rem" }}>
             {conflict.decisions.map((d, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 10,
-                  padding: "8px 0",
-                  borderBottom: i < conflict.decisions.length - 1 ? "1px solid #fef3c7" : "none",
-                }}
-              >
+              <div key={i} style={{
+                display: "flex", alignItems: "flex-start", gap: "0.6rem",
+                padding: "0.5rem 0",
+                borderBottom: i < conflict.decisions.length - 1 ? "1px solid var(--warning-border)" : "none",
+              }}>
                 <DecisionChip decision={d.decision} />
-                <div>
-                  <span style={{ fontSize: 13, fontWeight: 500 }}>{d.reviewer_name || "Reviewer"}</span>
+                <div className="min-w-0" style={{ flex: 1 }}>
+                  <span style={{ fontSize: "0.84rem", fontWeight: 500 }}>{d.reviewer_name || "Reviewer"}</span>
                   {d.reason_code && (
-                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+                    <span style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginLeft: "0.4rem" }}>
                       [{d.reason_code}]
                     </span>
                   )}
                   {d.notes && (
-                    <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--text-muted)" }}>{d.notes}</p>
+                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.78rem", color: "var(--text-muted)" }}>{d.notes}</p>
                   )}
                 </div>
-                <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>
+                <span style={{ fontSize: "0.73rem", color: "var(--text-muted)", flexShrink: 0 }}>
                   {new Date(d.created_at).toLocaleDateString()}
                 </span>
               </div>
             ))}
           </div>
 
-          {/* Adjudication controls */}
           {isAdmin && (
-            <div style={{ background: "white", border: "1px solid var(--border)", borderRadius: 6, padding: "12px 14px" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-                <Scale size={14} color="var(--brand)" /> Adjudicate
+            <div className="card" style={{ padding: "0.75rem 1rem" }}>
+              <div className="section-title" style={{ marginBottom: "0.6rem" }}>
+                <Scale size={13} /> Adjudicate
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button
                   onClick={() => handleAdjudicate("include")}
-                  style={{
-                    padding: "6px 16px",
-                    background: pendingDecision === "include" ? "#059669" : "#d1fae5",
-                    color: pendingDecision === "include" ? "#fff" : "#065f46",
-                    border: "1px solid #6ee7b7",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    fontWeight: 600,
-                    fontSize: 13,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
+                  className={pendingDecision === "include" ? "btn-primary btn-sm" : "btn-sm"}
+                  style={pendingDecision === "include" ? {} : {
+                    background: "var(--success-light)", color: "var(--success)",
+                    border: "1px solid var(--success-border)", cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "0.28rem 0.65rem", borderRadius: "var(--radius)", fontSize: "0.78rem", fontWeight: 600,
                   }}
                 >
-                  <CheckCircle size={14} /> Include
+                  <CheckCircle size={13} /> Include
                 </button>
                 <button
                   onClick={() => handleAdjudicate("exclude")}
-                  style={{
-                    padding: "6px 16px",
-                    background: pendingDecision === "exclude" ? "#dc2626" : "#fee2e2",
-                    color: pendingDecision === "exclude" ? "#fff" : "#991b1b",
-                    border: "1px solid #fca5a5",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    fontWeight: 600,
-                    fontSize: 13,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
+                  className={pendingDecision === "exclude" ? "btn-danger btn-sm" : "btn-sm"}
+                  style={pendingDecision === "exclude" ? {} : {
+                    background: "var(--danger-light)", color: "var(--danger)",
+                    border: "1px solid var(--danger-border)", cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "0.28rem 0.65rem", borderRadius: "var(--radius)", fontSize: "0.78rem", fontWeight: 600,
                   }}
                 >
-                  <XCircle size={14} /> Exclude
+                  <XCircle size={13} /> Exclude
                 </button>
               </div>
             </div>
@@ -176,6 +138,8 @@ function ConflictCard({
   );
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────────
+
 export default function ConsensusPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const qc = useQueryClient();
@@ -184,33 +148,22 @@ export default function ConsensusPage() {
 
   const { data: myRole } = useQuery({
     queryKey: ["team-me", projectId],
-    queryFn: () => teamApi.getMyRole(projectId!).then((r) => r.data),
+    queryFn: () => teamApi.getMyRole(projectId!).then(r => r.data),
   });
-
   const { data: conflicts = [], isLoading: conflictsLoading } = useQuery({
     queryKey: ["consensus-conflicts", projectId, stageFilter],
-    queryFn: () =>
-      consensusApi.listConflicts(projectId!, stageFilter || undefined).then((r) => r.data),
+    queryFn: () => consensusApi.listConflicts(projectId!, stageFilter || undefined).then(r => r.data),
   });
-
   const { data: resolved = [], isLoading: resolvedLoading } = useQuery({
     queryKey: ["consensus-resolved", projectId],
-    queryFn: () => consensusApi.listResolved(projectId!).then((r) => r.data),
+    queryFn: () => consensusApi.listResolved(projectId!).then(r => r.data),
   });
 
   const adjudicateMut = useMutation({
-    mutationFn: ({
-      conflict,
-      decision,
-    }: {
-      conflict: ConflictItem;
-      decision: string;
-    }) =>
+    mutationFn: ({ conflict, decision }: { conflict: ConflictItem; decision: string }) =>
       consensusApi.adjudicate(projectId!, {
-        record_id: conflict.record_id,
-        cluster_id: conflict.cluster_id,
-        stage: conflict.stage,
-        decision,
+        record_id: conflict.record_id, cluster_id: conflict.cluster_id,
+        stage: conflict.stage, decision,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["consensus-conflicts", projectId] });
@@ -221,32 +174,34 @@ export default function ConsensusPage() {
   const isAdmin = myRole?.role === "owner" || myRole?.role === "admin";
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "2rem 1.5rem" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
-        <Link to={`/projects/${projectId}`} style={{ color: "var(--text-muted)", display: "flex" }}>
-          <ArrowLeft size={18} />
-        </Link>
-        <GitMerge size={22} color="var(--brand)" />
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Consensus</h1>
-      </div>
+    <div className="page">
+      <header className="page-header">
+        <div className="page-title">
+          <Link to={`/projects/${projectId}`} className="back-link">← Project</Link>
+          <h1>Consensus</h1>
+          <span className="subtitle">Review and adjudicate conflicting screening decisions</span>
+        </div>
+      </header>
 
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--border)", marginBottom: 24 }}>
+      {/* ── Tabs ─────────────────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", borderBottom: "1px solid var(--border)", marginBottom: "1.25rem" }}>
         {[
-          { key: "conflicts", label: `Unresolved Conflicts (${conflicts.length})` },
-          { key: "resolved", label: `Resolved (${resolved.length})` },
-        ].map((t) => (
+          { key: "conflicts", label: `Unresolved (${conflicts.length})` },
+          { key: "resolved",  label: `Resolved (${resolved.length})` },
+        ].map(t => (
           <button
             key={t.key}
-            onClick={() => setTab(t.key as any)}
+            onClick={() => setTab(t.key as "conflicts" | "resolved")}
             style={{
-              padding: "10px 20px",
+              padding: "0.6rem 1.1rem",
               border: "none",
               borderBottom: tab === t.key ? "2px solid var(--brand)" : "2px solid transparent",
               background: "none",
               color: tab === t.key ? "var(--brand)" : "var(--text-muted)",
-              fontWeight: tab === t.key ? 600 : 400,
-              fontSize: 14,
+              fontWeight: tab === t.key ? 700 : 400,
+              fontSize: "0.875rem",
               cursor: "pointer",
+              marginBottom: -1,
             }}
           >
             {t.label}
@@ -254,23 +209,16 @@ export default function ConsensusPage() {
         ))}
       </div>
 
+      {/* ── Conflicts tab ────────────────────────────────────────────────────── */}
       {tab === "conflicts" && (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
-            <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Stage:</span>
-            {(["", "TA", "FT"] as const).map((s) => (
+          <div style={{ display: "flex", gap: "0.4rem", marginBottom: "1rem", alignItems: "center" }}>
+            <span style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginRight: "0.2rem" }}>Stage:</span>
+            {(["", "TA", "FT"] as const).map(s => (
               <button
                 key={s}
                 onClick={() => setStageFilter(s)}
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: 16,
-                  border: "1px solid var(--border)",
-                  background: stageFilter === s ? "var(--brand)" : "none",
-                  color: stageFilter === s ? "#fff" : "var(--text)",
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
+                className={stageFilter === s ? "btn-primary btn-sm" : "btn-ghost btn-sm"}
               >
                 {s || "All"}
               </button>
@@ -278,14 +226,12 @@ export default function ConsensusPage() {
           </div>
 
           {conflictsLoading ? (
-            <div style={{ color: "var(--text-muted)", textAlign: "center", padding: 40 }}>Loading…</div>
+            <div className="empty-state"><div className="spinner" style={{ margin: "0 auto" }} /></div>
           ) : conflicts.length === 0 ? (
-            <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
-              <CheckCircle size={32} color="#059669" style={{ marginBottom: 12 }} />
-              <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>No unresolved conflicts</div>
-              <div style={{ fontSize: 13 }}>
-                All reviewers are in agreement, or only one reviewer has screened items so far.
-              </div>
+            <div className="empty-state">
+              <CheckCircle size={32} color="var(--success)" style={{ marginBottom: 12 }} />
+              <h3>No unresolved conflicts</h3>
+              <p>All reviewers are in agreement, or only one reviewer has screened items so far.</p>
             </div>
           ) : (
             conflicts.map((c: ConflictItem) => (
@@ -293,52 +239,47 @@ export default function ConsensusPage() {
                 key={`${c.item_id}-${c.stage}`}
                 conflict={c}
                 isAdmin={isAdmin}
-                onAdjudicate={(conflict, decision) =>
-                  adjudicateMut.mutate({ conflict, decision })
-                }
+                onAdjudicate={(conflict, decision) => adjudicateMut.mutate({ conflict, decision })}
               />
             ))
           )}
         </>
       )}
 
+      {/* ── Resolved tab ─────────────────────────────────────────────────────── */}
       {tab === "resolved" && (
-        <>
-          {resolvedLoading ? (
-            <div style={{ color: "var(--text-muted)", textAlign: "center", padding: 40 }}>Loading…</div>
-          ) : resolved.length === 0 ? (
-            <div style={{ color: "var(--text-muted)", textAlign: "center", padding: 40 }}>
-              No adjudicated decisions yet.
-            </div>
-          ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+        resolvedLoading ? (
+          <div className="empty-state"><div className="spinner" style={{ margin: "0 auto" }} /></div>
+        ) : resolved.length === 0 ? (
+          <div className="empty-state"><p>No adjudicated decisions yet.</p></div>
+        ) : (
+          <div className="table-wrapper">
+            <table className="records-table">
               <thead>
-                <tr style={{ background: "#f8f9fb" }}>
-                  {["Item", "Type", "Stage", "Final Decision", "Date"].map((h) => (
-                    <th key={h} style={{ padding: "8px 14px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                <tr>
+                  {["Item", "Type", "Stage", "Final Decision", "Date"].map(h => (
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {resolved.map((c: ConsensusDecision) => (
-                  <tr key={c.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "10px 14px", fontSize: 12, fontFamily: "monospace" }}>
+                  <tr key={c.id}>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.82rem" }}>
                       {(c.record_id || c.cluster_id || "").slice(0, 8)}…
                     </td>
-                    <td style={{ padding: "10px 14px", fontSize: 12 }}>
-                      {c.record_id ? "record" : "cluster"}
-                    </td>
-                    <td style={{ padding: "10px 14px", fontSize: 13 }}>{c.stage}</td>
-                    <td style={{ padding: "10px 14px" }}><DecisionChip decision={c.decision} /></td>
-                    <td style={{ padding: "10px 14px", fontSize: 12, color: "var(--text-muted)" }}>
+                    <td>{c.record_id ? "record" : "cluster"}</td>
+                    <td>{c.stage}</td>
+                    <td><DecisionChip decision={c.decision} /></td>
+                    <td style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
                       {new Date(c.created_at).toLocaleDateString()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </>
+          </div>
+        )
       )}
     </div>
   );

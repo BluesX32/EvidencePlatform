@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import annotations, auth, citations, concept_extraction, consensus, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, teams, thematic
+from app.routers import annotations, auth, citations, concept_extraction, concept_taxonomy, consensus, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, teams, thematic
 from app.routers import screening
 from app.routers import llm_screening
 
@@ -32,6 +32,7 @@ app.include_router(labels.router)
 app.include_router(ontology.router)
 app.include_router(thematic.router)
 app.include_router(concept_extraction.router)
+app.include_router(concept_taxonomy.router)
 app.include_router(fulltext.router)
 app.include_router(llm_screening.router)
 app.include_router(teams.router)

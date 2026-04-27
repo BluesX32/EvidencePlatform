@@ -357,7 +357,7 @@ _ARTICLES_SQL = text(
         FROM record_labels rl
         JOIN project_labels pl ON pl.id = rl.label_id
         WHERE rl.project_id = :project_id
-          AND (:label_id IS NULL OR rl.label_id::text = :label_id)
+          AND (CAST(:label_id AS text) IS NULL OR rl.label_id::text = CAST(:label_id AS text))
         GROUP BY rl.record_id, rl.cluster_id, rl.project_id
     ),
     enriched AS (
@@ -380,8 +380,8 @@ _ARTICLES_SQL = text(
         FROM labeled_records lr
         JOIN records r ON r.id = lr.record_id
         WHERE lr.record_id IS NOT NULL
-          AND (:record_id IS NULL OR lr.record_id::text = :record_id)
-          AND (:cluster_id IS NULL OR FALSE)
+          AND (CAST(:record_id AS text) IS NULL OR lr.record_id::text = CAST(:record_id AS text))
+          AND (CAST(:cluster_id AS text) IS NULL OR FALSE)
 
         UNION ALL
 
@@ -407,8 +407,8 @@ _ARTICLES_SQL = text(
         JOIN record_sources rs ON rs.id = ocm.record_source_id
         JOIN records r ON r.id = rs.record_id
         WHERE lr.cluster_id IS NOT NULL
-          AND (:cluster_id IS NULL OR lr.cluster_id::text = :cluster_id)
-          AND (:record_id IS NULL OR FALSE)
+          AND (CAST(:cluster_id AS text) IS NULL OR lr.cluster_id::text = CAST(:cluster_id AS text))
+          AND (CAST(:record_id AS text) IS NULL OR FALSE)
     )
     SELECT *
     FROM enriched
@@ -421,9 +421,9 @@ _ARTICLES_COUNT_SQL = text(
     """
     SELECT COUNT(*) FROM record_labels rl
     WHERE rl.project_id = :project_id
-      AND (:label_id IS NULL OR rl.label_id::text = :label_id)
-      AND (:record_id IS NULL OR rl.record_id::text = :record_id)
-      AND (:cluster_id IS NULL OR rl.cluster_id::text = :cluster_id)
+      AND (CAST(:label_id AS text)   IS NULL OR rl.label_id::text   = CAST(:label_id AS text))
+      AND (CAST(:record_id AS text)  IS NULL OR rl.record_id::text  = CAST(:record_id AS text))
+      AND (CAST(:cluster_id AS text) IS NULL OR rl.cluster_id::text = CAST(:cluster_id AS text))
     """
 )
 

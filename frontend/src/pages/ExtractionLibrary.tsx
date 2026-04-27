@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi } from "../api/client";
@@ -167,6 +167,8 @@ function EditPanel({
   const [pdfOpen, setPdfOpen] = useState(false);
   const [confirmExclude, setConfirmExclude] = useState(false);
   const [excludeReason, setExcludeReason] = useState("");
+  const [dataExpanded, setDataExpanded] = useState(true);
+  const [conceptExpanded, setConceptExpanded] = useState(true);
 
   // Build a minimal ScreeningNextItem-compatible object for PDF components
   const pdfItem: ScreeningNextItem = {
@@ -191,7 +193,21 @@ function EditPanel({
     item.extracted_json.framework_update_note ?? ""
   );
 
+  // Only true when a field was changed by the user (not on initial mount)
+  const userEdited = useRef(false);
+
   // ── Table cell helpers ───────────────────────────────────────────────────
+
+  // Per-row custom options added during this session (not persisted to template)
+  const [customOpts, setCustomOpts] = useState<Record<string, string[]>>({});
+  const [customInput, setCustomInput] = useState<Record<string, string>>({});
+
+  function addCustomOption(rowId: string) {
+    const val = (customInput[rowId] ?? "").trim();
+    if (!val) return;
+    setCustomOpts((prev) => ({ ...prev, [rowId]: [...(prev[rowId] ?? []), val] }));
+    setCustomInput((prev) => ({ ...prev, [rowId]: "" }));
+  }
 
   function strVal(rowId: string): string {
     const v = editTable[rowId];
@@ -202,9 +218,11 @@ function EditPanel({
     return Array.isArray(v) ? v : (v ? [v] : []);
   }
   function setStr(rowId: string, val: string) {
+    userEdited.current = true;
     setEditTable((prev) => ({ ...prev, [rowId]: val }));
   }
   function toggleMulti(rowId: string, option: string) {
+    userEdited.current = true;
     setEditTable((prev) => {
       const cur = Array.isArray(prev[rowId]) ? (prev[rowId] as string[]) : [];
       return {
@@ -226,25 +244,47 @@ function EditPanel({
     byDomain[row.domain].push(row);
   }
 
-  // ── Save ────────────────────────────────────────────────────────────────
+  // ── Auto-save ───────────────────────────────────────────────────────────
 
-  const saveMutation = useMutation({
-    mutationFn: () => {
-      const updatedJson: ExtractionJson = {
-        ...item.extracted_json,
-        table: editTable,
-        levels: editLevels,
-        dimensions: editDims,
-        free_note: editNote,
-        framework_updated: editFrameworkUpdated,
-        framework_update_note: editFrameworkNote,
-      };
-      return screeningApi.submitExtraction(projectId, {
+  const buildJson = (): ExtractionJson => ({
+    ...item.extracted_json,
+    table: editTable,
+    levels: editLevels,
+    dimensions: editDims,
+    free_note: editNote,
+    framework_updated: editFrameworkUpdated,
+    framework_update_note: editFrameworkNote,
+  });
+
+  const autoSaveMut = useMutation({
+    mutationFn: () =>
+      screeningApi.submitExtraction(projectId, {
         record_id: item.record_id ?? undefined,
         cluster_id: item.cluster_id ?? undefined,
-        extracted_json: updatedJson,
-      });
+        extracted_json: buildJson(),
+      }),
+    onSuccess: () => {
+      userEdited.current = false;
+      queryClient.invalidateQueries({ queryKey: ["extractions-library", projectId] });
     },
+  });
+
+  // Debounced auto-save — fires 700 ms after the last user change
+  useEffect(() => {
+    if (!userEdited.current) return;
+    const t = setTimeout(() => { autoSaveMut.mutate(); }, 700);
+    return () => clearTimeout(t);
+  }, [editTable, editLevels, editDims, editNote, editFrameworkUpdated, editFrameworkNote]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Close (explicit) ─────────────────────────────────────────────────────
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      screeningApi.submitExtraction(projectId, {
+        record_id: item.record_id ?? undefined,
+        cluster_id: item.cluster_id ?? undefined,
+        extracted_json: buildJson(),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["extractions-library", projectId] });
       onClose();
@@ -266,83 +306,65 @@ function EditPanel({
     },
   });
 
-  const sectionHead: React.CSSProperties = {
-    fontSize: "0.8rem", fontWeight: 700, color: "#3c4043",
-    marginBottom: "0.5rem", marginTop: "1.25rem",
-    textTransform: "uppercase", letterSpacing: "0.04em",
-  };
-  const fieldLabel: React.CSSProperties = {
-    fontSize: "0.78rem", fontWeight: 600, color: "#5f6368",
-    marginBottom: "0.25rem",
+  const SH: React.CSSProperties = {
+    fontSize: "0.72rem", fontWeight: 700, color: "#6b7280",
+    textTransform: "uppercase", letterSpacing: "0.06em",
+    marginBottom: "0.4rem", marginTop: "1rem",
   };
 
-  return (
-    <div style={{ background: "#f8f9fa", borderTop: "2px solid #4f46e5", padding: "1.25rem 1.5rem" }}>
+  const CollapseHeader = ({
+    label, expanded, onToggle, extra,
+  }: { label: string; expanded: boolean; onToggle: () => void; extra?: React.ReactNode }) => (
+    <button
+      type="button"
+      onClick={onToggle}
+      style={{
+        display: "flex", alignItems: "center", gap: "0.5rem",
+        width: "100%", background: "#f1f3f4", border: "none",
+        borderRadius: expanded ? "0.4rem 0.4rem 0 0" : "0.4rem",
+        padding: "0.45rem 0.75rem", cursor: "pointer",
+        marginBottom: expanded ? 0 : "0.5rem",
+      }}
+    >
+      <span style={{ fontSize: "0.7rem", color: "#6b7280" }}>{expanded ? "▾" : "▸"}</span>
+      <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.05em", flex: 1, textAlign: "left" }}>
+        {label}
+      </span>
+      {extra}
+    </button>
+  );
 
-      {/* ── PDF controls ──────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "1rem" }}>
-        <PDFFetchButton projectId={projectId} item={pdfItem} />
-        <PDFUploadPanel projectId={projectId} item={pdfItem} />
-        <div style={{ marginTop: "0.4rem" }}>
-          <button
-            onClick={() => setPdfOpen((v) => !v)}
-            style={{
-              fontSize: "0.75rem", fontWeight: 600,
-              padding: "0.18rem 0.65rem", borderRadius: "1rem",
-              border: "1px solid #c7d7fd",
-              background: pdfOpen ? "#4f46e5" : "#fff",
-              color: pdfOpen ? "#fff" : "#1558d6",
-              cursor: "pointer",
-            }}
-          >
-            📄 {pdfOpen ? "Hide PDF" : "View PDF"}
-          </button>
-        </div>
-        {pdfOpen && (
-          <PDFViewerPanel projectId={projectId} item={pdfItem} onClose={() => setPdfOpen(false)} />
-        )}
-      </div>
-
-      {/* ── Extraction template table ──────────────────────────────────── */}
+  // ── Data extraction section content ──────────────────────────────────────
+  const dataContent = (
+    <div style={{ border: "1px solid #e5e7eb", borderTop: "none", borderRadius: "0 0 0.4rem 0.4rem", padding: "0.85rem 1rem", background: "#fff", marginBottom: "0.75rem" }}>
+      {/* Extraction table */}
       {templateRows.length > 0 && (
-        <>
-          <div style={sectionHead}>Extraction Table</div>
+        <div style={{ marginBottom: "1rem" }}>
+          <div style={SH}>Extraction Table</div>
           {domains.map((domain) => (
-            <div key={domain} style={{ marginBottom: "1rem" }}>
-              {/* Domain header */}
+            <div key={domain} style={{ marginBottom: "0.75rem" }}>
               <div style={{
-                fontSize: "0.72rem", fontWeight: 700, color: "#fff",
-                background: "#6b7280", padding: "0.2rem 0.6rem",
-                borderRadius: "0.25rem 0.25rem 0 0", display: "inline-block",
-                marginBottom: "0.5rem",
+                fontSize: "0.68rem", fontWeight: 700, color: "#fff",
+                background: "#6b7280", padding: "0.15rem 0.55rem",
+                borderRadius: "0.2rem 0.2rem 0 0", display: "inline-block",
               }}>
                 {domain}
               </div>
-              <div style={{
-                border: "1px solid #dadce0", borderRadius: "0 0.375rem 0.375rem 0.375rem",
-                overflow: "hidden",
-              }}>
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: "0 0.3rem 0.3rem 0.3rem", overflow: "hidden" }}>
                 {byDomain[domain].map((row, idx) => (
-                  <div
-                    key={row.id}
-                    style={{
-                      display: "grid", gridTemplateColumns: "200px 1fr",
-                      borderBottom: idx < byDomain[domain].length - 1 ? "1px solid #f0f0f0" : "none",
-                      background: "#fff",
-                    }}
-                  >
-                    {/* Item label */}
+                  <div key={row.id} style={{
+                    display: "grid", gridTemplateColumns: "180px 1fr",
+                    borderBottom: idx < byDomain[domain].length - 1 ? "1px solid #f3f4f6" : "none",
+                    background: "#fff",
+                  }}>
                     <div style={{
-                      padding: "0.6rem 0.75rem",
-                      borderRight: "1px solid #f0f0f0",
-                      fontSize: "0.8rem", fontWeight: 500, color: "#374151",
-                      background: "#fafafa",
+                      padding: "0.5rem 0.65rem", borderRight: "1px solid #f3f4f6",
+                      fontSize: "0.78rem", fontWeight: 500, color: "#374151",
+                      background: "#f9fafb", display: "flex", alignItems: "flex-start",
                     }}>
                       {row.item}
                     </div>
-
-                    {/* Editable cell */}
-                    <div style={{ padding: "0.5rem 0.75rem" }}>
+                    <div style={{ padding: "0.45rem 0.65rem" }}>
                       {row.type === "string" && (
                         <textarea
                           value={strVal(row.id)}
@@ -350,199 +372,245 @@ function EditPanel({
                           rows={2}
                           style={{
                             width: "100%", boxSizing: "border-box",
-                            border: "1px solid #dadce0", borderRadius: "0.25rem",
-                            padding: "0.3rem 0.5rem", fontSize: "0.83rem",
-                            fontFamily: "inherit", resize: "vertical",
+                            border: "1px solid #e5e7eb", borderRadius: "0.25rem",
+                            padding: "0.28rem 0.45rem", fontSize: "0.82rem",
+                            fontFamily: "inherit", resize: "vertical", background: "#fafafa",
                           }}
                         />
                       )}
-
-                      {row.type === "single_select" && (
-                        <select
-                          value={strVal(row.id)}
-                          onChange={(e) => setStr(row.id, e.target.value)}
-                          style={{
-                            border: "1px solid #dadce0", borderRadius: "0.25rem",
-                            padding: "0.3rem 0.5rem", fontSize: "0.83rem",
-                            background: "#fff", minWidth: 160,
-                          }}
-                        >
-                          <option value="">— select —</option>
-                          {row.options.map((o) => (
-                            <option key={o} value={o}>{o}</option>
-                          ))}
-                          {/* keep custom value if it's not in options */}
-                          {strVal(row.id) && !row.options.includes(strVal(row.id)) && (
-                            <option value={strVal(row.id)}>{strVal(row.id)}</option>
-                          )}
-                        </select>
-                      )}
-
-                      {row.type === "multi_select" && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
-                          {row.options.map((o) => (
-                            <Chip
-                              key={o}
-                              label={o}
-                              active={arrVal(row.id).includes(o)}
-                              color="green"
-                              onClick={() => toggleMulti(row.id, o)}
-                            />
-                          ))}
-                          {/* show any custom values not in options */}
-                          {arrVal(row.id)
-                            .filter((v) => !row.options.includes(v))
-                            .map((v) => (
-                              <Chip
-                                key={v}
-                                label={v}
-                                active={true}
-                                color="green"
-                                onClick={() => toggleMulti(row.id, v)}
+                      {row.type === "single_select" && (() => {
+                        const allOpts = [...row.options, ...(customOpts[row.id] ?? [])];
+                        return (
+                          <div>
+                            <select
+                              value={strVal(row.id)}
+                              onChange={(e) => setStr(row.id, e.target.value)}
+                              style={{
+                                border: "1px solid #e5e7eb", borderRadius: "0.25rem",
+                                padding: "0.28rem 0.45rem", fontSize: "0.82rem",
+                                background: "#fafafa", width: "100%",
+                              }}
+                            >
+                              <option value="">— select —</option>
+                              {allOpts.map((o) => <option key={o} value={o}>{o}</option>)}
+                              {strVal(row.id) && !allOpts.includes(strVal(row.id)) && (
+                                <option value={strVal(row.id)}>{strVal(row.id)}</option>
+                              )}
+                            </select>
+                            <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                              <input
+                                value={customInput[row.id] ?? ""}
+                                onChange={(e) => setCustomInput((p) => ({ ...p, [row.id]: e.target.value }))}
+                                onKeyDown={(e) => { if (e.key === "Enter") addCustomOption(row.id); }}
+                                placeholder="+ custom option…"
+                                style={{ fontSize: "0.75rem", padding: "0.15rem 0.4rem", border: "1px dashed #d1d5db", borderRadius: "0.25rem", flex: 1, outline: "none" }}
                               />
-                            ))}
-                        </div>
-                      )}
+                              <button type="button" onClick={() => addCustomOption(row.id)}
+                                style={{ fontSize: "0.7rem", padding: "0.15rem 0.45rem", borderRadius: "0.2rem", border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}>
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {row.type === "multi_select" && (() => {
+                        const allOpts = [...row.options, ...(customOpts[row.id] ?? [])];
+                        return (
+                          <div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginBottom: "0.3rem" }}>
+                              {allOpts.map((o) => (
+                                <Chip key={o} label={o} active={arrVal(row.id).includes(o)} color="green" onClick={() => toggleMulti(row.id, o)} />
+                              ))}
+                              {arrVal(row.id).filter((v) => !allOpts.includes(v)).map((v) => (
+                                <Chip key={v} label={v} active={true} color="green" onClick={() => toggleMulti(row.id, v)} />
+                              ))}
+                            </div>
+                            <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                              <input
+                                value={customInput[row.id] ?? ""}
+                                onChange={(e) => setCustomInput((p) => ({ ...p, [row.id]: e.target.value }))}
+                                onKeyDown={(e) => { if (e.key === "Enter") addCustomOption(row.id); }}
+                                placeholder="+ custom option…"
+                                style={{ fontSize: "0.75rem", padding: "0.15rem 0.4rem", border: "1px dashed #d1d5db", borderRadius: "0.25rem", flex: 1, outline: "none" }}
+                              />
+                              <button type="button" onClick={() => addCustomOption(row.id)}
+                                style={{ fontSize: "0.7rem", padding: "0.15rem 0.45rem", borderRadius: "0.2rem", border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}>
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 ))}
               </div>
             </div>
           ))}
-        </>
+        </div>
       )}
 
-      {/* ── Levels ────────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "0.75rem" }}>
-        <div style={sectionHead}>Levels</div>
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+      {/* Levels */}
+      <div style={{ marginBottom: "0.65rem" }}>
+        <div style={SH}>Levels</div>
+        <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
           {LEVELS.map((l) => (
-            <Chip
-              key={l} label={l}
-              active={editLevels.includes(l)}
-              color="blue"
-              onClick={() =>
-                setEditLevels((prev) =>
-                  prev.includes(l) ? prev.filter((x) => x !== l) : [...prev, l]
-                )
-              }
-            />
+            <Chip key={l} label={l} active={editLevels.includes(l)} color="blue"
+              onClick={() => { userEdited.current = true; setEditLevels((p) => p.includes(l) ? p.filter((x) => x !== l) : [...p, l]); }} />
           ))}
         </div>
       </div>
 
-      {/* ── Dimensions ────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "0.75rem" }}>
-        <div style={sectionHead}>Dimensions</div>
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+      {/* Dimensions */}
+      <div style={{ marginBottom: "0.65rem" }}>
+        <div style={SH}>Dimensions</div>
+        <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }}>
           {DIMENSIONS.map((d) => (
-            <Chip
-              key={d} label={d}
-              active={editDims.includes(d)}
-              color="purple"
-              onClick={() =>
-                setEditDims((prev) =>
-                  prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]
-                )
-              }
-            />
+            <Chip key={d} label={d} active={editDims.includes(d)} color="purple"
+              onClick={() => { userEdited.current = true; setEditDims((p) => p.includes(d) ? p.filter((x) => x !== d) : [...p, d]); }} />
           ))}
         </div>
       </div>
 
-      {/* ── Free note ─────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "0.75rem" }}>
-        <div style={sectionHead}>Notes</div>
+      {/* Notes */}
+      <div style={{ marginBottom: "0.65rem" }}>
+        <div style={SH}>Notes</div>
         <textarea
           value={editNote}
-          onChange={(e) => setEditNote(e.target.value)}
-          rows={4}
+          onChange={(e) => { userEdited.current = true; setEditNote(e.target.value); }}
+          rows={3}
+          placeholder="Free notes about this paper…"
           style={{
             width: "100%", boxSizing: "border-box",
-            padding: "0.4rem 0.5rem",
-            border: "1px solid #dadce0", borderRadius: "0.375rem",
-            fontSize: "0.85rem", fontFamily: "inherit", resize: "vertical",
+            padding: "0.35rem 0.45rem",
+            border: "1px solid #e5e7eb", borderRadius: "0.3rem",
+            fontSize: "0.83rem", fontFamily: "inherit", resize: "vertical", background: "#fafafa",
           }}
-          placeholder="Free notes about this paper…"
         />
       </div>
 
-      {/* ── Framework novelty ─────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "1rem" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem" }}>
-          <input
-            type="checkbox"
-            checked={editFrameworkUpdated}
-            onChange={(e) => setEditFrameworkUpdated(e.target.checked)}
-          />
+      {/* Framework novelty */}
+      <div>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.45rem", cursor: "pointer", fontSize: "0.83rem", color: "#374151" }}>
+          <input type="checkbox" checked={editFrameworkUpdated}
+            onChange={(e) => { userEdited.current = true; setEditFrameworkUpdated(e.target.checked); }} />
           This paper introduced new framework concepts
         </label>
         {editFrameworkUpdated && (
           <textarea
             value={editFrameworkNote}
-            onChange={(e) => setEditFrameworkNote(e.target.value)}
+            onChange={(e) => { userEdited.current = true; setEditFrameworkNote(e.target.value); }}
             rows={2}
             placeholder="Describe what was new…"
             style={{
-              marginTop: "0.5rem", width: "100%", boxSizing: "border-box",
-              padding: "0.4rem 0.5rem",
-              border: "1px solid #dadce0", borderRadius: "0.375rem",
-              fontSize: "0.83rem", fontFamily: "inherit", resize: "vertical",
+              marginTop: "0.4rem", width: "100%", boxSizing: "border-box",
+              padding: "0.35rem 0.45rem",
+              border: "1px solid #e5e7eb", borderRadius: "0.3rem",
+              fontSize: "0.81rem", fontFamily: "inherit", resize: "vertical", background: "#fafafa",
             }}
           />
         )}
       </div>
+    </div>
+  );
 
-      {/* ── Concept extraction ────────────────────────────────────────────── */}
+  return (
+    <div style={{ background: "#f8f9fa", borderTop: "2px solid #4f46e5", padding: "1rem 1.25rem 1.25rem" }}>
+
+      {/* ── PDF controls ─────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem", paddingBottom: "0.75rem", borderBottom: "1px solid #e5e7eb" }}>
+        <PDFFetchButton projectId={projectId} item={pdfItem} />
+        <PDFUploadPanel projectId={projectId} item={pdfItem} />
+        <button
+          onClick={() => setPdfOpen((v) => !v)}
+          style={{
+            fontSize: "0.75rem", fontWeight: 600,
+            padding: "0.2rem 0.65rem", borderRadius: "1rem",
+            border: "1px solid #c7d7fd",
+            background: pdfOpen ? "#4f46e5" : "#fff",
+            color: pdfOpen ? "#fff" : "#1558d6",
+            cursor: "pointer",
+          }}
+        >
+          📄 {pdfOpen ? "Hide PDF" : "View PDF"}
+        </button>
+        {pdfOpen && (
+          <PDFViewerPanel projectId={projectId} item={pdfItem} onClose={() => setPdfOpen(false)} />
+        )}
+      </div>
+
+      {/* ── Data extraction (collapsible) ─────────────────────────────────── */}
+      <CollapseHeader
+        label="Data Extraction"
+        expanded={dataExpanded}
+        onToggle={() => setDataExpanded((v) => !v)}
+        extra={
+          <span style={{ fontSize: "0.68rem", color: autoSaveMut.isPending ? "#6b7280" : autoSaveMut.isError ? "#dc2626" : autoSaveMut.isSuccess ? "#16a34a" : "transparent" }}>
+            {autoSaveMut.isPending ? "Saving…" : autoSaveMut.isError ? "Save failed" : autoSaveMut.isSuccess ? "Saved ✓" : "·"}
+          </span>
+        }
+      />
+      {dataExpanded && dataContent}
+
+      {/* ── Concept extraction (collapsible) ──────────────────────────────── */}
       {conceptTemplate && conceptTemplate.fields.length > 0 && (
-        <div style={{ marginBottom: "1rem" }}>
-          <div style={{ fontSize: "0.8rem", fontWeight: 700, color: "#3c4043", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            Concept Extraction
-          </div>
-          <div style={{ border: "1px solid #e0e7ff", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", background: "#fafafe" }}>
-            <ConceptExtractionForm
-              projectId={projectId}
-              template={conceptTemplate}
-              recordId={item.record_id ?? undefined}
-              clusterId={item.cluster_id ?? undefined}
-            />
-          </div>
-        </div>
+        <>
+          <CollapseHeader
+            label="Concept Extraction"
+            expanded={conceptExpanded}
+            onToggle={() => setConceptExpanded((v) => !v)}
+          />
+          {conceptExpanded && (
+            <div style={{ border: "1px solid #e0e7ff", borderTop: "none", borderRadius: "0 0 0.4rem 0.4rem", padding: "0.85rem 1rem", background: "#fafafe", marginBottom: "0.75rem" }}>
+              <ConceptExtractionForm
+                projectId={projectId}
+                template={conceptTemplate}
+                recordId={item.record_id ?? undefined}
+                clusterId={item.cluster_id ?? undefined}
+              />
+            </div>
+          )}
+        </>
       )}
 
-      {/* ── Actions ───────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+      {/* ── Action bar ───────────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap",
+        marginTop: "1rem", paddingTop: "0.75rem", borderTop: "1px solid #e5e7eb",
+      }}>
         <button
           className="btn-primary"
           disabled={saveMutation.isPending}
           onClick={() => saveMutation.mutate()}
           style={{ fontSize: "0.85rem" }}
         >
-          {saveMutation.isPending ? "Saving…" : "Save"}
+          {saveMutation.isPending ? "Saving…" : "Save & Close"}
         </button>
-        <button
-          className="btn-secondary"
-          onClick={onClose}
-          style={{ fontSize: "0.85rem" }}
-        >
-          Cancel
+        <button className="btn-secondary" onClick={onClose} style={{ fontSize: "0.85rem" }}>
+          Close
         </button>
+        {saveMutation.isError && (
+          <span style={{ color: "#c5221f", fontSize: "0.82rem" }}>Save failed — please retry.</span>
+        )}
         <div style={{ marginLeft: "auto" }}>
           {!confirmExclude ? (
             <button
               onClick={() => setConfirmExclude(true)}
               style={{
-                fontSize: "0.82rem", fontWeight: 600,
-                padding: "0.35rem 0.85rem", borderRadius: "0.375rem",
-                border: "1px solid #fca5a5",
-                background: "#fff5f5", color: "#c5221f", cursor: "pointer",
+                fontSize: "0.8rem", fontWeight: 600,
+                padding: "0.3rem 0.8rem", borderRadius: "0.375rem",
+                border: "1px solid #fca5a5", background: "#fff5f5", color: "#c5221f", cursor: "pointer",
               }}
             >
               Exclude from library
             </button>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", background: "#fff5f5", border: "1px solid #fca5a5", borderRadius: "0.5rem", padding: "0.7rem 0.9rem" }}>
-              <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#c5221f" }}>
+            <div style={{
+              display: "flex", flexDirection: "column", gap: "0.35rem",
+              background: "#fff5f5", border: "1px solid #fca5a5",
+              borderRadius: "0.4rem", padding: "0.6rem 0.8rem",
+            }}>
+              <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#c5221f" }}>
                 Exclude this paper? It will be removed from the extraction library.
               </span>
               <input
@@ -551,19 +619,17 @@ function EditPanel({
                 onChange={(e) => setExcludeReason(e.target.value)}
                 placeholder="Reason (optional)"
                 style={{
-                  fontSize: "0.82rem", padding: "0.3rem 0.5rem",
-                  border: "1px solid #fca5a5", borderRadius: "0.25rem",
-                  fontFamily: "inherit",
+                  fontSize: "0.8rem", padding: "0.28rem 0.45rem",
+                  border: "1px solid #fca5a5", borderRadius: "0.25rem", fontFamily: "inherit",
                 }}
               />
-              <div style={{ display: "flex", gap: "0.4rem" }}>
+              <div style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
                 <button
                   onClick={() => excludeMutation.mutate()}
                   disabled={excludeMutation.isPending}
                   style={{
-                    fontSize: "0.82rem", fontWeight: 600,
-                    padding: "0.3rem 0.75rem", borderRadius: "0.25rem",
-                    border: "none", background: "#c5221f", color: "#fff", cursor: "pointer",
+                    fontSize: "0.8rem", fontWeight: 600, padding: "0.28rem 0.7rem",
+                    borderRadius: "0.25rem", border: "none", background: "#c5221f", color: "#fff", cursor: "pointer",
                   }}
                 >
                   {excludeMutation.isPending ? "Excluding…" : "Confirm exclude"}
@@ -571,26 +637,19 @@ function EditPanel({
                 <button
                   onClick={() => { setConfirmExclude(false); setExcludeReason(""); }}
                   style={{
-                    fontSize: "0.82rem", padding: "0.3rem 0.75rem", borderRadius: "0.25rem",
+                    fontSize: "0.8rem", padding: "0.28rem 0.7rem", borderRadius: "0.25rem",
                     border: "1px solid #dadce0", background: "#fff", color: "#374151", cursor: "pointer",
                   }}
                 >
                   Cancel
                 </button>
                 {excludeMutation.isError && (
-                  <span style={{ color: "#c5221f", fontSize: "0.78rem", alignSelf: "center" }}>
-                    Failed — please retry.
-                  </span>
+                  <span style={{ color: "#c5221f", fontSize: "0.76rem" }}>Failed — retry.</span>
                 )}
               </div>
             </div>
           )}
         </div>
-        {saveMutation.isError && (
-          <span style={{ color: "#c5221f", fontSize: "0.82rem" }}>
-            Save failed — please retry.
-          </span>
-        )}
       </div>
     </div>
   );
@@ -664,12 +723,12 @@ export default function ExtractionLibrary() {
   // ── Render ───────────────────────────────────────────────────────────────
 
   const hasConceptTemplate = conceptTemplate && conceptTemplate.fields.length > 0;
-  // Grid columns: Title | Year | Sources | [Table] | [Concepts] | Levels | Dims | Notes
+  // Grid: Title | Year | Sources | [Extraction] | [Concepts] | Levels+Dims | Note
   const COLS = [
-    "1fr", "52px", "110px",
-    ...(templateRows.length > 0 ? ["80px"] : []),
-    ...(hasConceptTemplate ? ["70px"] : []),
-    "140px", "110px", "28px",
+    "1fr", "48px", "100px",
+    ...(templateRows.length > 0 ? ["72px"] : []),
+    ...(hasConceptTemplate ? ["68px"] : []),
+    "180px", "24px",
   ].join(" ");
 
   return (
@@ -776,11 +835,10 @@ export default function ExtractionLibrary() {
               <span>Title</span>
               <span>Year</span>
               <span>Sources</span>
-              {templateRows.length > 0 && <span>Table</span>}
+              {templateRows.length > 0 && <span>Extraction</span>}
               {hasConceptTemplate && <span>Concepts</span>}
-              <span>Levels</span>
-              <span>Dimensions</span>
-              <span></span>
+              <span>Levels &amp; Dimensions</span>
+              <span />
             </div>
 
             {visible.map((item) => {
@@ -854,18 +912,13 @@ export default function ExtractionLibrary() {
                       </div>
                     )}
 
-                    {/* Levels chips */}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
-                      {levels.length > 0
-                        ? levels.map((l) => <Chip key={l} label={l} active={true} color="blue" />)
-                        : <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>}
-                    </div>
-
-                    {/* Dimensions chips */}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
-                      {dims.length > 0
-                        ? dims.map((d) => <Chip key={d} label={d} active={true} color="purple" />)
-                        : <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>}
+                    {/* Levels + Dimensions combined */}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.2rem" }}>
+                      {levels.map((l) => <Chip key={l} label={l} active={true} color="blue" />)}
+                      {dims.map((d) => <Chip key={d} label={d} active={true} color="purple" />)}
+                      {levels.length === 0 && dims.length === 0 && (
+                        <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>
+                      )}
                     </div>
 
                     {/* Notes indicator */}
