@@ -73,6 +73,8 @@ $env:SECRET_KEY = "your-secret-key-here"
 
 ### 4. Start all services
 
+Make sure you are inside the `EvidencePlatform` directory (the one containing `docker-compose.yml`) before running this command:
+
 ```bash
 docker compose up -d --build
 ```
@@ -348,6 +350,13 @@ EvidencePlatform/
 ---
 
 ## Troubleshooting
+
+**`no configuration file provided: not found`**  
+You ran `docker compose` from the wrong directory. `cd` into the project folder first:
+```bash
+cd EvidencePlatform
+docker compose up -d --build
+```
 
 **Port already in use**  
 Change the host-side port in `docker-compose.yml`. For example, `"8001:8000"` exposes the backend on port 8001.
