@@ -102,173 +102,115 @@ function computeDagreLayout(
 
 // ── Custom node card ──────────────────────────────────────────────────────────
 
+// Arrow clip-path for relationship nodes (pentagon pointing right).
+// Applied to the inner card body only — outer container holds the handles unclipped.
+const ARROW_CLIP = "polygon(0 0, calc(100% - 22px) 0, 100% 50%, calc(100% - 22px) 100%, 0 100%)";
+
 // IMPORTANT: defined at module scope so React Flow does not recreate on every
 // parent render (which would cause all nodes to unmount/remount).
 function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
   const { node, isSelected, isDragTarget, isSearchMatch, actionsRef } = data;
-  const nsColor = NS_COLORS[node.namespace] ?? "#9ca3af";
-  const dotColor = node.color ?? nsColor;
   const isRelNode = node.namespace === "relationship";
 
-  let borderColor = "#e5e7eb";
-  let bgColor = "#ffffff";
-  let shadow = "0 1px 4px rgba(0,0,0,0.08)";
+  const entityColor = node.color ?? "#3b82f6";
+  const relColor    = node.color ?? "#f97316";
 
+  // ── Entity visual state ───────────────────────────────────────────────────
+  let entityBorder = entityColor;
+  let entityBg     = "#ffffff";
+  let entityShadow = `0 1px 4px rgba(0,0,0,0.08)`;
   if (isDragTarget) {
-    borderColor = "#3b82f6";
-    bgColor = "#eff6ff";
-    shadow = "0 0 0 3px #3b82f640, 0 2px 8px rgba(0,0,0,0.15)";
+    entityBorder = "#3b82f6"; entityBg = "#eff6ff";
+    entityShadow = "0 0 0 3px #3b82f640, 0 2px 8px rgba(0,0,0,0.12)";
   } else if (isSelected) {
-    borderColor = dotColor;
-    bgColor = dotColor + "0e";
-    shadow = `0 0 0 3px ${dotColor}30, 0 2px 8px rgba(0,0,0,0.15)`;
+    entityBg = entityColor + "14";
+    entityShadow = `0 0 0 3px ${entityColor}35, 0 2px 8px rgba(0,0,0,0.12)`;
   } else if (isSearchMatch) {
-    bgColor = "#fef9c3";
-    borderColor = "#fbbf24";
-    shadow = "0 0 0 2px #fbbf2440";
+    entityBg = "#fef9c3"; entityBorder = "#fbbf24";
+    entityShadow = "0 0 0 2px #fbbf2440";
   }
 
-  // Hexagonal clip-path for relationship nodes — applied only to the card body,
-  // NOT the outer container so the React Flow handles are unaffected.
-  const hexClip = "polygon(16px 0%, calc(100% - 16px) 0%, 100% 50%, calc(100% - 16px) 100%, 16px 100%, 0% 50%)";
-
-  // Shape indicator: ◆ for relationship, ● for entity
-  const shapeIndicator = isRelNode ? (
-    <span style={{ fontSize: 10, color: dotColor, flexShrink: 0, lineHeight: 1 }}>◆</span>
-  ) : (
-    <span style={{ width: 9, height: 9, borderRadius: "50%", background: dotColor, flexShrink: 0, display: "inline-block" }} />
-  );
+  // ── Relationship visual state ─────────────────────────────────────────────
+  let relFill   = relColor;
+  let relFilter = "drop-shadow(0 1px 3px rgba(0,0,0,0.18))";
+  if (isDragTarget) { relFill = "#3b82f6"; }
+  else if (isSelected) { relFilter = `drop-shadow(0 0 5px ${relColor}) drop-shadow(0 0 3px ${relColor})`; }
+  else if (isSearchMatch) { relFill = "#fbbf24"; }
 
   return (
     <div style={{ position: "relative" }}>
-      {/* Hierarchy target (top, hidden) */}
-      <Handle
-        type="target"
-        id="hier"
-        position={Position.Top}
-        style={{ background: "#d1d5db", width: 7, height: 7, border: "2px solid #fff" }}
-      />
+      <Handle type="target" id="hier" position={Position.Top}
+        style={{ background: "#d1d5db", width: 7, height: 7, border: "2px solid #fff" }} />
+      <Handle type="target" id="rel" position={Position.Left}
+        style={{ background: "#f97316", width: 10, height: 10, border: "2px solid #fff", left: -5 }} />
 
-      {/* Relationship target (left, orange) */}
-      <Handle
-        type="target"
-        id="rel"
-        position={Position.Left}
-        style={{ background: "#f97316", width: 10, height: 10, border: "2px solid #fff", left: -5 }}
-      />
-
-      {/* Card body — hexagonal for relationship, rounded rect for entity */}
-      <div
-        style={{
+      {isRelNode ? (
+        /* ── Relationship: orange arrow shape, white text ── */
+        <div style={{
           width: NODE_W,
-          minHeight: NODE_H,
-          padding: isRelNode ? "9px 28px 7px" : "9px 12px 7px",
-          ...(isRelNode
-            ? { clipPath: hexClip, filter: isSelected || isDragTarget ? `drop-shadow(0 0 3px ${borderColor}) drop-shadow(0 0 2px ${borderColor})` : "drop-shadow(0 1px 3px rgba(0,0,0,0.1))" }
-            : { borderRadius: 10, border: `2px solid ${borderColor}`, boxShadow: shadow }),
-          background: bgColor,
-          transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s, filter 0.15s",
+          height: NODE_H,
+          clipPath: ARROW_CLIP,
+          background: relFill,
+          filter: relFilter,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "0 34px 0 14px",
           cursor: "grab",
           userSelect: "none",
-          display: "flex",
-          flexDirection: "column",
-          gap: 5,
-        }}
-      >
-        {/* Name row */}
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          {shapeIndicator}
-          <span
-            style={{
-              flex: 1,
-              fontSize: 13,
-              fontWeight: isSelected ? 700 : 500,
-              color: "#111827",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
+          transition: "background 0.15s, filter 0.15s",
+        }}>
+          <span style={{
+            fontSize: 13,
+            fontWeight: isSelected ? 700 : 600,
+            color: "#ffffff",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            width: "100%",
+            textAlign: "center",
+          }}>
             {node.name}
           </span>
-          <span
-            style={{
-              fontSize: 9,
-              padding: "1px 5px",
-              borderRadius: 999,
-              background: nsColor + "22",
-              color: nsColor,
-              fontWeight: 700,
-              flexShrink: 0,
-              letterSpacing: "0.02em",
-            }}
-          >
-            {node.namespace}
+        </div>
+      ) : (
+        /* ── Entity: blue rounded rectangle, dark text ── */
+        <div style={{
+          width: NODE_W,
+          height: NODE_H,
+          borderRadius: 10,
+          border: `2px solid ${entityBorder}`,
+          background: entityBg,
+          boxShadow: entityShadow,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "0 14px",
+          cursor: "grab",
+          userSelect: "none",
+          transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
+        }}>
+          <span style={{
+            fontSize: 13,
+            fontWeight: isSelected ? 700 : 500,
+            color: "#111827",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            width: "100%",
+            textAlign: "center",
+          }}>
+            {node.name}
           </span>
         </div>
+      )}
 
-        {/* Action buttons */}
-        <div
-          style={{ display: "flex", gap: 3 }}
-          onMouseDown={(e) => e.stopPropagation()} // prevent drag from starting on buttons
-        >
-          <NodeBtn
-            label="+ child"
-            color="#6366f1"
-            onClick={() => actionsRef.current.onAddChild(node.id)}
-            title="Add child node"
-          />
-          <NodeBtn
-            label="✕ delete"
-            color="#ef4444"
-            onClick={() => actionsRef.current.onDelete(node)}
-            title="Delete node (children promoted)"
-          />
-        </div>
-      </div>
-
-      {/* Hierarchy source (bottom, hidden) */}
-      <Handle
-        type="source"
-        id="hier"
-        position={Position.Bottom}
-        style={{ background: "#d1d5db", width: 7, height: 7, border: "2px solid #fff" }}
-      />
-
-      {/* Relationship source (right, orange) — drag from here to create a relationship */}
-      <Handle
-        type="source"
-        id="rel"
-        position={Position.Right}
+      <Handle type="source" id="hier" position={Position.Bottom}
+        style={{ background: "#d1d5db", width: 7, height: 7, border: "2px solid #fff" }} />
+      <Handle type="source" id="rel" position={Position.Right}
         style={{ background: "#f97316", width: 12, height: 12, border: "2px solid #fff", right: -6 }}
-        title="Drag to create a relationship"
-      />
+        title="Drag to create a relationship" />
     </div>
-  );
-}
-
-function NodeBtn({
-  label, color, onClick, title,
-}: {
-  label: string; color: string; onClick: () => void; title: string;
-}) {
-  return (
-    <button
-      title={title}
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-      style={{
-        fontSize: 10,
-        padding: "1px 6px",
-        borderRadius: 4,
-        border: `1px solid ${color}44`,
-        background: color + "11",
-        color,
-        cursor: "pointer",
-        lineHeight: 1.5,
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -575,8 +517,8 @@ export default function OntologyCanvas2D({
         >
           <LegendChip color="#94a3b8" label="hierarchy" />
           <LegendChip color="#f97316" label="rel edge" dashed />
-          <LegendShape color="#6366f1" symbol="▬" label="entity" />
-          <LegendShape color="#f97316" symbol="◆" label="relationship" />
+          <LegendShape color="#3b82f6" symbol="▬" label="entity" />
+          <LegendShape color="#f97316" symbol="▶" label="relationship" />
         </div>
 
         {/* Hint */}

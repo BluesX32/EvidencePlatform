@@ -614,9 +614,12 @@ export default function OntologyPage() {
                       </select>
                     </Field>
                     {formError && <ErrorBanner>{formError}</ErrorBanner>}
-                    <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                    <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
                       <button onClick={handleSaveEdit} disabled={!editDirty || updateMut.isPending} style={primaryBtn}>
                         {updateMut.isPending ? "Saving…" : "Save changes"}
+                      </button>
+                      <button onClick={() => handleAddChild(selectedNode.id)} style={{ ...secondaryBtn, color: "#6366f1", borderColor: "#a5b4fc" }}>
+                        + Add child
                       </button>
                       <button onClick={() => handleDelete(selectedNode)} style={{ ...secondaryBtn, color: "#ef4444", borderColor: "#fca5a5" }}>Delete</button>
                     </div>

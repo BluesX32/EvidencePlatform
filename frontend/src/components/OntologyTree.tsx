@@ -429,34 +429,6 @@ function TreeNodeRow({
           </span>
         )}
 
-        {/* Namespace badge */}
-        <span
-          style={{
-            fontSize: 10,
-            padding: "1px 6px",
-            borderRadius: 999,
-            background: nsColor + "22",
-            color: nsColor,
-            fontWeight: 600,
-            flexShrink: 0,
-          }}
-        >
-          {node.namespace}
-        </span>
-
-        {/* Action buttons */}
-        <div
-          className="tree-row-actions"
-          style={{ display: "flex", gap: 2, flexShrink: 0 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <ActionBtn title="Add child node" onClick={() => onAddChild(node.id)} color="#6366f1">
-            +
-          </ActionBtn>
-          <ActionBtn title="Delete node (children promoted)" onClick={() => onDelete(node)} color="#ef4444">
-            ✕
-          </ActionBtn>
-        </div>
       </div>
 
       {/* Children */}

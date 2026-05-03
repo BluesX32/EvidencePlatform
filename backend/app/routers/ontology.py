@@ -275,6 +275,7 @@ async def create_node(
             status_code=409,
             detail=f"A sibling named '{body.name}' already exists under this parent",
         )
+    await db.refresh(node)
     return _node_out(node)
 
 
@@ -349,6 +350,7 @@ async def update_node(
             status_code=409,
             detail=f"A sibling named '{body.name}' already exists under this parent",
         )
+    await db.refresh(node)
     return _node_out(node)
 
 
@@ -624,6 +626,7 @@ async def create_edge(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="An edge already exists between these nodes")
+    await db.refresh(edge)
     return _edge_out(edge)
 
 
@@ -660,6 +663,7 @@ async def update_edge(
 
     await db.flush()
     await db.commit()
+    await db.refresh(edge)
     return _edge_out(edge)
 
 
