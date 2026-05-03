@@ -17,6 +17,7 @@ import {
 import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource, ConceptTemplateField, ConceptFieldType, ConceptInputType } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
+import CreateSubProjectModal from "../components/CreateSubProjectModal";
 
 // ---------------------------------------------------------------------------
 // Field chip definitions for the overlap strategy builder (9 fields)
@@ -475,6 +476,8 @@ export default function ProjectPage() {
 
   // Screening modal
   const [showScreeningModal, setShowScreeningModal] = useState(false);
+  const [showSubProjectModal, setShowSubProjectModal] = useState(false);
+  const [confirmDeleteSubProject, setConfirmDeleteSubProject] = useState<{ id: string; name: string } | null>(null);
 
   // Criteria state
   const [localCriteria, setLocalCriteria] = useState<ProjectCriteria>({ inclusion: [], exclusion: [] });
@@ -693,6 +696,19 @@ export default function ProjectPage() {
 
   const [confirmDeleteSourceId, setConfirmDeleteSourceId] = useState<string | null>(null);
 
+  const deleteSubProject = useMutation({
+    mutationFn: (subProjectId: string) => projectsApi.deleteProject(subProjectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setConfirmDeleteSubProject(null);
+      setToast({ message: "Sub-project deleted.", type: "success" });
+    },
+    onError: () => {
+      setToast({ message: "Failed to delete sub-project.", type: "error" });
+    },
+  });
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   function addCriterion(type: "inclusion" | "exclusion") {
@@ -778,6 +794,15 @@ export default function ProjectPage() {
 
       <header className="page-header">
         <Link to="/projects" className="back-link">← Projects</Link>
+        {project?.parent_project_id && project.sample_info && (
+          <span style={{ marginLeft: 8, fontSize: 13, color: "var(--text-muted)" }}>
+            ↳ Sub-project of{" "}
+            <Link to={`/projects/${project.parent_project_id}`} style={{ color: "var(--brand)" }}>
+              {project.sample_info.parent_project_name}
+            </Link>
+            {" "}(seed {project.sample_info.seed} · {project.sample_info.n_per_corpus} per corpus)
+          </span>
+        )}
       </header>
       <main>
         <div className="project-hero">
@@ -914,6 +939,14 @@ export default function ProjectPage() {
               <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#475569" }}>Team</span>
               <span style={MD}>Manage reviewers and access</span>
             </Link>
+
+            {!project?.parent_project_id && (project?.my_role === "owner" || project?.my_role === "admin") && (
+              <button onClick={() => setShowSubProjectModal(true)} style={{ ...MC("#eef2ff","#c7d2fe"), fontFamily: "inherit" }}>
+                <div style={MI("#c7d2fe")}><GitBranch size={16} color="#4338ca" /></div>
+                <span style={{ fontWeight: 700, fontSize: "0.875rem", color: "#4338ca" }}>Sub-project</span>
+                <span style={MD}>Sample articles for reliability</span>
+              </button>
+            )}
 
             <Link to={`/projects/${id}/consensus`} style={MC("#fffbeb","#fde68a")}>
               <div style={MI("#fde68a")}><Scale size={16} color="#b45309" /></div>
@@ -2109,6 +2142,118 @@ export default function ProjectPage() {
             </table>
           )}
         </CollapsibleSection>
+
+        {/* ── Sub-projects ─────────────────────────────────────────────────── */}
+        {!project?.parent_project_id && (
+          <CollapsibleSection
+            id="sub-projects"
+            title="Sub-projects"
+            badge={project?.sub_projects.length ?? 0}
+            defaultOpen={false}
+          >
+            <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+              A sub-project samples a fixed number of articles per corpus from this project.
+              It is a fully independent project — you can screen, extract, and collaborate in it
+              just like any other project. Sub-projects are useful for reliability studies,
+              pilot screening, and expert-validation workflows.
+            </p>
+
+            {(project?.my_role === "owner" || project?.my_role === "admin") && (
+              <button
+                className="btn-primary btn-sm"
+                style={{ marginBottom: 16 }}
+                onClick={() => setShowSubProjectModal(true)}
+              >
+                + Create sub-project
+              </button>
+            )}
+
+            {project?.sub_projects && project.sub_projects.length > 0 ? (
+              <table className="table" style={{ fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Records</th>
+                    <th>Seed</th>
+                    <th>Per corpus</th>
+                    <th>Created</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {project.sub_projects.map((sp) => (
+                    <tr key={sp.id}>
+                      <td>{sp.name}</td>
+                      <td>{sp.record_count.toLocaleString()}</td>
+                      <td style={{ fontFamily: "monospace" }}>{sp.seed ?? "—"}</td>
+                      <td>{sp.n_per_corpus ?? "—"}</td>
+                      <td>{new Date(sp.created_at).toLocaleDateString()}</td>
+                      <td style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <Link to={`/projects/${sp.id}`} className="btn-secondary btn-sm">
+                          Open →
+                        </Link>
+                        {(project.my_role === "owner" || project.my_role === "admin") && (
+                          <button
+                            className="btn-ghost btn-sm"
+                            title="Delete sub-project"
+                            onClick={() => setConfirmDeleteSubProject({ id: sp.id, name: sp.name })}
+                            style={{ color: "#dc2626", padding: "3px 6px" }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                No sub-projects yet.
+              </p>
+            )}
+          </CollapsibleSection>
+        )}
+
+        {/* ── Sub-project modal ─────────────────────────────────────────────── */}
+        {showSubProjectModal && project && id && (
+          <CreateSubProjectModal
+            parentProjectId={id}
+            parentProjectName={project.name}
+            hasExtractionTemplate={!!project.extraction_template}
+            hasConceptTemplate={!!project.concept_template}
+            onClose={() => setShowSubProjectModal(false)}
+          />
+        )}
+
+        {/* ── Delete sub-project confirm dialog ───────────────────────────────── */}
+        {confirmDeleteSubProject && (
+          <div className="modal-backdrop" onClick={() => setConfirmDeleteSubProject(null)}>
+            <div className="modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2 className="modal-title">Delete sub-project?</h2>
+                <button className="btn-ghost" onClick={() => setConfirmDeleteSubProject(null)}>✕</button>
+              </div>
+              <p style={{ fontSize: 13, marginBottom: 20 }}>
+                <strong>{confirmDeleteSubProject.name}</strong> and all its screening decisions,
+                extractions, and labels will be permanently deleted. This cannot be undone.
+              </p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="btn-secondary" onClick={() => setConfirmDeleteSubProject(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn-primary"
+                  style={{ background: "#dc2626", borderColor: "#dc2626" }}
+                  disabled={deleteSubProject.isPending}
+                  onClick={() => deleteSubProject.mutate(confirmDeleteSubProject.id)}
+                >
+                  {deleteSubProject.isPending ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

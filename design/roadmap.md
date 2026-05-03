@@ -5,7 +5,7 @@
 
 ---
 
-## Current Status — March 2026
+## Current Status — April 2026
 
 The sections below are the original design plan. This section records actual build state.
 
@@ -19,9 +19,9 @@ The sections below are the original design plan. This section records actual bui
 | Labels & Taxonomy | Complete (unplanned) | Colour-coded labels with per-project palettes; hierarchical concept taxonomy |
 | Thematic analysis | Complete (unplanned) | Codebook themes + codes; evidence assignment; history log |
 | PDF upload | Complete (unplanned) | Per-record/cluster PDF storage; browser preview during full-text screening |
-| Phase 4 — Reporting & Export | Not started | PRISMA flow counts, audit trail export, project snapshot |
-| Phase 5 — LLM assistance | Not started | |
-| Phase 6 — Custom extraction forms | Not started | |
+| Phase 4 — Reporting & Export | Partially started | PRISMA flow counts UI scaffolded (PrismaPage); audit trail export and project snapshot not yet built |
+| Phase 5 — LLM assistance | Complete (unplanned early) | Full LLM screening pipeline: 15+ models via Anthropic + OpenRouter; per-record decisions with rationale; cost/time estimation; single and multi-agent modes; audit logging |
+| Phase 6 — Custom extraction forms | Partially complete | Concept extraction (template-driven per-article concept fields + taxonomy aggregation); fixed PICO-style extraction also present; general form builder not built |
 
 **Divergences from the original plan:**
 - The two-reviewer blinded screening model described in Phase 2 was not built in MVP. The current implementation is single-reviewer, matching the actual research context.
@@ -75,14 +75,14 @@ If yes: MVP achieved.
 
 | Feature | Reason Deferred |
 |---------|----------------|
-| LLM assistance (screening, extraction, dedup) | Core workflow must be correct without AI before AI is layered in |
-| Custom extraction form builder | Fixed schema validates the data model first; builder is a sub-project |
+| LLM assistance (screening, extraction, dedup) | ~~Core workflow must be correct without AI before AI is layered in~~ **Built in Phase 5 (early)** |
+| Custom extraction form builder | Fixed schema validates the data model first; concept extraction template is a partial implementation; general builder not yet built |
 | Risk of bias assessment tools | Domain-complex; separate phase |
 | Meta-analysis / quantitative synthesis | Separate problem domain; export to R (metafor) instead |
-| Full-text PDF upload and parsing | PDF extraction is unreliable; out of scope until core workflow is stable |
+| Full-text PDF upload and parsing | ~~PDF extraction is unreliable~~ **PDF upload + in-browser viewer built (migration 016); parsing/OCR extraction still deferred** |
 | Live API search (PubMed, Scopus) | File-based import covers the workflow; live search adds auth and rate-limit complexity |
 | Real-time collaborative editing | Single-record locking is sufficient for MVP; true collaboration is post-MVP |
-| Inter-rater reliability statistics (Cohen's kappa) | Post-MVP analytics layer |
+| Inter-rater reliability statistics (Cohen's kappa) | ~~Post-MVP analytics layer~~ **Built in Sprint 19 (team collaboration)** |
 | PRISMA diagram image generation | Counts are derived; diagram rendering is deferred |
 | PDF or Word output | Export structured data; researchers format it |
 

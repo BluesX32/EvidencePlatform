@@ -108,6 +108,7 @@ function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
   const { node, isSelected, isDragTarget, isSearchMatch, actionsRef } = data;
   const nsColor = NS_COLORS[node.namespace] ?? "#9ca3af";
   const dotColor = node.color ?? nsColor;
+  const isRelNode = node.namespace === "relationship";
 
   let borderColor = "#e5e7eb";
   let bgColor = "#ffffff";
@@ -127,6 +128,17 @@ function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
     shadow = "0 0 0 2px #fbbf2440";
   }
 
+  // Hexagonal clip-path for relationship nodes — applied only to the card body,
+  // NOT the outer container so the React Flow handles are unaffected.
+  const hexClip = "polygon(16px 0%, calc(100% - 16px) 0%, 100% 50%, calc(100% - 16px) 100%, 16px 100%, 0% 50%)";
+
+  // Shape indicator: ◆ for relationship, ● for entity
+  const shapeIndicator = isRelNode ? (
+    <span style={{ fontSize: 10, color: dotColor, flexShrink: 0, lineHeight: 1 }}>◆</span>
+  ) : (
+    <span style={{ width: 9, height: 9, borderRadius: "50%", background: dotColor, flexShrink: 0, display: "inline-block" }} />
+  );
+
   return (
     <div style={{ position: "relative" }}>
       {/* Hierarchy target (top, hidden) */}
@@ -145,17 +157,17 @@ function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
         style={{ background: "#f97316", width: 10, height: 10, border: "2px solid #fff", left: -5 }}
       />
 
-      {/* Card body */}
+      {/* Card body — hexagonal for relationship, rounded rect for entity */}
       <div
         style={{
           width: NODE_W,
           minHeight: NODE_H,
-          padding: "9px 12px 7px",
-          borderRadius: 10,
-          border: `2px solid ${borderColor}`,
+          padding: isRelNode ? "9px 28px 7px" : "9px 12px 7px",
+          ...(isRelNode
+            ? { clipPath: hexClip, filter: isSelected || isDragTarget ? `drop-shadow(0 0 3px ${borderColor}) drop-shadow(0 0 2px ${borderColor})` : "drop-shadow(0 1px 3px rgba(0,0,0,0.1))" }
+            : { borderRadius: 10, border: `2px solid ${borderColor}`, boxShadow: shadow }),
           background: bgColor,
-          boxShadow: shadow,
-          transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
+          transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s, filter 0.15s",
           cursor: "grab",
           userSelect: "none",
           display: "flex",
@@ -165,16 +177,7 @@ function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
       >
         {/* Name row */}
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <span
-            style={{
-              width: 9,
-              height: 9,
-              borderRadius: "50%",
-              background: dotColor,
-              flexShrink: 0,
-              display: "inline-block",
-            }}
-          />
+          {shapeIndicator}
           <span
             style={{
               flex: 1,
@@ -571,7 +574,9 @@ export default function OntologyCanvas2D({
           }}
         >
           <LegendChip color="#94a3b8" label="hierarchy" />
-          <LegendChip color="#f97316" label="relationship" dashed />
+          <LegendChip color="#f97316" label="rel edge" dashed />
+          <LegendShape color="#6366f1" symbol="▬" label="entity" />
+          <LegendShape color="#f97316" symbol="◆" label="relationship" />
         </div>
 
         {/* Hint */}
@@ -592,6 +597,28 @@ export default function OntologyCanvas2D({
         </div>
       </ReactFlow>
     </div>
+  );
+}
+
+function LegendShape({ color, symbol, label }: { color: string; symbol: string; label: string }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        padding: "3px 9px",
+        borderRadius: 999,
+        background: color + "18",
+        color,
+        border: `1px solid ${color}44`,
+        fontWeight: 600,
+      }}
+    >
+      <span style={{ fontSize: 12, lineHeight: 1 }}>{symbol}</span>
+      {label}
+    </span>
   );
 }
 

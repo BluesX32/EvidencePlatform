@@ -15,9 +15,8 @@ import type { OntologyNode, OntologyEdge, OntologyNamespace } from "../api/clien
 // ── Namespace styling ─────────────────────────────────────────────────────────
 
 export const NS_COLORS: Record<OntologyNamespace | string, string> = {
-  level:         "#3b82f6",   // blue
-  dimension:     "#10b981",   // emerald
-  relationships: "#f97316",   // orange
+  entity:       "#6366f1",   // indigo
+  relationship: "#f97316",   // orange
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -375,17 +374,12 @@ function TreeNodeRow({
           {hasExpandable ? (isExpanded ? "▼" : "▶") : "○"}
         </button>
 
-        {/* Color dot */}
-        <span
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: node.color ?? nsColor,
-            flexShrink: 0,
-            display: "inline-block",
-          }}
-        />
+        {/* Shape indicator: ◆ for relationship, ● for entity */}
+        {node.namespace === "relationship" ? (
+          <span style={{ fontSize: 11, color: node.color ?? nsColor, flexShrink: 0, lineHeight: 1 }}>◆</span>
+        ) : (
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: node.color ?? nsColor, flexShrink: 0, display: "inline-block" }} />
+        )}
 
         {/* Name */}
         <span

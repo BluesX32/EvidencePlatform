@@ -138,7 +138,7 @@ Frontend tests cover Euler layout math (`eulerLayout.test.ts`) and are in `front
 
 ## Database migrations
 
-Migrations live in `backend/migrations/versions/`. Current head is migration `030`.
+Migrations live in `backend/migrations/versions/`. Current head is migration `033`.
 
 | Migration | Description |
 |-----------|-------------|
@@ -169,6 +169,9 @@ Migrations live in `backend/migrations/versions/`. Current head is migration `03
 | 028 | Citation sourcing: `citation_searches` + `citation_candidates` tables (backward/forward snowballing) |
 | 029 | Citation search enhancements: `scope`, `source_record_ids`, `source_record_count` on `citation_searches` |
 | 030 | Citation candidate dedup fix: unique indexes on `(search_id, direction, doi/pmid/s2_paper_id)` — allows same paper as both backward and forward candidate |
+| 031 | Citation source tracking: `source_record_ids UUID[]` array on `citation_candidates` for multi-source attribution |
+| 032 | Concept extraction: `concept_template` JSONB on `projects` + `concept_extractions` table (per-item per-reviewer extractions keyed by template field) |
+| 033 | Concept taxonomy: `concept_taxonomy_nodes` table (self-referential tree with `aliases` JSONB for merged values) |
 
 ### No-migration changes (logic/service layer)
 

@@ -22,6 +22,8 @@ React + TypeScript frontend for EvidencePlatform. Built with Vite and TanStack Q
 | `/projects/:id/llm-screening` | LLMScreeningPage | LLM-assisted screening runs and results |
 | `/projects/:projectId/team` | TeamPage | Project membership, invitations, roles |
 | `/projects/:projectId/consensus` | ConsensusPage | Conflict detection, adjudication, inter-rater reliability |
+| `/projects/:id/concept-taxonomy` | ConceptTaxonomyPage | Concept taxonomy — entity/relation/metadata tabs, value aggregation, bulk push to ontology |
+| `/projects/:id/prisma` | PrismaPage | PRISMA flow counts and reporting |
 
 ## Development
 
@@ -33,7 +35,7 @@ npm run typecheck  # tsc --noEmit
 npx vitest run     # run Vitest unit tests
 ```
 
-The frontend expects the backend API at `http://localhost:8000`. This is proxied via the Vite config in development.
+The frontend calls the backend API at `http://localhost:8000` (hardcoded in `src/api/client.ts`). There is no Vite proxy — requests go directly to the FastAPI server. For a non-local deployment, update the `baseURL` in `client.ts` or set `VITE_API_URL` and read it from `import.meta.env`.
 
 ## Key dependencies
 

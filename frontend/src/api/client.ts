@@ -220,6 +220,23 @@ export const conceptTaxonomyApi = {
     api.post<ConceptTaxonomyNode>(`/projects/${projectId}/concept-taxonomy/merge`, body),
 };
 
+export interface SubProjectSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  record_count: number;
+  seed: number | null;
+  n_per_corpus: number | null;
+}
+
+export interface SampleInfo {
+  seed: number;
+  n_per_corpus: number;
+  parent_project_id: string;
+  parent_project_name: string;
+}
+
 export interface ProjectDetail extends Project {
   record_count: number;        // canonical records (unique after dedup)
   import_count: number;        // completed import jobs
@@ -228,11 +245,15 @@ export interface ProjectDetail extends Project {
   my_role: "owner" | "admin" | "reviewer" | "observer";
   extraction_template: ExtractionTemplate | null;
   concept_template: ConceptTemplate | null;
+  parent_project_id: string | null;
+  sample_info: SampleInfo | null;
+  sub_projects: SubProjectSummary[];
 }
 
 export interface ProjectListItem extends Project {
   record_count: number;
   my_role: "owner" | "admin" | "reviewer" | "observer";
+  parent_project_id: string | null;
 }
 
 export const projectsApi = {
@@ -246,6 +267,23 @@ export const projectsApi = {
     api.patch<ProjectDetail>(`/projects/${id}/extraction-template`, { rows }),
   updateConceptTemplate: (id: string, fields: ConceptTemplateField[]) =>
     api.patch<ProjectDetail>(`/projects/${id}/concept-template`, { fields }),
+  createSubProject: (
+    parentId: string,
+    body: {
+      name: string;
+      description?: string;
+      n_per_corpus: number;
+      seed?: number;
+      source_ids?: string[];
+      inherit_criteria?: boolean;
+      inherit_extraction_template?: boolean;
+      inherit_concept_template?: boolean;
+    },
+  ) => api.post<Project>(`/projects/${parentId}/sub-projects`, body),
+  listSubProjects: (parentId: string) =>
+    api.get<SubProjectSummary[]>(`/projects/${parentId}/sub-projects`),
+  deleteProject: (id: string) =>
+    api.delete(`/projects/${id}`),
 };
 
 // ── Concept extraction API ────────────────────────────────────────────────────
@@ -1042,12 +1080,8 @@ export const screeningApi = {
 // ── Ontology / Taxonomy ───────────────────────────────────────────────────────
 
 export const ONTOLOGY_NAMESPACES = [
-  "level",
-  "dimension",
-  "relationships",
-  "thematic",
-  "theme",
-  "code",
+  "entity",
+  "relationship",
 ] as const;
 
 export type OntologyNamespace = (typeof ONTOLOGY_NAMESPACES)[number];

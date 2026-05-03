@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project
 from app.models.project_member import ProjectMember
+from app.models.project_sample import ProjectSample
 from app.models.record import Record
 
 
@@ -94,3 +95,21 @@ class ProjectRepo:
         await db.flush()
         await db.refresh(project)
         return project
+
+    @staticmethod
+    async def list_sub_projects(db: AsyncSession, parent_project_id: uuid.UUID) -> list[Project]:
+        """Return all direct child projects of parent_project_id."""
+        result = await db.execute(
+            select(Project)
+            .where(Project.parent_project_id == parent_project_id)
+            .order_by(Project.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_sample_info(db: AsyncSession, child_project_id: uuid.UUID) -> Optional[ProjectSample]:
+        """Return the ProjectSample row for a child project, or None if not a sampled project."""
+        result = await db.execute(
+            select(ProjectSample).where(ProjectSample.child_project_id == child_project_id)
+        )
+        return result.scalar_one_or_none()

@@ -55,7 +55,7 @@ class Graph3DErrorBoundary extends Component<{ children: ReactNode }, EBState> {
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_NS: OntologyNamespace = "level";
+const DEFAULT_NS: OntologyNamespace = "entity";
 const EDGE_COLOR = "#f97316";
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -247,7 +247,7 @@ export default function OntologyPage() {
   });
 
   const syncMut = useMutation({
-    mutationFn: () => ontologyApi.syncLevels(projectId!, { namespace: "level" }),
+    mutationFn: () => ontologyApi.syncLevels(projectId!, { namespace: "entity" }),
     onSuccess: (res) => { invalidate(); alert(`Sync complete: ${res.data.created} created, ${res.data.skipped} already present.`); },
   });
 

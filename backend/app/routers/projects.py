@@ -1,8 +1,8 @@
 import uuid
 from typing import Annotated, Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -10,6 +10,7 @@ from app.dependencies import get_current_user
 from app.models.user import User
 from app.repositories.import_repo import ImportRepo
 from app.repositories.project_repo import ProjectRepo
+from app.services.sub_project_service import create_sub_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -64,6 +65,7 @@ class ProjectListItem(BaseModel):
     created_at: str
     record_count: int
     my_role: str
+    parent_project_id: Optional[str] = None
 
 
 class CriterionItem(BaseModel):
@@ -75,6 +77,23 @@ class ProjectCriteria(BaseModel):
     inclusion: List[CriterionItem] = []
     exclusion: List[CriterionItem] = []
     levels: List[str] = []     # editable levels vocabulary (Sprint 14)
+
+
+class SubProjectSummary(BaseModel):
+    id: str
+    name: str
+    description: Optional[str]
+    created_at: str
+    record_count: int
+    seed: Optional[int] = None
+    n_per_corpus: Optional[int] = None
+
+
+class SampleInfo(BaseModel):
+    seed: int
+    n_per_corpus: int
+    parent_project_id: str
+    parent_project_name: str
 
 
 class ProjectDetail(BaseModel):
@@ -90,6 +109,9 @@ class ProjectDetail(BaseModel):
     my_role: str             # owner | admin | reviewer | observer
     extraction_template: Optional[Dict[str, Any]] = None
     concept_template: Optional[Dict[str, Any]] = None
+    parent_project_id: Optional[str] = None
+    sample_info: Optional[SampleInfo] = None
+    sub_projects: List[SubProjectSummary] = []
 
 
 class UpdateExtractionTemplateRequest(BaseModel):
@@ -135,6 +157,7 @@ async def list_projects(
             created_at=p.created_at.isoformat(),
             record_count=count,
             my_role=role,
+            parent_project_id=str(p.parent_project_id) if p.parent_project_id else None,
         ))
     return result
 
@@ -152,6 +175,34 @@ async def get_project(
     jobs = await ImportRepo.list_by_project(db, project.id)
     failed_count = sum(1 for j in jobs if j.status == "failed")
 
+    # Sub-project relationships
+    sample_info: Optional[SampleInfo] = None
+    if project.parent_project_id:
+        ps = await ProjectRepo.get_sample_info(db, project.id)
+        if ps:
+            parent = await ProjectRepo.get_by_id(db, project.parent_project_id)
+            sample_info = SampleInfo(
+                seed=ps.seed,
+                n_per_corpus=ps.n_per_corpus,
+                parent_project_id=str(project.parent_project_id),
+                parent_project_name=parent.name if parent else "",
+            )
+
+    sub_projects_raw = await ProjectRepo.list_sub_projects(db, project.id)
+    sub_project_items: List[SubProjectSummary] = []
+    for sp in sub_projects_raw:
+        sp_count = await ProjectRepo.count_records(db, sp.id)
+        sp_sample = await ProjectRepo.get_sample_info(db, sp.id)
+        sub_project_items.append(SubProjectSummary(
+            id=str(sp.id),
+            name=sp.name,
+            description=sp.description,
+            created_at=sp.created_at.isoformat(),
+            record_count=sp_count,
+            seed=sp_sample.seed if sp_sample else None,
+            n_per_corpus=sp_sample.n_per_corpus if sp_sample else None,
+        ))
+
     raw = project.criteria or {"inclusion": [], "exclusion": [], "levels": []}
     raw.setdefault("levels", [])
     return ProjectDetail(
@@ -167,6 +218,9 @@ async def get_project(
         my_role=role,
         extraction_template=project.extraction_template,
         concept_template=project.concept_template,
+        parent_project_id=str(project.parent_project_id) if project.parent_project_id else None,
+        sample_info=sample_info,
+        sub_projects=sub_project_items,
     )
 
 
@@ -286,3 +340,99 @@ async def update_concept_template(
         extraction_template=project.extraction_template,
         concept_template=project.concept_template,
     )
+
+
+# ── Sub-project endpoints ──────────────────────────────────────────────────────
+
+class CreateSubProjectRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    n_per_corpus: int = Field(default=50, ge=1, le=10_000)
+    seed: Optional[int] = None  # None → auto-generated
+    source_ids: Optional[List[str]] = None  # None = all sources
+    inherit_criteria: bool = False
+    inherit_extraction_template: bool = False
+    inherit_concept_template: bool = False
+
+
+@router.post(
+    "/{project_id}/sub-projects",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_sub_project_endpoint(
+    project_id: uuid.UUID,
+    body: CreateSubProjectRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required to create sub-projects")
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="name is required")
+
+    import random as _random
+    seed = body.seed if body.seed is not None else _random.randint(0, 2**31 - 1)
+
+    source_uuids = [uuid.UUID(s) for s in body.source_ids] if body.source_ids else None
+
+    try:
+        child = await create_sub_project(
+            db=db,
+            parent_project_id=project_id,
+            name=body.name.strip(),
+            description=body.description,
+            n_per_corpus=body.n_per_corpus,
+            seed=seed,
+            creator_id=current_user.id,
+            source_ids=source_uuids,
+            inherit_criteria=body.inherit_criteria,
+            inherit_extraction_template=body.inherit_extraction_template,
+            inherit_concept_template=body.inherit_concept_template,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return ProjectResponse.from_orm(child)
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    project_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    project, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can delete a project")
+    if project.parent_project_id is None:
+        raise HTTPException(status_code=400, detail="Only sub-projects can be deleted this way")
+    await db.delete(project)
+    await db.commit()
+
+
+@router.get("/{project_id}/sub-projects", response_model=List[SubProjectSummary])
+async def list_sub_projects_endpoint(
+    project_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    await _get_project_and_role(db, project_id, current_user.id)
+    sub_projects = await ProjectRepo.list_sub_projects(db, project_id)
+    result: List[SubProjectSummary] = []
+    for sp in sub_projects:
+        sp_count = await ProjectRepo.count_records(db, sp.id)
+        sp_sample = await ProjectRepo.get_sample_info(db, sp.id)
+        result.append(SubProjectSummary(
+            id=str(sp.id),
+            name=sp.name,
+            description=sp.description,
+            created_at=sp.created_at.isoformat(),
+            record_count=sp_count,
+            seed=sp_sample.seed if sp_sample else None,
+            n_per_corpus=sp_sample.n_per_corpus if sp_sample else None,
+        ))
+    return result

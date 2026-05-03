@@ -145,6 +145,14 @@ Full-text PDFs are uploaded per record or per cluster and stored server-side. A 
 - Notes drawer — collapsible panel listing all annotations with page badges, quoted text previews, and delete controls
 - Drag to reposition / resize — floats at a configurable position within the viewport
 
+### 13. Concept Extraction
+Project owners define a **concept template** — a structured set of fields typed as entity, relation, or metadata — that reviewers fill out per article during extraction. Templates support custom field types (text, select, multi-select) with placeholders and option lists. Built-in presets support ontology construction workflows.
+
+Extracted concept data is aggregated per project in the **Concept Taxonomy** view:
+- Entity, relation, and metadata tabs with value-frequency aggregation
+- Bulk push to the project ontology with namespace and parent-node selection
+- Tagging papers with ontology concepts inline during screening
+
 ---
 
 ## Three Orthogonal Organization Systems
@@ -189,7 +197,7 @@ Every stage generates a complete audit trail. At any point, a project owner can 
 
 ## Relational Database Diagram
 
-The platform uses PostgreSQL with 32 tables across 30 versioned Alembic migrations. The diagram below shows every table and its foreign-key relationships. PK = primary key · FK = foreign key · nullable FKs shown with dashed lines.
+The platform uses PostgreSQL with 34 tables across 33 versioned Alembic migrations. The diagram below shows every table and its foreign-key relationships. PK = primary key · FK = foreign key · nullable FKs shown with dashed lines.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -470,7 +478,7 @@ The platform uses PostgreSQL with 32 tables across 30 versioned Alembic migratio
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (30 versioned migrations) |
+| Schema migrations | Alembic (33 versioned migrations) |
 | Citation sourcing | Semantic Scholar Graph API (httpx async; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |

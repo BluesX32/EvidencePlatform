@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Plus, BookOpen, Calendar } from "lucide-react";
+import { Plus, BookOpen, Calendar, GitBranch } from "lucide-react";
 import { projectsApi } from "../api/client";
 
 export default function ProjectsPage() {
@@ -47,8 +47,35 @@ export default function ProjectsPage() {
       {/* Project grid */}
       <div className="project-grid">
         {projects?.map((p) => (
-          <Link key={p.id} to={`/projects/${p.id}`} className="project-card">
-            <h3>{p.name}</h3>
+          <Link
+            key={p.id}
+            to={`/projects/${p.id}`}
+            className="project-card"
+            style={p.parent_project_id ? { borderLeft: "3px solid var(--brand)", opacity: 0.92 } : undefined}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+              <h3 style={{ margin: 0 }}>{p.name}</h3>
+              {p.parent_project_id && (
+                <span
+                  title="Sub-project"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 3,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "var(--brand)",
+                    background: "#ede9fe",
+                    borderRadius: 4,
+                    padding: "2px 6px",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  <GitBranch size={10} /> Sub-project
+                </span>
+              )}
+            </div>
             {p.description && (
               <p className="project-card-desc">{p.description}</p>
             )}

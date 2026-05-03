@@ -37,9 +37,9 @@ class OntologyNode(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Grouping namespace: level | dimension | concept | population | intervention | outcome
+    # Grouping namespace: entity | relationship
     namespace: Mapped[str] = mapped_column(
-        String(50), nullable=False, server_default="concept"
+        String(50), nullable=False, server_default="entity"
     )
     color: Mapped[Optional[str]] = mapped_column(
         String(7), nullable=True, comment="Optional hex color #RRGGBB"

@@ -84,7 +84,7 @@ This builds and starts three containers:
 | Container | Purpose | Port |
 |-----------|---------|------|
 | `db` | PostgreSQL 16 database | `5433` (host) |
-| `backend` | FastAPI API server (auto-migrates on start — runs all 30 migrations) | `8000` |
+| `backend` | FastAPI API server (auto-migrates on start — runs all 33 migrations) | `8000` |
 | `frontend` | Vite dev server (React) | `5173` |
 
 Wait about 30 seconds on the first run for images to build. Then open:
@@ -314,7 +314,7 @@ EvidencePlatform/
 │   │   ├── repositories/    # Database queries
 │   │   ├── parsers/         # RIS / MEDLINE / BibTeX parsers
 │   │   └── utils/           # Dedup, overlap detection, matching
-│   ├── migrations/          # Alembic migrations (030 versioned)
+│   ├── migrations/          # Alembic migrations (033 versioned)
 │   └── tests/               # pytest test suite
 ├── frontend/
 │   ├── src/
