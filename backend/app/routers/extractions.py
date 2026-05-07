@@ -82,7 +82,7 @@ GROUP BY
     er.reviewer_id, er.created_at,
     r.title, r.authors, r.year, r.doi,
     cr.title, cr.authors, cr.year, cr.doi
-ORDER BY er.created_at DESC
+ORDER BY er.created_at ASC
 """)
 
 _SINGLE_SQL = text("""

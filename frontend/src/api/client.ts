@@ -143,6 +143,7 @@ export interface ConceptTemplate {
 export interface ConceptExtractionJson {
   cells: Record<string, string | string[]>;  // field_id → value(s)
   note?: string;
+  novelty?: Record<string, Record<string, "new" | "existing">>;  // field_id → value → status
 }
 
 export interface ConceptExtractionRecord {

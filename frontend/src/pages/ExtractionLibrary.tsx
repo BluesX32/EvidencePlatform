@@ -155,12 +155,14 @@ function EditPanel({
   projectId,
   templateRows,
   conceptTemplate,
+  allExtractions,
   onClose,
 }: {
   item: ExtractionLibraryItem;
   projectId: string;
   templateRows: ExtractionTemplateRow[];
   conceptTemplate: ConceptTemplate | null;
+  allExtractions: ConceptExtractionRecord[];
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -567,6 +569,7 @@ function EditPanel({
                 template={conceptTemplate}
                 recordId={item.record_id ?? undefined}
                 clusterId={item.cluster_id ?? undefined}
+                allExtractions={allExtractions}
               />
             </div>
           )}
@@ -659,6 +662,167 @@ function EditPanel({
 // Main page
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Concept novelty chart
+// ---------------------------------------------------------------------------
+
+function buildSeenValues(
+  allExtractions: ConceptExtractionRecord[],
+  excludeKey: string | null,
+): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  for (const ce of allExtractions) {
+    const key = ce.record_id ?? ce.cluster_id;
+    if (key === excludeKey) continue;
+    const cells = ce.extracted_json?.cells ?? {};
+    for (const [fieldId, val] of Object.entries(cells)) {
+      if (!map.has(fieldId)) map.set(fieldId, new Set());
+      if (Array.isArray(val)) val.forEach((v) => map.get(fieldId)!.add(v as string));
+      else if (val) map.get(fieldId)!.add(val as string);
+    }
+  }
+  return map;
+}
+
+function countNovelty(
+  ce: ConceptExtractionRecord,
+  seenValues: Map<string, Set<string>>,
+): { newCount: number; existingCount: number } {
+  const cells = ce.extracted_json?.cells ?? {};
+  const storedNovelty = ce.extracted_json?.novelty ?? {};
+  let newCount = 0, existingCount = 0;
+  for (const [fieldId, val] of Object.entries(cells)) {
+    const activeVals = Array.isArray(val) ? val : (val ? [val as string] : []);
+    const fieldNovelty = storedNovelty[fieldId] ?? {};
+    const seen = seenValues.get(fieldId) ?? new Set<string>();
+    for (const v of activeVals) {
+      const status = v in fieldNovelty ? fieldNovelty[v] : (seen.has(v) ? "existing" : "new");
+      if (status === "new") newCount++;
+      else existingCount++;
+    }
+  }
+  return { newCount, existingCount };
+}
+
+function ConceptNoveltyChart({
+  items,
+  conceptExtractions,
+}: {
+  items: ExtractionLibraryItem[];
+  conceptExtractions: ConceptExtractionRecord[];
+}) {
+  const ceMap = new Map(
+    conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
+  );
+
+  const data = items.map((item) => {
+    const key = item.record_id ?? item.cluster_id ?? "";
+    const ce = ceMap.get(key);
+    const seenValues = ce ? buildSeenValues(conceptExtractions, key) : new Map();
+    const counts = ce ? countNovelty(ce, seenValues) : { newCount: 0, existingCount: 0 };
+    return {
+      title: (item.title ?? "Untitled").slice(0, 22),
+      year: item.year,
+      ...counts,
+    };
+  });
+
+  const BAR_W = 32;
+  const GAP = 6;
+  const ML = 44, MR = 16, MT = 24, MB = 74;
+  const plotH = 200;
+  const chartW = ML + data.length * (BAR_W + GAP) + MR;
+  const chartH = plotH + MT + MB;
+  const yMax = Math.max(1, ...data.map((d) => d.newCount + d.existingCount));
+  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+
+  const hasAnyNovelty = data.some((d) => d.newCount + d.existingCount > 0);
+
+  return (
+    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "16px 12px 8px", marginBottom: 20 }}>
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 20, justifyContent: "center", marginBottom: 10 }}>
+        {[["#16a34a", "New concepts"], ["#6366f1", "Existing concepts"]].map(([color, label]) => (
+          <span key={label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 2, background: color, display: "inline-block" }} />
+            {label}
+          </span>
+        ))}
+      </div>
+
+      {!hasAnyNovelty && (
+        <p style={{ textAlign: "center", color: "#9ca3af", fontSize: 13, margin: "12px 0" }}>
+          No novelty data yet. Open an article, fill in concept fields, and ★NEW / =SEEN badges will appear.
+        </p>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <svg width={chartW} height={chartH} style={{ display: "block" }}>
+          {/* Y gridlines + labels */}
+          {yTicks.map((f) => {
+            const y = MT + plotH * (1 - f);
+            const val = Math.round(yMax * f);
+            return (
+              <g key={f}>
+                <line x1={ML} y1={y} x2={chartW - MR} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                <text x={ML - 6} y={y} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#9ca3af">{val}</text>
+              </g>
+            );
+          })}
+
+          {/* Bars */}
+          {data.map((d, i) => {
+            const x = ML + i * (BAR_W + GAP);
+            const existH = (d.existingCount / yMax) * plotH;
+            const newH = (d.newCount / yMax) * plotH;
+            const totalH = existH + newH;
+            const total = d.newCount + d.existingCount;
+
+            return (
+              <g key={i}>
+                {existH > 0 && (
+                  <rect x={x} y={MT + plotH - existH} width={BAR_W} height={existH} fill="#6366f1" rx={2}>
+                    <title>{`${d.title} (${d.year ?? "—"}): ${d.existingCount} existing`}</title>
+                  </rect>
+                )}
+                {newH > 0 && (
+                  <rect x={x} y={MT + plotH - totalH} width={BAR_W} height={newH} fill="#16a34a" rx={2}>
+                    <title>{`${d.title} (${d.year ?? "—"}): ${d.newCount} new`}</title>
+                  </rect>
+                )}
+                {total > 0 && (
+                  <text x={x + BAR_W / 2} y={MT + plotH - totalH - 4} textAnchor="middle" fontSize={9} fill="#374151" fontWeight={600}>
+                    {total}
+                  </text>
+                )}
+                {/* X label rotated */}
+                <text
+                  x={x + BAR_W / 2}
+                  y={MT + plotH + 10}
+                  transform={`rotate(-45,${x + BAR_W / 2},${MT + plotH + 10})`}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill="#6b7280"
+                >
+                  {d.title}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Axes */}
+          <line x1={ML} y1={MT} x2={ML} y2={MT + plotH} stroke="#d1d5db" strokeWidth={1} />
+          <line x1={ML} y1={MT + plotH} x2={chartW - MR} y2={MT + plotH} stroke="#d1d5db" strokeWidth={1} />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
 export default function ExtractionLibrary() {
   const { id: projectId } = useParams<{ id: string }>();
 
@@ -666,6 +830,7 @@ export default function ExtractionLibrary() {
   const [filterLevels, setFilterLevels] = useState<Set<string>>(new Set());
   const [filterDims, setFilterDims] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showChart, setShowChart] = useState(true);
 
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["extractions-library", projectId],
@@ -752,6 +917,13 @@ export default function ExtractionLibrary() {
             </span>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+            <button
+              className="btn-secondary"
+              onClick={() => setShowChart((v) => !v)}
+              style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}
+            >
+              {showChart ? "Hide Chart" : "Show Chart"}
+            </button>
             <Link
               to={`/projects/${projectId}/citations`}
               className="btn-primary"
@@ -768,6 +940,11 @@ export default function ExtractionLibrary() {
             </Link>
           </div>
         </div>
+
+        {/* ── Concept novelty chart ────────────────────────────────────────── */}
+        {showChart && (
+          <ConceptNoveltyChart items={items} conceptExtractions={conceptExtractions} />
+        )}
 
         {/* ── Filters ─────────────────────────────────────────────────────── */}
         <div
@@ -936,6 +1113,7 @@ export default function ExtractionLibrary() {
                       projectId={projectId}
                       templateRows={templateRows}
                       conceptTemplate={conceptTemplate}
+                      allExtractions={conceptExtractions}
                       onClose={() => setExpandedId(null)}
                     />
                   )}

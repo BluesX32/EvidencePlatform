@@ -1,16 +1,19 @@
 /**
  * ConceptExtractionForm — renders and saves per-item concept extractions.
  *
- * Fields are grouped by field_type: Entity Fields, Relation Fields, Other.
- * Shown in ScreeningWorkspace after data extraction when a concept_template exists.
+ * Novelty: for single_select and multi_select fields, each selected value is
+ * auto-classified as "new" (not seen in prior articles) or "existing" (seen
+ * before).  The user can toggle the badge to override.  The classification is
+ * stored in extracted_json.novelty and powers the chart in ExtractionLibrary.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   conceptExtractionApi,
   type ConceptTemplate,
   type ConceptTemplateField,
   type ConceptExtractionJson,
+  type ConceptExtractionRecord,
 } from "../api/client";
 
 const EMPTY_CE: ConceptExtractionJson = { cells: {}, note: "" };
@@ -21,6 +24,7 @@ interface Props {
   recordId?: string | null;
   clusterId?: string | null;
   onSaved?: () => void;
+  allExtractions?: ConceptExtractionRecord[];
 }
 
 const SECTION_COLORS: Record<string, string> = {
@@ -35,14 +39,50 @@ const SECTION_LABELS: Record<string, string> = {
   metadata: "Other Fields",
 };
 
+// ── Novelty badge ─────────────────────────────────────────────────────────────
+
+function NoveltyBadge({
+  status,
+  onClick,
+}: {
+  status: "new" | "existing" | undefined;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  if (!status) return null;
+  const isNew = status === "new";
+  return (
+    <span
+      onClick={onClick}
+      title={isNew ? "New concept — click to mark as existing" : "Seen before — click to mark as new"}
+      style={{
+        marginLeft: 5,
+        fontSize: 9,
+        fontWeight: 800,
+        color: isNew ? "#16a34a" : "#9ca3af",
+        cursor: "pointer",
+        userSelect: "none",
+        letterSpacing: "0.01em",
+      }}
+    >
+      {isNew ? "★NEW" : "=SEEN"}
+    </span>
+  );
+}
+
+// ── Field input ───────────────────────────────────────────────────────────────
+
 function FieldInput({
   field,
   value,
   onChange,
+  novelty,
+  onToggleNovelty,
 }: {
   field: ConceptTemplateField;
   value: string | string[];
   onChange: (v: string | string[]) => void;
+  novelty?: Record<string, "new" | "existing">;
+  onToggleNovelty?: (value: string) => void;
 }) {
   const strVal = typeof value === "string" ? value : "";
   const arrVal = Array.isArray(value) ? value : [];
@@ -68,40 +108,61 @@ function FieldInput({
     const customSelected = strVal && !field.options.includes(strVal) ? strVal : null;
     return (
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-        {field.options.map((opt) => (
-          <button
-            key={opt}
-            onClick={() => onChange(strVal === opt ? "" : opt)}
-            style={{
-              padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
-              border: `1.5px solid ${strVal === opt ? "#4f46e5" : "#e2e8f0"}`,
-              background: strVal === opt ? "#4f46e5" : "#fff",
-              color: strVal === opt ? "#fff" : "#374151",
-              fontWeight: strVal === opt ? 600 : 400,
-            }}
-          >
-            {opt}
-          </button>
-        ))}
-        {/* Render selected custom value that isn't in predefined options */}
+        {field.options.map((opt) => {
+          const active = strVal === opt;
+          return (
+            <button
+              key={opt}
+              onClick={() => { if (!active) onChange(opt); }}
+              style={{
+                padding: "3px 10px", borderRadius: 4, fontSize: 13,
+                cursor: active ? "default" : "pointer",
+                border: `1.5px solid ${active ? "#4f46e5" : "#e2e8f0"}`,
+                background: active ? "#4f46e5" : "#fff",
+                color: active ? "#fff" : "#374151",
+                fontWeight: active ? 600 : 400,
+                display: "inline-flex", alignItems: "center", gap: 4,
+              }}
+            >
+              {opt}
+              {active && novelty && (
+                <NoveltyBadge status={novelty[opt]} onClick={(e) => { e.stopPropagation(); onToggleNovelty?.(opt); }} />
+              )}
+              {active && (
+                <span
+                  onClick={(e) => { e.stopPropagation(); onChange(""); }}
+                  title="Remove"
+                  style={{ marginLeft: 2, fontSize: 11, opacity: 0.75, cursor: "pointer", lineHeight: 1 }}
+                >
+                  ✕
+                </span>
+              )}
+            </button>
+          );
+        })}
         {customSelected && (
           <button
-            onClick={() => onChange("")}
+            onClick={() => {}}
             style={{
-              padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
+              padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "default",
               border: "1.5px solid #4f46e5", background: "#4f46e5",
-              color: "#fff", fontWeight: 600,
+              color: "#fff", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4,
             }}
           >
-            {customSelected} ✕
+            {customSelected}
+            {novelty && (
+              <NoveltyBadge status={novelty[customSelected]} onClick={(e) => { e.stopPropagation(); onToggleNovelty?.(customSelected); }} />
+            )}
+            <span
+              onClick={(e) => { e.stopPropagation(); onChange(""); }}
+              title="Remove"
+              style={{ marginLeft: 2, fontSize: 11, opacity: 0.75, cursor: "pointer", lineHeight: 1 }}
+            >
+              ✕
+            </span>
           </button>
         )}
-        <CustomOptionInput
-          selected={strVal}
-          options={field.options}
-          onSelect={onChange}
-          multi={false}
-        />
+        <CustomOptionInput selected={strVal} options={field.options} onSelect={onChange} multi={false} />
       </div>
     );
   }
@@ -115,53 +176,66 @@ function FieldInput({
         return (
           <button
             key={opt}
-            onClick={() => onChange(active ? arrVal.filter((v) => v !== opt) : [...arrVal, opt])}
+            onClick={() => { if (!active) onChange([...arrVal, opt]); }}
             style={{
-              padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
+              padding: "3px 10px", borderRadius: 4, fontSize: 13,
+              cursor: active ? "default" : "pointer",
               border: `1.5px solid ${active ? "#4f46e5" : "#e2e8f0"}`,
               background: active ? "#4f46e5" : "#fff",
               color: active ? "#fff" : "#374151",
               fontWeight: active ? 600 : 400,
+              display: "inline-flex", alignItems: "center", gap: 4,
             }}
           >
             {opt}
+            {active && novelty && (
+              <NoveltyBadge status={novelty[opt]} onClick={(e) => { e.stopPropagation(); onToggleNovelty?.(opt); }} />
+            )}
+            {active && (
+              <span
+                onClick={(e) => { e.stopPropagation(); onChange(arrVal.filter((v) => v !== opt)); }}
+                title="Remove"
+                style={{ marginLeft: 2, fontSize: 11, opacity: 0.75, cursor: "pointer", lineHeight: 1 }}
+              >
+                ✕
+              </span>
+            )}
           </button>
         );
       })}
-      {/* Render selected custom values not in predefined options */}
       {customValues.map((v) => (
         <button
           key={v}
-          onClick={() => onChange(arrVal.filter((x) => x !== v))}
+          onClick={() => {}}
           style={{
-            padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "pointer",
+            padding: "3px 10px", borderRadius: 4, fontSize: 13, cursor: "default",
             border: "1.5px solid #4f46e5", background: "#4f46e5",
-            color: "#fff", fontWeight: 600,
+            color: "#fff", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4,
           }}
         >
-          {v} ✕
+          {v}
+          {novelty && (
+            <NoveltyBadge status={novelty[v]} onClick={(e) => { e.stopPropagation(); onToggleNovelty?.(v); }} />
+          )}
+          <span
+            onClick={(e) => { e.stopPropagation(); onChange(arrVal.filter((x) => x !== v)); }}
+            title="Remove"
+            style={{ marginLeft: 2, fontSize: 11, opacity: 0.75, cursor: "pointer", lineHeight: 1 }}
+          >
+            ✕
+          </span>
         </button>
       ))}
-      <CustomOptionInput
-        selected={arrVal}
-        options={field.options}
-        onSelect={onChange}
-        multi={true}
-      />
+      <CustomOptionInput selected={arrVal} options={field.options} onSelect={onChange} multi={true} />
     </div>
   );
 }
 
 function CustomOptionInput({
-  selected,
-  options,
-  onSelect,
-  multi,
+  selected, options, onSelect, multi,
 }: {
-  selected: string | string[];
-  options: string[];
-  onSelect: (v: string | string[]) => void;
-  multi: boolean;
+  selected: string | string[]; options: string[];
+  onSelect: (v: string | string[]) => void; multi: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
@@ -175,8 +249,7 @@ function CustomOptionInput({
     } else {
       onSelect(v);
     }
-    setDraft("");
-    setAdding(false);
+    setDraft(""); setAdding(false);
   }
 
   if (!adding) {
@@ -197,17 +270,9 @@ function CustomOptionInput({
   return (
     <div style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
       <input
-        autoFocus
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
-          if (e.key === "Escape") { setAdding(false); setDraft(""); }
-        }}
-        style={{
-          fontSize: 12, padding: "2px 7px", borderRadius: 4,
-          border: "1px solid #c4b5fd", outline: "none", width: 120,
-        }}
+        autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") { setAdding(false); setDraft(""); } }}
+        style={{ fontSize: 12, padding: "2px 7px", borderRadius: 4, border: "1px solid #c4b5fd", outline: "none", width: 120 }}
         placeholder="custom value…"
       />
       <button onClick={submit} style={{ fontSize: 11, padding: "2px 7px", borderRadius: 4, border: "none", background: "#4f46e5", color: "#fff", cursor: "pointer" }}>Add</button>
@@ -216,14 +281,33 @@ function CustomOptionInput({
   );
 }
 
-export default function ConceptExtractionForm({ projectId, template, recordId, clusterId, onSaved }: Props) {
+// ── Main form ─────────────────────────────────────────────────────────────────
+
+export default function ConceptExtractionForm({ projectId, template, recordId, clusterId, onSaved, allExtractions }: Props) {
   const qc = useQueryClient();
   const itemKey = recordId ?? clusterId;
 
   const [form, setForm] = useState<ConceptExtractionJson>(EMPTY_CE);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  // True only when form was changed by the user (not by loading existing data)
   const userEdited = useRef(false);
+
+  // Build set of values seen in OTHER articles (for auto-detection)
+  const seenValues = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    if (!allExtractions) return map;
+    const currentKey = recordId ?? clusterId;
+    for (const ce of allExtractions) {
+      const key = ce.record_id ?? ce.cluster_id;
+      if (key === currentKey) continue;
+      const cells = ce.extracted_json?.cells ?? {};
+      for (const [fieldId, val] of Object.entries(cells)) {
+        if (!map.has(fieldId)) map.set(fieldId, new Set());
+        if (Array.isArray(val)) val.forEach((v) => map.get(fieldId)!.add(v));
+        else if (val) map.get(fieldId)!.add(val);
+      }
+    }
+    return map;
+  }, [allExtractions, recordId, clusterId]);
 
   const { data: existing } = useQuery({
     queryKey: ["concept-extraction-item", projectId, itemKey],
@@ -235,7 +319,6 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
     enabled: !!itemKey,
   });
 
-  // Load existing data — mark as NOT user-edited so auto-save doesn't fire
   useEffect(() => {
     userEdited.current = false;
     if (existing) setForm(existing.extracted_json || EMPTY_CE);
@@ -258,12 +341,56 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
     },
   });
 
-  // Auto-save 600 ms after the last user-initiated change
   useEffect(() => {
     if (!userEdited.current || !itemKey) return;
     const timer = setTimeout(() => { saveMut.mutate(); }, 600);
     return () => clearTimeout(timer);
-  }, [form]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [form]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Cell + novelty helpers ─────────────────────────────────────────────────
+
+  function setCell(fieldId: string, value: string | string[]) {
+    userEdited.current = true;
+    setForm((prev) => {
+      const selectedVals = Array.isArray(value) ? value : (value ? [value] : []);
+      const currentNovelty = prev.novelty ?? {};
+      const fieldNovelty = { ...(currentNovelty[fieldId] ?? {}) };
+      const seen = seenValues.get(fieldId) ?? new Set<string>();
+
+      // Auto-classify newly selected values
+      for (const v of selectedVals) {
+        if (!(v in fieldNovelty)) {
+          fieldNovelty[v] = seen.has(v) ? "existing" : "new";
+        }
+      }
+      // Drop entries for deselected values
+      const finalNovelty: Record<string, "new" | "existing"> = {};
+      for (const v of selectedVals) {
+        if (v in fieldNovelty) finalNovelty[v] = fieldNovelty[v];
+      }
+
+      return {
+        ...prev,
+        cells: { ...prev.cells, [fieldId]: value },
+        novelty: { ...currentNovelty, [fieldId]: finalNovelty },
+      };
+    });
+  }
+
+  function toggleNovelty(fieldId: string, value: string) {
+    userEdited.current = true;
+    setForm((prev) => {
+      const currentNovelty = prev.novelty ?? {};
+      const fieldNovelty = { ...(currentNovelty[fieldId] ?? {}) };
+      fieldNovelty[value] = fieldNovelty[value] === "new" ? "existing" : "new";
+      return { ...prev, novelty: { ...currentNovelty, [fieldId]: fieldNovelty } };
+    });
+  }
+
+  function setNote(note: string) {
+    userEdited.current = true;
+    setForm((prev) => ({ ...prev, note }));
+  }
 
   const fields = template.fields ?? [];
   const sections: Record<string, ConceptTemplateField[]> = { entity: [], relation: [], metadata: [] };
@@ -272,16 +399,7 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
     sections[bucket].push(f);
   }
 
-  function setCell(fieldId: string, value: string | string[]) {
-    userEdited.current = true;
-    setForm((prev) => ({ ...prev, cells: { ...prev.cells, [fieldId]: value } }));
-  }
-
-  function setNote(note: string) {
-    userEdited.current = true;
-    setForm((prev) => ({ ...prev, note }));
-  }
-
+  const noveltyEnabled = !!allExtractions;
   const sectionOrder = ["entity", "relation", "metadata"] as const;
 
   return (
@@ -290,9 +408,16 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
         <span style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Concept Extraction
         </span>
-        <span style={{ fontSize: 11, color: saveMut.isPending ? "#6b7280" : saveMut.isError ? "#dc2626" : saveMut.isSuccess ? "#16a34a" : "#9ca3af" }}>
-          {saveMut.isPending ? "Saving…" : saveMut.isError ? "Save failed — retry?" : saveMut.isSuccess ? "Saved ✓" : ""}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {noveltyEnabled && (
+            <span style={{ fontSize: 10, color: "#9ca3af" }}>
+              <span style={{ color: "#16a34a", fontWeight: 700 }}>★NEW</span> / <span style={{ fontWeight: 700 }}>= SEEN</span> — click to toggle
+            </span>
+          )}
+          <span style={{ fontSize: 11, color: saveMut.isPending ? "#6b7280" : saveMut.isError ? "#dc2626" : saveMut.isSuccess ? "#16a34a" : "#9ca3af" }}>
+            {saveMut.isPending ? "Saving…" : saveMut.isError ? "Save failed" : saveMut.isSuccess ? "Saved ✓" : ""}
+          </span>
+        </div>
       </div>
 
       {sectionOrder.map((sectionKey) => {
@@ -312,39 +437,51 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
               }}
             >
               <span style={{ fontSize: 9, color: "#9ca3af" }}>{isCollapsed ? "▸" : "▾"}</span>
-              <span style={{
-                fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-                letterSpacing: "0.06em", color,
-              }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color }}>
                 {SECTION_LABELS[sectionKey]}
               </span>
             </button>
 
             {!isCollapsed && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {sectionFields.map((field) => (
-                  <div key={field.id}>
-                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 3 }}>
-                      {field.label}
-                    </label>
-                    <FieldInput
-                      field={field}
-                      value={form.cells[field.id] ?? (field.input_type === "multi_select" ? [] : "")}
-                      onChange={(v) => setCell(field.id, v)}
-                    />
-                  </div>
-                ))}
+                {sectionFields.map((field) => {
+                  // Merge stored novelty with auto-classification for any active value not yet recorded
+                  let fieldNovelty: Record<string, "new" | "existing"> | undefined;
+                  if (noveltyEnabled && field.input_type !== "string") {
+                    const stored = form.novelty?.[field.id] ?? {};
+                    const seen = seenValues.get(field.id) ?? new Set<string>();
+                    const cellVal = form.cells[field.id];
+                    const activeVals = Array.isArray(cellVal) ? cellVal : (cellVal ? [cellVal] : []);
+                    fieldNovelty = { ...stored };
+                    for (const v of activeVals) {
+                      if (!(v in fieldNovelty)) {
+                        fieldNovelty[v] = seen.has(v) ? "existing" : "new";
+                      }
+                    }
+                  }
+                  return (
+                    <div key={field.id}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 3 }}>
+                        {field.label}
+                      </label>
+                      <FieldInput
+                        field={field}
+                        value={form.cells[field.id] ?? (field.input_type === "multi_select" ? [] : "")}
+                        onChange={(v) => setCell(field.id, v)}
+                        novelty={fieldNovelty}
+                        onToggleNovelty={noveltyEnabled ? (v) => toggleNovelty(field.id, v) : undefined}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         );
       })}
 
-      {/* Note field */}
       <div style={{ marginTop: 4 }}>
-        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 3 }}>
-          Notes
-        </label>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 3 }}>Notes</label>
         <textarea
           value={form.note ?? ""}
           onChange={(e) => setNote(e.target.value)}
