@@ -358,11 +358,30 @@ export default function StartScreeningModal({ projectId, onClose }: Props) {
                         onChange={() => setSelectedSource(src.id)}
                       />
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: src.id === "all" ? 600 : 400 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: src.id === "all" ? 600 : 400 }}>
                           {src.name}
+                          {src.is_llm_import && (
+                            <span style={{ fontSize: "0.68rem", fontWeight: 700, background: "#ede9fe", color: "#6d28d9", borderRadius: "0.25rem", padding: "0.05rem 0.35rem", letterSpacing: "0.03em" }}>
+                              LLM
+                            </span>
+                          )}
                         </div>
-                        <div style={{ fontSize: "0.82rem", color: "#5f6368" }}>
-                          {src.record_count} records · {src.ta_included} TA included · {src.ft_included} FT included
+                        <div style={{ fontSize: "0.82rem", color: "#5f6368", marginTop: "0.1rem" }}>
+                          {src.is_llm_import ? (
+                            <>
+                              {src.record_count} records
+                              {" · "}
+                              <span style={{ color: "#188038", fontWeight: 600 }}>{src.ta_included} included</span>
+                              {src.ta_uncertain > 0 && (
+                                <>{" · "}<span style={{ color: "#b06000", fontWeight: 600 }}>{src.ta_uncertain} uncertain</span></>
+                              )}
+                              {src.ta_excluded > 0 && (
+                                <>{" · "}<span style={{ color: "#c5221f", fontWeight: 600 }}>{src.ta_excluded} excluded</span></>
+                              )}
+                            </>
+                          ) : (
+                            <>{src.record_count} records · {src.ta_included} TA included · {src.ft_included} FT included</>
+                          )}
                         </div>
                       </div>
                       <span

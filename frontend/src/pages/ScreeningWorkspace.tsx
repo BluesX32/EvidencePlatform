@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode, ConceptTemplate } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, LlmScreeningNote, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode, ConceptTemplate } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptExtractionForm from "../components/ConceptExtractionForm";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -789,6 +789,74 @@ function KeywordBar() {
 }
 
 // ---------------------------------------------------------------------------
+// LlmScreeningNotePanel — collapsible LLM pre-screening reason from sub-project fork
+// ---------------------------------------------------------------------------
+
+function LlmScreeningNotePanel({ note }: { note: LlmScreeningNote }) {
+  const [open, setOpen] = useState(false);
+
+  const taLabel = note.ta_decision
+    ? note.ta_decision.charAt(0).toUpperCase() + note.ta_decision.slice(1)
+    : null;
+  const ftLabel = note.ft_decision
+    ? note.ft_decision.charAt(0).toUpperCase() + note.ft_decision.slice(1)
+    : null;
+
+  const decisionColor = (d: string | null | undefined) => {
+    if (d === "include") return "#188038";
+    if (d === "exclude") return "#c5221f";
+    return "#b06000";
+  };
+
+  return (
+    <div style={{ marginTop: "0.75rem", border: "1px solid #e8d5b7", borderRadius: "0.4rem", background: "#fffbf0" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0.45rem 0.75rem", background: "none", border: "none", cursor: "pointer",
+          fontSize: "0.8rem", color: "#92400e", fontWeight: 600, gap: "0.5rem",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          🤖 LLM Pre-screening Note
+          {taLabel && (
+            <span style={{ background: "#fff", border: "1px solid #e8d5b7", borderRadius: "0.3rem", padding: "0.05rem 0.4rem", fontSize: "0.72rem", color: decisionColor(note.ta_decision), fontWeight: 700 }}>
+              TA: {taLabel}
+            </span>
+          )}
+          {ftLabel && (
+            <span style={{ background: "#fff", border: "1px solid #e8d5b7", borderRadius: "0.3rem", padding: "0.05rem 0.4rem", fontSize: "0.72rem", color: decisionColor(note.ft_decision), fontWeight: 700 }}>
+              FT: {ftLabel}
+            </span>
+          )}
+        </span>
+        <span style={{ fontSize: "0.7rem", color: "#b45309" }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0.5rem 0.75rem 0.65rem", borderTop: "1px solid #e8d5b7", fontSize: "0.83rem", color: "#78350f", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {note.ta_reason && (
+            <div>
+              <span style={{ fontWeight: 600, color: "#92400e" }}>TA reason: </span>
+              {note.ta_reason}
+            </div>
+          )}
+          {note.ft_reason && (
+            <div>
+              <span style={{ fontWeight: 600, color: "#92400e" }}>FT reason: </span>
+              {note.ft_reason}
+            </div>
+          )}
+          {note.model && (
+            <div style={{ fontSize: "0.74rem", color: "#b45309" }}>Model: {note.model}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PaperCard
 // ---------------------------------------------------------------------------
 
@@ -913,6 +981,10 @@ function PaperCard({
             </button>
           )}
         </div>
+      )}
+
+      {item.llm_screening && (item.llm_screening.ta_reason || item.llm_screening.ft_reason) && (
+        <LlmScreeningNotePanel note={item.llm_screening} />
       )}
 
       {showAnnotations && <AnnotationsPanel projectId={projectId} item={item} />}

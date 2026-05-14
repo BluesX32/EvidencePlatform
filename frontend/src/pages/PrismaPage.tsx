@@ -1,91 +1,195 @@
 import { useRef } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { screeningApi } from "../api/client";
+import { projectsApi, screeningApi } from "../api/client";
 
+// ── Layout ──────────────────────────────────────────────────────────────────
+const PHASE_W = 130;
+const PHASE_X = 10;
+const MAIN_X  = 155;
+const MAIN_W  = 330;
+const SIDE_X  = MAIN_X + MAIN_W + 36;
+const SIDE_W  = 290;
+const W       = SIDE_X + SIDE_W + 24;
+const ROW_GAP = 40;
+
+// Box geometry
+const BOX_RX    = 10;
+const MAIN_MIN_H = 88;
+const SIDE_MIN_H = 88;
+const LINE_H    = 15;  // reason row height
+const REASON_TOP = 44; // y inside box where first reason starts
+
+// Colors
+const C = {
+  id:      { fill: "#eff6ff", stroke: "#2563eb", head: "#1d4ed8", body: "#1e40af" },
+  dedup:   { fill: "#f5f3ff", stroke: "#7c3aed", head: "#5b21b6", body: "#4c1d95" },
+  screen:  { fill: "#ecfdf5", stroke: "#059669", head: "#065f46", body: "#047857" },
+  excl:    { fill: "#fff1f2", stroke: "#e11d48", head: "#9f1239", body: "#be123c" },
+  incl:    { fill: "#f0fdf4", stroke: "#16a34a", head: "#14532d", body: "#15803d" },
+  arrow:   "#94a3b8",
+  muted:   "#64748b",
+  rule:    "#fda4af",
+};
+
+function fmtReason(code: string | null): string {
+  if (!code) return "No reason recorded";
+  return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Group raw source list: collapse "Refs: …" → backward citations, "Citing: …" → forward citations
+function groupSources(raw: { name: string; count: number }[]) {
+  let bwCount = 0, bwN = 0, fwCount = 0, fwN = 0;
+  const dbs: { name: string; count: number }[] = [];
+  for (const s of raw) {
+    if (s.name.startsWith("Refs:") || s.name.startsWith("Refs ")) { bwN += s.count; bwCount++; }
+    else if (s.name.startsWith("Citing:") || s.name.startsWith("Citing ")) { fwN += s.count; fwCount++; }
+    else dbs.push(s);
+  }
+  const out = [...dbs];
+  if (bwN > 0) out.push({ name: `Backward citations (${bwCount} seed${bwCount > 1 ? "s" : ""})`, count: bwN });
+  if (fwN > 0) out.push({ name: `Forward citations (${fwCount} seed${fwCount > 1 ? "s" : ""})`, count: fwN });
+  return out;
+}
+
+function sideH(reasons: { reason_code: string | null; count: number }[]): number {
+  if (reasons.length === 0) return SIDE_MIN_H;
+  return Math.max(SIDE_MIN_H, REASON_TOP + reasons.length * LINE_H + 12);
+}
+
+// ── SVG primitives ──────────────────────────────────────────────────────────
+const cx = MAIN_X + MAIN_W / 2;
+const sxc = SIDE_X + SIDE_W / 2;
+
+function Box({
+  x, y, w, h, fill, stroke, shadow = true,
+  children,
+}: {
+  x: number; y: number; w: number; h: number;
+  fill: string; stroke: string; shadow?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <g filter={shadow ? "url(#shadow)" : undefined}>
+      <rect x={x} y={y} width={w} height={h} rx={BOX_RX} fill={fill} stroke={stroke} strokeWidth={1.6} />
+      {children}
+    </g>
+  );
+}
+
+function DownArrow({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
+  return <line x1={x} y1={y1} x2={x} y2={y2 - 7} stroke={C.arrow} strokeWidth={1.8} markerEnd="url(#ah)" />;
+}
+
+function RightArrow({ x1, x2, y }: { x1: number; x2: number; y: number }) {
+  return <line x1={x1} y1={y} x2={x2 - 7} y2={y} stroke={C.arrow} strokeWidth={1.8} markerEnd="url(#ah)" />;
+}
+
+function PhaseLabel({ label, y, h }: { label: string; y: number; h: number }) {
+  const midY = y + h / 2;
+  return (
+    <g>
+      <rect x={PHASE_X} y={y} width={PHASE_W} height={h} rx={6} fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
+      <text x={PHASE_X + PHASE_W / 2} y={midY + 4} textAnchor="middle" fontSize={11} fontWeight="700" fill="#475569" letterSpacing="0.3">
+        {label}
+      </text>
+    </g>
+  );
+}
+
+function ReasonLines({
+  reasons, boxY,
+}: { reasons: { reason_code: string | null; count: number }[]; boxY: number }) {
+  return (
+    <>
+      {reasons.length > 0 && (
+        <line x1={SIDE_X + 10} y1={boxY + 40} x2={SIDE_X + SIDE_W - 10} y2={boxY + 40} stroke={C.rule} strokeWidth={0.8} />
+      )}
+      {reasons.map((r, i) => (
+        <text key={i} x={SIDE_X + 14} y={boxY + REASON_TOP + i * LINE_H} fontSize={9.5} fill="#1e293b">
+          <tspan fill={C.excl.stroke} fontWeight="700">·</tspan>
+          {" "}{fmtReason(r.reason_code)}: n = {r.count.toLocaleString()}
+        </text>
+      ))}
+    </>
+  );
+}
+
+// ── Page ────────────────────────────────────────────────────────────────────
 export default function PrismaPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const { data: sources = [], isLoading } = useQuery({
+  const { data: sources = [], isLoading: srcLoading } = useQuery({
     queryKey: ["screening-sources", projectId],
     queryFn: () => screeningApi.getSources(projectId!).then((r) => r.data),
     enabled: !!projectId,
   });
+  const { data: prisma, isLoading: prismaLoading } = useQuery({
+    queryKey: ["prisma-stats", projectId],
+    queryFn: () => projectsApi.getPrismaStats(projectId!).then((r) => r.data),
+    enabled: !!projectId,
+  });
 
-  const allSource = sources.find((s) => s.id === "all");
+  const allSource    = sources.find((s) => s.id === "all");
   const indivSources = sources.filter((s) => s.id !== "all");
+  const grouped      = groupSources(prisma?.by_source ?? indivSources.map((s) => ({ name: s.name, count: s.record_count })));
 
-  const totalIdentified =
-    indivSources.length > 0
-      ? indivSources.reduce((sum, s) => sum + s.record_count, 0)
-      : allSource?.record_count ?? 0;
-  const taScreened = allSource?.ta_screened ?? 0;
-  const taIncluded = allSource?.ta_included ?? 0;
-  const taExcluded = taScreened - taIncluded;
-  const ftScreened = allSource?.ft_screened ?? 0;
-  const ftIncluded = allSource?.ft_included ?? 0;
-  const ftExcluded = ftScreened - ftIncluded;
-  const extracted = allSource?.extracted_count ?? 0;
+  // Counts
+  const totalIdentified = prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0);
+  const duplicatesRemoved = prisma?.duplicates_removed ?? 0;
+  const afterDedup   = prisma?.total_unique ?? (allSource?.record_count ?? 0);
+  const taScreened   = allSource?.ta_screened ?? 0;
+  const taIncluded   = allSource?.ta_included ?? 0;
+  const taExcluded   = allSource?.ta_excluded ?? (taScreened - taIncluded);
+  const taUncertain  = allSource?.ta_uncertain ?? 0;
+  const taNotScreened = Math.max(0, afterDedup - taScreened);
+  const ftScreened   = allSource?.ft_screened ?? 0;
+  const ftIncluded   = allSource?.ft_included ?? 0;
+  const ftExcluded   = ftScreened - ftIncluded;
+  const ftAwaiting   = Math.max(0, taIncluded - ftScreened);
+  const extracted    = allSource?.extracted_count ?? 0;
+  const taReasons    = prisma?.ta_exclude_reasons ?? [];
+  const ftReasons    = prisma?.ft_exclude_reasons ?? [];
 
-  // ── SVG layout ──────────────────────────────────────────────────────────
-  const W = 700;
-  const MAIN_X = 130;
-  const MAIN_W = 315;
-  const SIDE_X = 490;
-  const SIDE_W = 188;
-  const ROW_H = 90;
-  const GAP = 48;
-  const PHASE_W = 108;
+  // Row heights
+  const ID_H = Math.max(MAIN_MIN_H, 56 + grouped.length * 18);
+  const DD_H = MAIN_MIN_H;
+  const TA_SIDE_H = sideH(taReasons);
+  const TA_H  = Math.max(MAIN_MIN_H, TA_SIDE_H);
+  const FT_SIDE_H = sideH(ftReasons);
+  const FT_H  = Math.max(MAIN_MIN_H, FT_SIDE_H);
+  const IN_H  = MAIN_MIN_H;
 
-  // Identification box height grows with number of sources
-  const ID_LINES = Math.max(1, indivSources.length);
-  const ID_BOX_H = 50 + ID_LINES * 18 + (indivSources.length > 1 ? 20 : 0);
-
-  const row1Y = 50;
-  const row2Y = row1Y + ID_BOX_H + GAP;
-  const row3Y = row2Y + ROW_H + GAP;
-  const row4Y = row3Y + ROW_H + GAP;
-  const H = row4Y + ROW_H + 40;
-
-  const idFill = "#eff6ff";
-  const idStroke = "#3b82f6";
-  const screenFill = "#f0fdf4";
-  const screenStroke = "#15803d";
-  const exclFill = "#fef2f2";
-  const exclStroke = "#dc2626";
-  const arrowColor = "#9ca3af";
-  const darkText = "#1e293b";
-  const mutedText = "#6b7280";
+  // Row Y positions
+  const R = {
+    id:  50,
+    dd:  0, ta: 0, ft: 0, inc: 0,
+  };
+  R.dd  = R.id  + ID_H + ROW_GAP;
+  R.ta  = R.dd  + Math.max(DD_H, SIDE_MIN_H) + ROW_GAP;
+  R.ft  = R.ta  + Math.max(TA_H, TA_SIDE_H)  + ROW_GAP;
+  R.inc = R.ft  + Math.max(FT_H, FT_SIDE_H)  + ROW_GAP;
+  const H = R.inc + IN_H + 48;
 
   function downloadSVG() {
     if (!svgRef.current) return;
     const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const blob = new Blob([new XMLSerializer().serializeToString(clone)], {
-      type: "image/svg+xml",
-    });
+    const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `prisma-diagram.svg`;
+    a.download = "prisma-diagram.svg";
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
-  if (isLoading) {
-    return <div style={{ padding: "2rem", color: mutedText }}>Loading…</div>;
+  if (srcLoading || prismaLoading) {
+    return <div style={{ padding: "2rem", color: C.muted }}>Loading…</div>;
   }
-
-  const phaseLabelY = [
-    { label: "Identification", y: row1Y + ID_BOX_H / 2 },
-    { label: "Screening", y: row2Y + ROW_H / 2 },
-    { label: "Eligibility", y: row3Y + ROW_H / 2 },
-    { label: "Included", y: row4Y + ROW_H / 2 },
-  ];
 
   return (
     <div style={{ padding: "2rem" }}>
-      {/* Header */}
       <header className="page-header">
         <div className="page-title">
           <h1>PRISMA Flow Diagram</h1>
@@ -94,369 +198,177 @@ export default function PrismaPage() {
         <button className="btn-primary" onClick={downloadSVG}>Download SVG</button>
       </header>
 
-      {/* Diagram */}
-      <div
-        style={{
-          overflowX: "auto",
-          background: "#fff",
-          border: "1px solid #e5e7eb",
-          borderRadius: "0.5rem",
-          display: "inline-block",
-        }}
-      >
+      <div style={{
+        overflowX: "auto",
+        background: "#fff",
+        border: "1px solid #e5e7eb",
+        borderRadius: "0.75rem",
+        boxShadow: "0 2px 8px rgba(0,0,0,.06)",
+        display: "inline-block",
+        padding: "8px",
+      }}>
         <svg
           ref={svgRef}
-          width={W}
-          height={H}
+          width={W} height={H}
           viewBox={`0 0 ${W} ${H}`}
           xmlns="http://www.w3.org/2000/svg"
-          style={{
-            display: "block",
-            fontFamily: "system-ui, -apple-system, sans-serif",
-          }}
+          style={{ display: "block", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}
         >
           <defs>
-            <marker
-              id="ah"
-              markerWidth={8}
-              markerHeight={6}
-              refX={7}
-              refY={3}
-              orient="auto"
-            >
-              <polygon points="0 0, 8 3, 0 6" fill={arrowColor} />
+            {/* Arrow marker */}
+            <marker id="ah" markerWidth={10} markerHeight={7} refX={9} refY={3.5} orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill={C.arrow} />
             </marker>
+            {/* Drop shadow */}
+            <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+              <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="#00000018" />
+            </filter>
           </defs>
 
-          {/* ── Phase labels ─────────────────────────────────────────── */}
-          {phaseLabelY.map(({ label, y }) => (
-            <g key={label}>
-              <rect
-                x={8}
-                y={y - 14}
-                width={PHASE_W}
-                height={28}
-                rx={4}
-                fill="#f8fafc"
-                stroke="#e2e8f0"
-                strokeWidth={1}
-              />
-              <text
-                x={8 + PHASE_W / 2}
-                y={y + 5}
-                textAnchor="middle"
-                fontSize={11}
-                fontWeight="bold"
-                fill="#475569"
-              >
-                {label}
+          {/* ── Phase labels (left rail) ─────────────────────────────── */}
+          <PhaseLabel label="Identification" y={R.id} h={ID_H} />
+          <PhaseLabel label="Deduplication"  y={R.dd} h={Math.max(DD_H, SIDE_MIN_H)} />
+          <PhaseLabel label="Screening"      y={R.ta} h={Math.max(TA_H, TA_SIDE_H)} />
+          <PhaseLabel label="Eligibility"    y={R.ft} h={Math.max(FT_H, FT_SIDE_H)} />
+          <PhaseLabel label="Included"       y={R.inc} h={IN_H} />
+
+          {/* ══════════════════════════════════════════════════════════
+              ROW 1 — Identification
+          ══════════════════════════════════════════════════════════ */}
+          <Box x={MAIN_X} y={R.id} w={MAIN_W} h={ID_H} fill={C.id.fill} stroke={C.id.stroke}>
+            <text x={cx} y={R.id + 22} textAnchor="middle" fontSize={13} fontWeight="700" fill={C.id.head}>
+              Records identified in databases
+            </text>
+            {grouped.map((s, i) => (
+              <text key={s.name} x={cx} y={R.id + 40 + i * 18} textAnchor="middle" fontSize={11} fill={C.id.body}>
+                {s.name}: n = {s.count.toLocaleString()}
               </text>
-            </g>
-          ))}
+            ))}
+            {grouped.length > 1 && (
+              <text x={cx} y={R.id + 40 + grouped.length * 18} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.id.head}>
+                Total: n = {totalIdentified.toLocaleString()}
+              </text>
+            )}
+          </Box>
 
-          {/* ── Row 1: Identification ─────────────────────────────────── */}
-          <rect
-            x={MAIN_X}
-            y={row1Y}
-            width={MAIN_W}
-            height={ID_BOX_H}
-            rx={6}
-            fill={idFill}
-            stroke={idStroke}
-            strokeWidth={1.5}
-          />
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row1Y + 20}
-            textAnchor="middle"
-            fontSize={12}
-            fontWeight="bold"
-            fill="#1e40af"
-          >
-            Records identified in databases
-          </text>
-          {indivSources.map((s, i) => (
-            <text
-              key={s.id}
-              x={MAIN_X + MAIN_W / 2}
-              y={row1Y + 38 + i * 18}
-              textAnchor="middle"
-              fontSize={11}
-              fill={darkText}
-            >
-              {s.name}: n = {s.record_count.toLocaleString()}
+          <DownArrow x={cx} y1={R.id + ID_H} y2={R.dd} />
+
+          {/* ══════════════════════════════════════════════════════════
+              ROW 2 — Deduplication
+          ══════════════════════════════════════════════════════════ */}
+          <Box x={MAIN_X} y={R.dd} w={MAIN_W} h={DD_H} fill={C.dedup.fill} stroke={C.dedup.stroke}>
+            <text x={cx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.dedup.head}>
+              Records after removing duplicates
             </text>
-          ))}
-          {indivSources.length === 0 && (
-            <text
-              x={MAIN_X + MAIN_W / 2}
-              y={row1Y + 38}
-              textAnchor="middle"
-              fontSize={12}
-              fontWeight="bold"
-              fill="#1e40af"
-            >
-              n = {totalIdentified.toLocaleString()}
+            <text x={cx} y={R.dd + 56} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.dedup.stroke}>
+              n = {afterDedup.toLocaleString()}
             </text>
-          )}
-          {indivSources.length > 1 && (
-            <text
-              x={MAIN_X + MAIN_W / 2}
-              y={row1Y + 38 + indivSources.length * 18}
-              textAnchor="middle"
-              fontSize={11}
-              fontWeight="bold"
-              fill={darkText}
-            >
-              Total: n = {totalIdentified.toLocaleString()}
+          </Box>
+
+          {/* Dedup side box */}
+          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.dd + DD_H / 2} />
+          <Box x={SIDE_X} y={R.dd} w={SIDE_W} h={SIDE_MIN_H} fill={C.excl.fill} stroke={C.excl.stroke}>
+            <text x={sxc} y={R.dd + 26} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+              Duplicates removed
             </text>
-          )}
-
-          {/* Down arrow: identification → screening */}
-          <line
-            x1={MAIN_X + MAIN_W / 2}
-            y1={row1Y + ID_BOX_H}
-            x2={MAIN_X + MAIN_W / 2}
-            y2={row2Y - 6}
-            stroke={arrowColor}
-            strokeWidth={1.5}
-            markerEnd="url(#ah)"
-          />
-
-          {/* ── Row 2: Screening ──────────────────────────────────────── */}
-          <rect
-            x={MAIN_X}
-            y={row2Y}
-            width={MAIN_W}
-            height={ROW_H}
-            rx={6}
-            fill={screenFill}
-            stroke={screenStroke}
-            strokeWidth={1.5}
-          />
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row2Y + 24}
-            textAnchor="middle"
-            fontSize={12}
-            fontWeight="bold"
-            fill="#14532d"
-          >
-            Records screened
-          </text>
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row2Y + 46}
-            textAnchor="middle"
-            fontSize={14}
-            fontWeight="bold"
-            fill={screenStroke}
-          >
-            n = {taScreened.toLocaleString()}
-          </text>
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row2Y + 65}
-            textAnchor="middle"
-            fontSize={10}
-            fill={mutedText}
-          >
-            (title &amp; abstract)
-          </text>
-
-          {/* Right arrow → excluded at TA */}
-          <line
-            x1={MAIN_X + MAIN_W}
-            y1={row2Y + ROW_H / 2}
-            x2={SIDE_X - 6}
-            y2={row2Y + ROW_H / 2}
-            stroke={arrowColor}
-            strokeWidth={1.5}
-            markerEnd="url(#ah)"
-          />
-          <rect
-            x={SIDE_X}
-            y={row2Y + 8}
-            width={SIDE_W}
-            height={ROW_H - 16}
-            rx={6}
-            fill={exclFill}
-            stroke={exclStroke}
-            strokeWidth={1.5}
-          />
-          <text
-            x={SIDE_X + SIDE_W / 2}
-            y={row2Y + 28}
-            textAnchor="middle"
-            fontSize={11}
-            fontWeight="bold"
-            fill="#7f1d1d"
-          >
-            Records excluded
-          </text>
-          <text
-            x={SIDE_X + SIDE_W / 2}
-            y={row2Y + 51}
-            textAnchor="middle"
-            fontSize={14}
-            fontWeight="bold"
-            fill={exclStroke}
-          >
-            n = {taExcluded.toLocaleString()}
-          </text>
-
-          {/* Down arrow: screening → eligibility */}
-          <line
-            x1={MAIN_X + MAIN_W / 2}
-            y1={row2Y + ROW_H}
-            x2={MAIN_X + MAIN_W / 2}
-            y2={row3Y - 6}
-            stroke={arrowColor}
-            strokeWidth={1.5}
-            markerEnd="url(#ah)"
-          />
-
-          {/* ── Row 3: Eligibility ────────────────────────────────────── */}
-          <rect
-            x={MAIN_X}
-            y={row3Y}
-            width={MAIN_W}
-            height={ROW_H}
-            rx={6}
-            fill={screenFill}
-            stroke={screenStroke}
-            strokeWidth={1.5}
-          />
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row3Y + 24}
-            textAnchor="middle"
-            fontSize={12}
-            fontWeight="bold"
-            fill="#14532d"
-          >
-            Full-text articles assessed
-          </text>
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row3Y + 46}
-            textAnchor="middle"
-            fontSize={14}
-            fontWeight="bold"
-            fill={screenStroke}
-          >
-            n = {ftScreened.toLocaleString()}
-          </text>
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row3Y + 65}
-            textAnchor="middle"
-            fontSize={10}
-            fill={mutedText}
-          >
-            (eligibility)
-          </text>
-
-          {/* Right arrow → excluded at FT */}
-          <line
-            x1={MAIN_X + MAIN_W}
-            y1={row3Y + ROW_H / 2}
-            x2={SIDE_X - 6}
-            y2={row3Y + ROW_H / 2}
-            stroke={arrowColor}
-            strokeWidth={1.5}
-            markerEnd="url(#ah)"
-          />
-          <rect
-            x={SIDE_X}
-            y={row3Y + 8}
-            width={SIDE_W}
-            height={ROW_H - 16}
-            rx={6}
-            fill={exclFill}
-            stroke={exclStroke}
-            strokeWidth={1.5}
-          />
-          <text
-            x={SIDE_X + SIDE_W / 2}
-            y={row3Y + 28}
-            textAnchor="middle"
-            fontSize={11}
-            fontWeight="bold"
-            fill="#7f1d1d"
-          >
-            Articles excluded
-          </text>
-          <text
-            x={SIDE_X + SIDE_W / 2}
-            y={row3Y + 51}
-            textAnchor="middle"
-            fontSize={14}
-            fontWeight="bold"
-            fill={exclStroke}
-          >
-            n = {ftExcluded.toLocaleString()}
-          </text>
-
-          {/* Down arrow: eligibility → included */}
-          <line
-            x1={MAIN_X + MAIN_W / 2}
-            y1={row3Y + ROW_H}
-            x2={MAIN_X + MAIN_W / 2}
-            y2={row4Y - 6}
-            stroke={arrowColor}
-            strokeWidth={1.5}
-            markerEnd="url(#ah)"
-          />
-
-          {/* ── Row 4: Included ───────────────────────────────────────── */}
-          <rect
-            x={MAIN_X}
-            y={row4Y}
-            width={MAIN_W}
-            height={ROW_H}
-            rx={6}
-            fill="#dcfce7"
-            stroke="#16a34a"
-            strokeWidth={2}
-          />
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row4Y + 24}
-            textAnchor="middle"
-            fontSize={12}
-            fontWeight="bold"
-            fill="#14532d"
-          >
-            Studies included in review
-          </text>
-          <text
-            x={MAIN_X + MAIN_W / 2}
-            y={row4Y + 48}
-            textAnchor="middle"
-            fontSize={16}
-            fontWeight="bold"
-            fill="#16a34a"
-          >
-            n = {ftIncluded.toLocaleString()}
-          </text>
-          {extracted > 0 && (
-            <text
-              x={MAIN_X + MAIN_W / 2}
-              y={row4Y + 70}
-              textAnchor="middle"
-              fontSize={10}
-              fill={mutedText}
-            >
-              Data extracted: n = {extracted.toLocaleString()}
+            <text x={sxc} y={R.dd + 58} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.excl.stroke}>
+              n = {duplicatesRemoved.toLocaleString()}
             </text>
-          )}
+          </Box>
+
+          <DownArrow x={cx} y1={R.dd + DD_H} y2={R.ta} />
+
+          {/* ══════════════════════════════════════════════════════════
+              ROW 3 — Title & Abstract Screening
+          ══════════════════════════════════════════════════════════ */}
+          <Box x={MAIN_X} y={R.ta} w={MAIN_W} h={TA_H} fill={C.screen.fill} stroke={C.screen.stroke}>
+            <text x={cx} y={R.ta + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
+              Records screened
+            </text>
+            <text x={cx} y={R.ta + 44} textAnchor="middle" fontSize={10} fill={C.muted}>(title &amp; abstract)</text>
+            <text x={cx} y={R.ta + 66} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.screen.stroke}>
+              n = {taScreened.toLocaleString()}
+            </text>
+            {taNotScreened > 0 && (
+              <text x={cx} y={R.ta + 82} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+                awaiting screening: n = {taNotScreened.toLocaleString()}
+              </text>
+            )}
+            {taUncertain > 0 && (
+              <text x={cx} y={R.ta + (taNotScreened > 0 ? 95 : 82)} textAnchor="middle" fontSize={9.5} fill="#92400e">
+                uncertain: n = {taUncertain.toLocaleString()}
+              </text>
+            )}
+          </Box>
+
+          {/* TA exclusion side box */}
+          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ta + TA_SIDE_H / 2} />
+          <Box x={SIDE_X} y={R.ta} w={SIDE_W} h={TA_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
+            <text x={sxc} y={R.ta + 20} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+              Records excluded (TA)
+            </text>
+            <text x={sxc} y={R.ta + 38} textAnchor="middle" fontSize={14} fontWeight="700" fill={C.excl.stroke}>
+              n = {taExcluded.toLocaleString()}
+            </text>
+            <ReasonLines reasons={taReasons} boxY={R.ta} />
+          </Box>
+
+          <DownArrow x={cx} y1={R.ta + TA_H} y2={R.ft} />
+
+          {/* ══════════════════════════════════════════════════════════
+              ROW 4 — Full-text Eligibility
+          ══════════════════════════════════════════════════════════ */}
+          <Box x={MAIN_X} y={R.ft} w={MAIN_W} h={FT_H} fill={C.screen.fill} stroke={C.screen.stroke}>
+            <text x={cx} y={R.ft + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
+              Full-text articles assessed
+            </text>
+            <text x={cx} y={R.ft + 42} textAnchor="middle" fontSize={10} fill={C.muted}>(eligibility)</text>
+            <text x={cx} y={R.ft + 64} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.screen.stroke}>
+              n = {ftScreened.toLocaleString()}
+            </text>
+            {ftAwaiting > 0 && (
+              <text x={cx} y={R.ft + 80} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+                awaiting review: n = {ftAwaiting.toLocaleString()}
+              </text>
+            )}
+          </Box>
+
+          {/* FT exclusion side box */}
+          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ft + FT_SIDE_H / 2} />
+          <Box x={SIDE_X} y={R.ft} w={SIDE_W} h={FT_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
+            <text x={sxc} y={R.ft + 20} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+              Articles excluded (FT)
+            </text>
+            <text x={sxc} y={R.ft + 38} textAnchor="middle" fontSize={14} fontWeight="700" fill={C.excl.stroke}>
+              n = {ftExcluded.toLocaleString()}
+            </text>
+            <ReasonLines reasons={ftReasons} boxY={R.ft} />
+          </Box>
+
+          <DownArrow x={cx} y1={R.ft + FT_H} y2={R.inc} />
+
+          {/* ══════════════════════════════════════════════════════════
+              ROW 5 — Included
+          ══════════════════════════════════════════════════════════ */}
+          <Box x={MAIN_X} y={R.inc} w={MAIN_W} h={IN_H} fill={C.incl.fill} stroke={C.incl.stroke}>
+            <text x={cx} y={R.inc + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.incl.head}>
+              Studies included in review
+            </text>
+            <text x={cx} y={R.inc + 54} textAnchor="middle" fontSize={22} fontWeight="800" fill={C.incl.stroke}>
+              n = {ftIncluded.toLocaleString()}
+            </text>
+            {extracted > 0 && (
+              <text x={cx} y={R.inc + 76} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+                data extracted: n = {extracted.toLocaleString()}
+              </text>
+            )}
+          </Box>
         </svg>
       </div>
 
-      <p style={{ fontSize: "0.78rem", color: "#9ca3af", marginTop: "1rem", maxWidth: 680 }}>
-        Counts reflect current screening progress and update automatically. Cross-source
-        duplicate detection is managed via the Overlap system.
+      <p style={{ fontSize: "0.78rem", color: "#94a3b8", marginTop: "1rem", maxWidth: 680 }}>
+        Counts reflect current screening progress. "Duplicates removed" reflects within-source
+        deduplication; cross-source overlaps are managed via the Overlap system.
       </p>
     </div>
   );

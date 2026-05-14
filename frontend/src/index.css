@@ -727,6 +727,82 @@ select {
   overflow: hidden;
 }
 
+/* ── Project tree layout ─────────────────────────────────────────────────── */
+.project-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.project-tree-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sub-project rows container */
+.project-children {
+  display: flex;
+  flex-direction: column;
+  margin-left: 1.5rem;
+  padding-left: 0;
+}
+
+/* Each sub-project row = tree line + card side by side */
+.project-child-row {
+  display: flex;
+  align-items: stretch;
+  min-height: 68px;
+}
+
+/* The vertical + horizontal connector lines */
+.project-tree-line {
+  position: relative;
+  width: 28px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.project-tree-vert {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 2px;
+  background: var(--border);
+  transform: translateX(-50%);
+}
+.project-tree-horiz {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 2px;
+  background: var(--border);
+}
+
+/* Sub-project card — compact, indented */
+.project-child-card {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: var(--radius);
+  padding: 0.7rem 1rem;
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 6px 0;
+  transition: box-shadow .15s, border-color .15s;
+  box-shadow: var(--shadow-sm);
+}
+.project-child-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--brand);
+  text-decoration: none;
+}
+
 /* ── Records toolbar ─────────────────────────────────────────────────────── */
 .records-toolbar {
   display: flex;

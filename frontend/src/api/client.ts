@@ -275,6 +275,15 @@ export interface ProjectListItem extends Project {
   parent_project_id: string | null;
 }
 
+export interface PrismaStats {
+  by_source: { name: string; count: number }[];
+  total_identified: number;
+  total_unique: number;
+  duplicates_removed: number;
+  ta_exclude_reasons: { reason_code: string | null; count: number }[];
+  ft_exclude_reasons: { reason_code: string | null; count: number }[];
+}
+
 export const projectsApi = {
   list: () => api.get<ProjectListItem[]>("/projects"),
   get: (id: string) => api.get<ProjectDetail>(`/projects/${id}`),
@@ -303,6 +312,8 @@ export const projectsApi = {
     api.get<SubProjectSummary[]>(`/projects/${parentId}/sub-projects`),
   deleteProject: (id: string) =>
     api.delete(`/projects/${id}`),
+  getPrismaStats: (id: string) =>
+    api.get<PrismaStats>(`/projects/${id}/prisma-stats`),
 };
 
 // ── Concept extraction API ────────────────────────────────────────────────────
@@ -758,13 +769,26 @@ export interface ScreeningSource {
   record_count: number;
   ta_screened: number;
   ta_included: number;
+  ta_excluded: number;
+  ta_uncertain: number;
   ft_screened: number;
   ft_included: number;
   extracted_count: number;
+  /** True when this source was imported from an LLM screening run. */
+  is_llm_import: boolean;
   /** True when this corpus's extraction has reached the saturation threshold. */
   saturated: boolean;
   /** Number of consecutive no-novelty extractions when saturated; null otherwise. */
   saturated_at: number | null;
+}
+
+export interface LlmScreeningNote {
+  ta_decision?: string | null;
+  ta_reason?: string | null;
+  ft_decision?: string | null;
+  ft_reason?: string | null;
+  model?: string | null;
+  run_id?: string | null;
 }
 
 export interface ScreeningNextItem {
@@ -787,6 +811,8 @@ export interface ScreeningNextItem {
   queue_position?: number | null;
   queue_total?: number | null;
   queue_seed?: number | null;
+  /** LLM pre-screening note embedded by sub-project fork, if any */
+  llm_screening?: LlmScreeningNote | null;
 }
 
 export interface HighlightRect {
@@ -1435,6 +1461,7 @@ export interface LlmResultResponse {
   project_id: string;
   record_id: string | null;
   cluster_id: string | null;
+  title: string | null;
   ta_decision: string | null;
   ta_reason: string | null;
   ft_decision: string | null;
@@ -1616,9 +1643,9 @@ export const llmScreeningApi = {
   createSubproject: (
     projectId: string,
     runId: string,
-    body: { name: string; description?: string; stage: "ta" | "ft" }
+    body: { name: string; description?: string; categories: Array<"include" | "uncertain" | "exclude"> }
   ) =>
-    api.post<{ project_id: string; project_name: string; imported_count: number }>(
+    api.post<{ project_id: string; project_name: string; imported_count: number; corpora_created: number }>(
       `/projects/${projectId}/llm-screening/runs/${runId}/create-subproject`,
       body
     ),

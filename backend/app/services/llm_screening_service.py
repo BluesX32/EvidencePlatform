@@ -247,6 +247,11 @@ DEFAULT_MULTI_PIPELINE: list[dict] = [
 ]
 
 
+def _norm_decision(val: Optional[str]) -> Optional[str]:
+    """Normalize LLM decision strings to lowercase — guards against 'Include' vs 'include'."""
+    return val.lower().strip() if val else None
+
+
 def _cost_per_token(model: str) -> tuple[float, float]:
     """Return (input_price_per_token, output_price_per_token) in USD."""
     return _PRICING.get(model, _PRICING[_DEFAULT_MODEL])
@@ -509,23 +514,28 @@ async def resume_run(
     return run
 
 
+_CATEGORY_LABELS = {
+    "include": "LLM Included",
+    "uncertain": "LLM Uncertain",
+    "exclude": "LLM Excluded",
+}
+
+
 async def create_subproject_from_run(
     db: AsyncSession,
     project_id: uuid.UUID,
     run_id: uuid.UUID,
     name: str,
     description: Optional[str],
-    stage: str,
+    categories: list,
     triggered_by: uuid.UUID,
 ) -> dict:
-    """Fork an LLM run's included papers into a new child project.
+    """Fork an LLM run's papers into a new child project.
 
-    stage: "ta"  → records where ta_decision == "include"
-           "ft"  → records where ft_decision == "include"
-
-    Copies records + pre-populates ScreeningDecisions and ExtractionRecords
-    from the LLM output.  The LLM's reasons are embedded in raw_data under
-    the "_llm_screening" key so they survive any re-import workflow.
+    categories: list of ta_decision values to import, e.g. ["include", "uncertain"].
+    Each category becomes its own Source corpus in the sub-project so humans can
+    screen them independently.  All ScreeningDecisions and ExtractionRecords are
+    pre-populated so the PRISMA flow is complete from day one.
     """
     run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
     if run is None or run.project_id != project_id:
@@ -533,24 +543,25 @@ async def create_subproject_from_run(
     if run.status != "completed":
         raise ValueError("Only completed runs can be exported as a sub-project")
 
-    # Load included results
-    if stage == "ft":
-        stage_filter = LlmScreeningResult.ft_decision == "include"
-    else:
-        stage_filter = LlmScreeningResult.ta_decision == "include"
-
-    results = (
+    # Fetch all results for the requested categories in one query
+    all_results = (
         await db.execute(
             select(LlmScreeningResult).where(
                 LlmScreeningResult.run_id == run_id,
-                stage_filter,
                 LlmScreeningResult.record_id.isnot(None),
+                LlmScreeningResult.ta_decision.in_(categories),
             )
         )
     ).scalars().all()
 
-    if not results:
-        raise ValueError(f"No {'FT' if stage == 'ft' else 'TA'}-included records in this run")
+    if not all_results:
+        raise ValueError("No records match the selected categories in this run")
+
+    # Group by ta_decision so we create one source per category
+    by_category: dict = {cat: [] for cat in categories}
+    for r in all_results:
+        if r.ta_decision in by_category:
+            by_category[r.ta_decision].append(r)
 
     parent: Optional[Project] = await db.get(Project, project_id)
 
@@ -567,121 +578,132 @@ async def create_subproject_from_run(
     db.add(child)
     await db.flush()
 
-    # Single source + synthetic completed import job
-    source = Source(project_id=child.id, name="LLM Screening Import")
-    db.add(source)
-    await db.flush()
-
-    import_job = ImportJob(
-        project_id=child.id,
-        source_id=source.id,
-        created_by=triggered_by,
-        filename=f"llm_run_{run_id}",
-        file_format="llm_import",
-        status="completed",
-        record_count=len(results),
-        completed_at=datetime.now(tz=timezone.utc),
-    )
-    db.add(import_job)
-    await db.flush()
-
     imported = 0
-    for result in results:
-        orig: Optional[Record] = await db.get(Record, result.record_id)
-        if orig is None:
+
+    for cat in categories:
+        results = by_category.get(cat, [])
+        if not results:
             continue
 
-        # Get raw_data from any existing RecordSource (for norm fields)
-        rs_orig = (
-            await db.execute(
-                select(RecordSource)
-                .where(RecordSource.record_id == orig.id)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-
-        # Embed LLM annotations in raw_data for provenance
-        raw = dict(rs_orig.raw_data) if rs_orig else {}
-        raw["_llm_screening"] = {
-            "run_id": str(run_id),
-            "model": run.model,
-            "ta_decision": result.ta_decision,
-            "ta_reason": result.ta_reason,
-            "ft_decision": result.ft_decision,
-            "ft_reason": result.ft_reason,
-            "matched_codes": result.matched_codes,
-            "new_concepts": result.new_concepts,
-        }
-
-        # Copy record into child project
-        new_rec = Record(
-            project_id=child.id,
-            normalized_doi=orig.normalized_doi,
-            match_key=orig.match_key,
-            match_basis=orig.match_basis,
-            title=orig.title,
-            abstract=orig.abstract,
-            authors=orig.authors,
-            year=orig.year,
-            journal=orig.journal,
-            volume=orig.volume,
-            issue=orig.issue,
-            pages=orig.pages,
-            doi=orig.doi,
-            issn=orig.issn,
-            keywords=orig.keywords,
-            source_format=orig.source_format,
-        )
-        db.add(new_rec)
+        source_label = _CATEGORY_LABELS.get(cat, f"LLM {cat.title()}")
+        source = Source(project_id=child.id, name=source_label)
+        db.add(source)
         await db.flush()
 
-        db.add(RecordSource(
-            record_id=new_rec.id,
+        import_job = ImportJob(
+            project_id=child.id,
             source_id=source.id,
-            import_job_id=import_job.id,
-            raw_data=raw,
-            norm_title=rs_orig.norm_title if rs_orig else None,
-            norm_first_author=rs_orig.norm_first_author if rs_orig else None,
-            match_year=rs_orig.match_year if rs_orig else None,
-            match_doi=rs_orig.match_doi if rs_orig else None,
-        ))
+            created_by=triggered_by,
+            filename=f"llm_run_{run_id}_{cat}",
+            file_format="llm_import",
+            status="completed",
+            record_count=len(results),
+            completed_at=datetime.now(tz=timezone.utc),
+        )
+        db.add(import_job)
+        await db.flush()
 
-        # Pre-populate TA screening decision (reviewer_id=NULL = LLM)
-        if result.ta_decision in ("include", "exclude", "uncertain"):
-            db.add(ScreeningDecision(
+        for result in results:
+            orig: Optional[Record] = await db.get(Record, result.record_id)
+            if orig is None:
+                continue
+
+            # Get raw_data from any existing RecordSource (for norm fields)
+            rs_orig = (
+                await db.execute(
+                    select(RecordSource)
+                    .where(RecordSource.record_id == orig.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+            # Embed LLM annotations in raw_data for provenance
+            raw = dict(rs_orig.raw_data) if rs_orig else {}
+            raw["_llm_screening"] = {
+                "run_id": str(run_id),
+                "model": run.model,
+                "ta_decision": result.ta_decision,
+                "ta_reason": result.ta_reason,
+                "ft_decision": result.ft_decision,
+                "ft_reason": result.ft_reason,
+                "matched_codes": result.matched_codes,
+                "new_concepts": result.new_concepts,
+            }
+
+            # Copy record into child project
+            new_rec = Record(
                 project_id=child.id,
+                normalized_doi=orig.normalized_doi,
+                match_key=orig.match_key,
+                match_basis=orig.match_basis,
+                title=orig.title,
+                abstract=orig.abstract,
+                authors=orig.authors,
+                year=orig.year,
+                journal=orig.journal,
+                volume=orig.volume,
+                issue=orig.issue,
+                pages=orig.pages,
+                doi=orig.doi,
+                issn=orig.issn,
+                keywords=orig.keywords,
+                source_format=orig.source_format,
+            )
+            db.add(new_rec)
+            await db.flush()
+
+            db.add(RecordSource(
                 record_id=new_rec.id,
-                cluster_id=None,
-                stage="TA",
-                decision=result.ta_decision,
-                reviewer_id=None,
+                source_id=source.id,
+                import_job_id=import_job.id,
+                raw_data=raw,
+                norm_title=rs_orig.norm_title if rs_orig else None,
+                norm_first_author=rs_orig.norm_first_author if rs_orig else None,
+                match_year=rs_orig.match_year if rs_orig else None,
+                match_doi=rs_orig.match_doi if rs_orig else None,
             ))
 
-        # Pre-populate FT decision if present
-        if result.ft_decision in ("include", "exclude", "uncertain"):
-            db.add(ScreeningDecision(
-                project_id=child.id,
-                record_id=new_rec.id,
-                cluster_id=None,
-                stage="FT",
-                decision=result.ft_decision,
-                reviewer_id=None,
-            ))
+            # Pre-populate TA decision (reviewer_id=NULL = LLM)
+            if result.ta_decision in ("include", "exclude", "uncertain"):
+                db.add(ScreeningDecision(
+                    project_id=child.id,
+                    record_id=new_rec.id,
+                    cluster_id=None,
+                    stage="TA",
+                    decision=result.ta_decision,
+                    reviewer_id=None,
+                ))
 
-        # Pre-populate extraction if available
-        if result.extracted_json:
-            db.add(ExtractionRecord(
-                project_id=child.id,
-                record_id=new_rec.id,
-                cluster_id=None,
-                extracted_json=result.extracted_json,
-                reviewer_id=None,
-            ))
+            # Pre-populate FT decision if present
+            if result.ft_decision in ("include", "exclude", "uncertain"):
+                db.add(ScreeningDecision(
+                    project_id=child.id,
+                    record_id=new_rec.id,
+                    cluster_id=None,
+                    stage="FT",
+                    decision=result.ft_decision,
+                    reviewer_id=None,
+                ))
 
-        imported += 1
+            # Pre-populate extraction if available
+            if result.extracted_json:
+                db.add(ExtractionRecord(
+                    project_id=child.id,
+                    record_id=new_rec.id,
+                    cluster_id=None,
+                    extracted_json=result.extracted_json,
+                    reviewer_id=None,
+                ))
+
+            imported += 1
 
     await db.commit()
-    return {"project_id": str(child.id), "project_name": child.name, "imported_count": imported}
+    return {
+        "project_id": str(child.id),
+        "project_name": child.name,
+        "imported_count": imported,
+        "corpora_created": len([c for c in categories if by_category.get(c)]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1496,9 +1518,9 @@ async def _screen_one_record(
         project_id=project_id,
         record_id=record.id,
         cluster_id=None,
-        ta_decision=llm_output.get("ta_decision"),
+        ta_decision=_norm_decision(llm_output.get("ta_decision")),
         ta_reason=llm_output.get("ta_reason"),
-        ft_decision=llm_output.get("ft_decision"),
+        ft_decision=_norm_decision(llm_output.get("ft_decision")),
         ft_reason=llm_output.get("ft_reason"),
         matched_codes=llm_output.get("matched_codes") or [],
         new_concepts=llm_output.get("new_concepts") or [],
@@ -1665,7 +1687,7 @@ async def _do_execute_run_ta_only(
                         project_id=project_id,
                         record_id=record.id,
                         cluster_id=None,
-                        ta_decision=llm_output.get("ta_decision"),
+                        ta_decision=_norm_decision(llm_output.get("ta_decision")),
                         ta_reason=llm_output.get("ta_reason"),
                         ft_decision=None,
                         ft_reason=None,

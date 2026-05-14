@@ -35,8 +35,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
+from app.models.overlap_cluster import OverlapCluster
+from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.project import Project
 from app.models.record import Record
+from app.models.record_source import RecordSource
 from app.models.screening_decision import ScreeningDecision
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
@@ -156,6 +159,7 @@ class LlmResultResponse(BaseModel):
     project_id: str
     record_id: Optional[str]
     cluster_id: Optional[str]
+    title: Optional[str]
     ta_decision: Optional[str]
     ta_reason: Optional[str]
     ft_decision: Optional[str]
@@ -253,7 +257,7 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
     )
 
 
-def _result_to_response(res: LlmScreeningResult) -> LlmResultResponse:
+def _result_to_response(res: LlmScreeningResult, title: Optional[str] = None) -> LlmResultResponse:
     def _dt(val: Optional[datetime]) -> Optional[str]:
         return val.isoformat() if val is not None else None
 
@@ -263,6 +267,7 @@ def _result_to_response(res: LlmScreeningResult) -> LlmResultResponse:
         project_id=str(res.project_id),
         record_id=str(res.record_id) if res.record_id else None,
         cluster_id=str(res.cluster_id) if res.cluster_id else None,
+        title=title,
         ta_decision=res.ta_decision,
         ta_reason=res.ta_reason,
         ft_decision=res.ft_decision,
@@ -551,11 +556,20 @@ async def list_results(
         count_stmt = count_stmt.where(LlmScreeningResult.ta_decision == ta_decision)
     total: int = (await db.execute(count_stmt)).scalar_one()
 
+    # Batch-fetch titles for record-based results
+    record_ids = [r.record_id for r in results if r.record_id is not None]
+    title_map: dict = {}
+    if record_ids:
+        recs = (await db.execute(
+            select(Record.id, Record.title).where(Record.id.in_(record_ids))
+        )).all()
+        title_map = {row.id: row.title for row in recs}
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_result_to_response(r) for r in results],
+        "items": [_result_to_response(r, title=title_map.get(r.record_id) if r.record_id else None) for r in results],
     }
 
 
@@ -693,10 +707,43 @@ async def export_run_csv(
 
 
 def _cohen_kappa_simple(agreements: int, total: int, p_e: float) -> Optional[float]:
-    """Cohen's kappa given raw counts."""
+    """Cohen's kappa: κ = (p_o - p_e) / (1 - p_e)."""
     if total == 0:
         return None
     p_o = agreements / total
+    denom = 1.0 - p_e
+    if denom == 0:
+        return 1.0 if p_o == 1.0 else 0.0
+    return (p_o - p_e) / denom
+
+
+def _cohen_kappa_3class(items: list, llm_key: str, human_key: str) -> Optional[float]:
+    """3-class Cohen's kappa (include / uncertain / exclude).
+
+    κ = (p_o - p_e) / (1 - p_e)
+
+    p_o = fraction of papers where LLM and human gave the exact same decision
+    p_e = Σ_k (p_LLM,k × p_Human,k)   [expected agreement by chance]
+          where k ∈ {include, uncertain, exclude}
+          and p_X,k = fraction of rater X's decisions in category k
+
+    Only papers where BOTH raters made a decision are counted (N).
+    """
+    cats = ["include", "uncertain", "exclude"]
+    compared = [i for i in items if i[llm_key] and i[human_key]]
+    n = len(compared)
+    if n == 0:
+        return None
+
+    agreements = sum(1 for i in compared if i[llm_key] == i[human_key])
+    p_o = agreements / n
+
+    p_e = 0.0
+    for cat in cats:
+        p_llm = sum(1 for i in compared if i[llm_key] == cat) / n
+        p_human = sum(1 for i in compared if i[human_key] == cat) / n
+        p_e += p_llm * p_human
+
     denom = 1.0 - p_e
     if denom == 0:
         return 1.0 if p_o == 1.0 else 0.0
@@ -760,7 +807,31 @@ async def compare_with_humans(
 
     # Load human decisions for the same records
     record_ids = [r.record_id for r in llm_results if r.record_id]
-    human_decisions = (
+
+    # Some records were screened as part of a cross-source cluster — decisions are stored
+    # against cluster_id in that case. Build record→cluster map first.
+    cluster_rows = (
+        await db.execute(
+            select(RecordSource.record_id, OverlapClusterMember.cluster_id)
+            .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+            .where(
+                OverlapCluster.project_id == project.id,
+                OverlapCluster.scope == "cross_source",
+                RecordSource.record_id.in_(record_ids),
+            )
+        )
+    ).all()
+    # record_id → cluster_id (first cluster wins, consistent with screening service)
+    record_to_cluster: dict[uuid.UUID, uuid.UUID] = {}
+    for row in cluster_rows:
+        if row.record_id not in record_to_cluster:
+            record_to_cluster[row.record_id] = row.cluster_id
+
+    cluster_ids = list(set(record_to_cluster.values()))
+
+    # Fetch record-based decisions
+    record_decisions = (
         await db.execute(
             select(ScreeningDecision)
             .where(
@@ -772,15 +843,44 @@ async def compare_with_humans(
         )
     ).scalars().all()
 
+    # Fetch cluster-based decisions (for records that were screened as a cluster)
+    cluster_decisions = []
+    if cluster_ids:
+        cluster_decisions = (
+            await db.execute(
+                select(ScreeningDecision)
+                .where(
+                    ScreeningDecision.project_id == project.id,
+                    ScreeningDecision.cluster_id.in_(cluster_ids),
+                    ScreeningDecision.reviewer_id.isnot(None),
+                )
+                .order_by(ScreeningDecision.created_at.desc())
+            )
+        ).scalars().all()
+
+    # cluster_id → {stage: decision}
+    cluster_decision_map: dict[uuid.UUID, dict[str, str]] = {}
+    for hd in cluster_decisions:
+        cid = hd.cluster_id
+        if cid not in cluster_decision_map:
+            cluster_decision_map[cid] = {}
+        if hd.stage not in cluster_decision_map[cid]:
+            cluster_decision_map[cid][hd.stage] = hd.decision.lower().strip() if hd.decision else hd.decision
+
     # Build per-record human decision map: {record_id: {stage: decision}}
+    # Prefers record-level decisions; falls back to cluster-level decisions.
     human_map: dict[uuid.UUID, dict[str, str]] = {}
-    for hd in human_decisions:
+    for hd in record_decisions:
         rid = hd.record_id
         if rid not in human_map:
             human_map[rid] = {}
         # Keep most-recent decision per stage (results ordered desc already)
         if hd.stage not in human_map[rid]:
-            human_map[rid][hd.stage] = hd.decision
+            human_map[rid][hd.stage] = hd.decision.lower().strip() if hd.decision else hd.decision
+    # Fill in cluster decisions for records that have no direct record-level decision
+    for rid, cid in record_to_cluster.items():
+        if rid not in human_map and cid in cluster_decision_map:
+            human_map[rid] = cluster_decision_map[cid]
 
     # Load record titles for display
     recs = (
@@ -788,12 +888,8 @@ async def compare_with_humans(
     ).scalars().all()
     record_title_map = {r.id: r.title for r in recs}
 
-    # Build comparison items
+    # Build comparison items — exact 3-way match for ta_agrees / ft_agrees
     items = []
-    ta_compared = ta_agree = 0
-    ft_compared = ft_agree = 0
-    ta_include_rate_llm = ta_include_rate_human = 0.0
-    ft_include_rate_llm = ft_include_rate_human = 0.0
 
     for res in llm_results:
         rid = res.record_id
@@ -802,25 +898,17 @@ async def compare_with_humans(
 
         human_ta = human_map.get(rid, {}).get("TA")
         human_ft = human_map.get(rid, {}).get("FT")
-        llm_ta = res.ta_decision
-        llm_ft = res.ft_decision
+        llm_ta = res.ta_decision.lower().strip() if res.ta_decision else res.ta_decision
+        llm_ft = res.ft_decision.lower().strip() if res.ft_decision else res.ft_decision
 
+        # Exact agreement: include==include, uncertain==uncertain, exclude==exclude
         ta_agrees: Optional[bool] = None
         if llm_ta and human_ta:
-            # Normalise uncertain → treat as exclude for kappa purposes
-            llm_ta_norm = "include" if llm_ta == "include" else "exclude"
-            ta_agrees = llm_ta_norm == human_ta
-            ta_compared += 1
-            if ta_agrees:
-                ta_agree += 1
+            ta_agrees = (llm_ta == human_ta)
 
         ft_agrees: Optional[bool] = None
         if llm_ft and human_ft:
-            llm_ft_norm = "include" if llm_ft == "include" else "exclude"
-            ft_agrees = llm_ft_norm == human_ft
-            ft_compared += 1
-            if ft_agrees:
-                ft_agree += 1
+            ft_agrees = (llm_ft == human_ft)
 
         items.append(
             {
@@ -835,44 +923,26 @@ async def compare_with_humans(
             }
         )
 
-    # Compute kappa — expected agreement under independence
-    def _p_e(n_agree: int, n_both: int, pA: float, pB: float) -> float:
-        return pA * pB + (1 - pA) * (1 - pB)
+    # Tallies for % agreement
+    ta_compared = sum(1 for i in items if i["ta_agrees"] is not None)
+    ta_agree    = sum(1 for i in items if i["ta_agrees"] is True)
+    ft_compared = sum(1 for i in items if i["ft_agrees"] is not None)
+    ft_agree    = sum(1 for i in items if i["ft_agrees"] is True)
 
+    # 3-class Cohen's kappa (include / uncertain / exclude)
     ta_pct: Optional[float] = None
     kappa_ta: Optional[float] = None
     if ta_compared > 0:
         ta_pct = round(ta_agree / ta_compared * 100, 1)
-        # For kappa: both raters' include rate on the compared set
-        llm_ta_inc = sum(
-            1 for i in items if i["llm_ta"] == "include" and i["human_ta"] is not None
-        )
-        human_ta_inc = sum(
-            1 for i in items if i["human_ta"] == "include" and i["llm_ta"] is not None
-        )
-        p_llm = llm_ta_inc / ta_compared
-        p_human = human_ta_inc / ta_compared
-        p_e = _p_e(ta_agree, ta_compared, p_llm, p_human)
-        kappa_ta = _cohen_kappa_simple(ta_agree, ta_compared, p_e)
-        if kappa_ta is not None:
-            kappa_ta = round(kappa_ta, 3)
+        raw = _cohen_kappa_3class(items, "llm_ta", "human_ta")
+        kappa_ta = round(raw, 3) if raw is not None else None
 
     ft_pct: Optional[float] = None
     kappa_ft: Optional[float] = None
     if ft_compared > 0:
         ft_pct = round(ft_agree / ft_compared * 100, 1)
-        llm_ft_inc = sum(
-            1 for i in items if i["llm_ft"] == "include" and i["human_ft"] is not None
-        )
-        human_ft_inc = sum(
-            1 for i in items if i["human_ft"] == "include" and i["llm_ft"] is not None
-        )
-        p_llm = llm_ft_inc / ft_compared
-        p_human = human_ft_inc / ft_compared
-        p_e = _p_e(ft_agree, ft_compared, p_llm, p_human)
-        kappa_ft = _cohen_kappa_simple(ft_agree, ft_compared, p_e)
-        if kappa_ft is not None:
-            kappa_ft = round(kappa_ft, 3)
+        raw = _cohen_kappa_3class(items, "llm_ft", "human_ft")
+        kappa_ft = round(raw, 3) if raw is not None else None
 
     return {
         "stats": {
@@ -1033,10 +1103,13 @@ async def resume_run(
 # ---------------------------------------------------------------------------
 
 
+_VALID_CATEGORIES = {"include", "uncertain", "exclude"}
+
+
 class CreateSubprojectBody(BaseModel):
     name: str
     description: Optional[str] = None
-    stage: str = "ta"  # "ta" | "ft"
+    categories: list = ["include"]  # subset of ["include", "uncertain", "exclude"]
 
 
 @router.post(
@@ -1050,12 +1123,12 @@ async def create_subproject(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """Fork LLM-included papers into a new child project, pre-annotated with LLM output."""
+    """Fork LLM-screened papers into a child project — one corpus per decision category."""
     project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
     run = await _require_run(run_id, project, db)
 
-    if body.stage not in ("ta", "ft"):
-        raise HTTPException(400, "stage must be 'ta' or 'ft'")
+    if not body.categories or not all(c in _VALID_CATEGORIES for c in body.categories):
+        raise HTTPException(400, "categories must be a non-empty list of 'include', 'uncertain', 'exclude'")
 
     try:
         result = await svc.create_subproject_from_run(
@@ -1064,7 +1137,7 @@ async def create_subproject(
             run_id=run.id,
             name=body.name,
             description=body.description,
-            stage=body.stage,
+            categories=body.categories,
             triggered_by=user.id,
         )
     except ValueError as exc:

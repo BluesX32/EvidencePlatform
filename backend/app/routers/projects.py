@@ -3,10 +3,14 @@ from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.record_source import RecordSource
+from app.models.screening_decision import ScreeningDecision
+from app.models.source import Source
 from app.models.user import User
 from app.repositories.import_repo import ImportRepo
 from app.repositories.project_repo import ProjectRepo
@@ -436,3 +440,77 @@ async def list_sub_projects_endpoint(
             n_per_corpus=sp_sample.n_per_corpus if sp_sample else None,
         ))
     return result
+
+
+@router.get("/{project_id}/prisma-stats")
+async def get_prisma_stats(
+    project_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Return PRISMA flow counts: per-source raw totals, dedup, and exclusion reason breakdowns."""
+    await _get_project_and_role(db, project_id, current_user.id)
+
+    # Per-source raw record counts (record_sources rows = one per source claim)
+    source_rows = (
+        await db.execute(
+            select(Source.name, func.count(RecordSource.id).label("cnt"))
+            .join(RecordSource, RecordSource.source_id == Source.id)
+            .where(Source.project_id == project_id)
+            .group_by(Source.id, Source.name)
+            .order_by(Source.name)
+        )
+    ).all()
+    by_source = [{"name": r.name, "count": r.cnt} for r in source_rows]
+    total_identified = sum(s["count"] for s in by_source)
+
+    # Unique canonical records after within-source dedup
+    total_unique: int = (
+        await db.execute(
+            select(func.count(func.distinct(RecordSource.record_id)))
+            .join(Source, Source.id == RecordSource.source_id)
+            .where(Source.project_id == project_id)
+        )
+    ).scalar() or 0
+    duplicates_removed = total_identified - total_unique
+
+    # TA exclusion reasons
+    ta_reason_rows = (
+        await db.execute(
+            select(ScreeningDecision.reason_code, func.count().label("cnt"))
+            .where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.stage == "TA",
+                ScreeningDecision.decision == "exclude",
+                ScreeningDecision.reviewer_id.isnot(None),
+            )
+            .group_by(ScreeningDecision.reason_code)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    ta_exclude_reasons = [{"reason_code": r.reason_code, "count": r.cnt} for r in ta_reason_rows]
+
+    # FT exclusion reasons
+    ft_reason_rows = (
+        await db.execute(
+            select(ScreeningDecision.reason_code, func.count().label("cnt"))
+            .where(
+                ScreeningDecision.project_id == project_id,
+                ScreeningDecision.stage == "FT",
+                ScreeningDecision.decision == "exclude",
+                ScreeningDecision.reviewer_id.isnot(None),
+            )
+            .group_by(ScreeningDecision.reason_code)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    ft_exclude_reasons = [{"reason_code": r.reason_code, "count": r.cnt} for r in ft_reason_rows]
+
+    return {
+        "by_source": by_source,
+        "total_identified": total_identified,
+        "total_unique": total_unique,
+        "duplicates_removed": duplicates_removed,
+        "ta_exclude_reasons": ta_exclude_reasons,
+        "ft_exclude_reasons": ft_exclude_reasons,
+    }

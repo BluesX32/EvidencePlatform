@@ -606,8 +606,8 @@ function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }:
   return (
     <>
       <tr style={{ background: isNew ? "rgba(79,70,229,0.04)" : undefined, cursor: "pointer" }} onClick={() => setExpanded((v) => !v)}>
-        <td style={{ fontSize: "0.8rem", color: "#9aa0a6", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "0.5rem 0.75rem" }}>
-          {result.record_id?.slice(-8) ?? result.cluster_id?.slice(-8) ?? "—"}
+        <td style={{ fontSize: "0.82rem", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "0.5rem 0.75rem", color: "#3c4043" }}>
+          {result.title ?? result.record_id?.slice(-8) ?? result.cluster_id?.slice(-8) ?? "—"}
         </td>
         <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(result.ta_decision)}</td>
         <td style={{ padding: "0.5rem 0.75rem" }}>{decisionBadge(result.ft_decision)}</td>
@@ -621,13 +621,10 @@ function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }:
           {hasExtraction ? <span style={{ color: "#188038", fontSize: "0.78rem" }}>✓</span> : <span style={{ color: "#9aa0a6", fontSize: "0.78rem" }}>—</span>}
         </td>
         <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem", color: "#5f6368" }}>{result.full_text_source ?? "abstract"}</td>
-        <td style={{ padding: "0.5rem 0.75rem" }} onClick={(e) => e.stopPropagation()}>
-          <ReviewActions result={result} projectId={projectId} runId={runId} onReviewed={onReviewed} />
-        </td>
       </tr>
       {expanded && (
         <tr style={{ background: "#f8f9fa" }}>
-          <td colSpan={8} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
+          <td colSpan={7} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
               {result.ta_reason && <div><strong style={{ color: "#3c4043" }}>TA reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ta_reason}</p></div>}
               {result.ft_reason && <div><strong style={{ color: "#3c4043" }}>FT reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ft_reason}</p></div>}
@@ -969,6 +966,23 @@ function MissingPdfsPanel({ projectId, runId }: { projectId: string; runId: stri
 }
 
 
+type LlmCategory = "include" | "uncertain" | "exclude";
+
+const CATEGORY_DEFS: Array<{
+  value: LlmCategory;
+  label: string;
+  corpusName: string;
+  count: (run: LlmRunResponse) => number;
+  color: string;
+  bg: string;
+  border: string;
+  defaultOn: boolean;
+}> = [
+  { value: "include",  label: "Included",  corpusName: "LLM Included",  count: (r) => r.included_count,  color: "#166534", bg: "#dcfce7", border: "#86efac", defaultOn: true  },
+  { value: "uncertain",label: "Uncertain", corpusName: "LLM Uncertain", count: (r) => r.uncertain_count, color: "#92400e", bg: "#fef3c7", border: "#fcd34d", defaultOn: true  },
+  { value: "exclude",  label: "Excluded",  corpusName: "LLM Excluded",  count: (r) => r.excluded_count,  color: "#991b1b", bg: "#fee2e2", border: "#fca5a5", defaultOn: false },
+];
+
 function SubprojectModal({ projectId, run, onClose }: {
   projectId: string;
   run: LlmRunResponse;
@@ -977,24 +991,32 @@ function SubprojectModal({ projectId, run, onClose }: {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [stage, setStage] = useState<"ta" | "ft">(
-    run.mode === "ta_only" ? "ta" : run.included_count > 0 ? "ft" : "ta"
+  const [checked, setChecked] = useState<Set<LlmCategory>>(
+    new Set(CATEGORY_DEFS.filter((c) => c.defaultOn && c.count(run) > 0).map((c) => c.value))
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const hasTA = run.included_count > 0;
-  const hasFT = run.mode !== "ta_only" && run.included_count > 0;
+  function toggle(cat: LlmCategory) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  }
+
+  const selectedCats = CATEGORY_DEFS.filter((c) => checked.has(c.value) && c.count(run) > 0);
+  const totalPapers = selectedCats.reduce((s, c) => s + c.count(run), 0);
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    if (!name.trim() || selectedCats.length === 0) return;
     setBusy(true);
     setError(null);
     try {
       const res = await llmScreeningApi.createSubproject(projectId, run.id, {
         name: name.trim(),
         description: description.trim() || undefined,
-        stage,
+        categories: selectedCats.map((c) => c.value),
       });
       navigate(`/projects/${res.data.project_id}`);
     } catch (e: unknown) {
@@ -1006,10 +1028,10 @@ function SubprojectModal({ projectId, run, onClose }: {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
-      <div style={{ background: "#fff", borderRadius: "0.75rem", padding: "1.5rem", width: 420, boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ background: "#fff", borderRadius: "0.75rem", padding: "1.5rem", width: 460, boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: "0 0 0.25rem" }}>Fork as Sub-Project</h3>
         <p style={{ margin: "0 0 1.25rem", fontSize: "0.85rem", color: "#5f6368" }}>
-          Creates a new project containing only the LLM-included papers, pre-annotated with decisions, reasons, and extractions.
+          Each selected category becomes a separate corpus. Human reviewers can screen them independently and see the LLM rationale inline.
         </p>
 
         <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>Project name *</label>
@@ -1017,7 +1039,7 @@ function SubprojectModal({ projectId, run, onClose }: {
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Full-text review — LLM selected"
+          placeholder="e.g. Full-text review — LLM pre-screened"
           style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.75rem" }}
         />
 
@@ -1026,33 +1048,51 @@ function SubprojectModal({ projectId, run, onClose }: {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Optional notes"
-          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.75rem" }}
+          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.85rem" }}
         />
 
-        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.4rem" }}>Import which papers?</label>
-        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
-          {hasTA && (
-            <button onClick={() => setStage("ta")}
-              style={{ flex: 1, padding: "0.5rem", borderRadius: "0.5rem", border: `2px solid ${stage === "ta" ? "#1a73e8" : "#dadce0"}`, background: stage === "ta" ? "#e8f0fe" : "#f8f9fa", color: stage === "ta" ? "#1a73e8" : "#5f6368", fontWeight: stage === "ta" ? 700 : 400, cursor: "pointer", fontSize: "0.85rem" }}>
-              TA Included<br />
-              <span style={{ fontSize: "0.75rem", fontWeight: 400 }}>{run.included_count} papers</span>
-            </button>
-          )}
-          {hasFT && (
-            <button onClick={() => setStage("ft")}
-              style={{ flex: 1, padding: "0.5rem", borderRadius: "0.5rem", border: `2px solid ${stage === "ft" ? "#1a73e8" : "#dadce0"}`, background: stage === "ft" ? "#e8f0fe" : "#f8f9fa", color: stage === "ft" ? "#1a73e8" : "#5f6368", fontWeight: stage === "ft" ? 700 : 400, cursor: "pointer", fontSize: "0.85rem" }}>
-              FT Included<br />
-              <span style={{ fontSize: "0.75rem", fontWeight: 400 }}>papers with FT decision</span>
-            </button>
-          )}
+        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.5rem" }}>Select corpora to create</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "0.85rem" }}>
+          {CATEGORY_DEFS.map((cat) => {
+            const count = cat.count(run);
+            const isOn = checked.has(cat.value) && count > 0;
+            const disabled = count === 0;
+            return (
+              <label key={cat.value}
+                style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0.85rem", borderRadius: "0.5rem", border: `1.5px solid ${isOn ? cat.border : "#e5e7eb"}`, background: isOn ? cat.bg : "#f9fafb", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={isOn}
+                  disabled={disabled}
+                  onChange={() => toggle(cat.value)}
+                  style={{ width: 15, height: 15, accentColor: "#4f46e5", flexShrink: 0 }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: 700, fontSize: "0.88rem", color: isOn ? cat.color : "#6b7280" }}>{cat.label}</span>
+                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: isOn ? cat.color : "#9ca3af" }}>{count.toLocaleString()} papers</span>
+                  </div>
+                  <div style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: "0.1rem" }}>
+                    Corpus: <em>{cat.corpusName}</em>
+                  </div>
+                </div>
+              </label>
+            );
+          })}
         </div>
+
+        {selectedCats.length > 0 && (
+          <p style={{ margin: "0 0 0.85rem", fontSize: "0.8rem", color: "#6b7280" }}>
+            {selectedCats.length} corpus{selectedCats.length > 1 ? " corpora" : ""} · {totalPapers.toLocaleString()} papers total · LLM decisions and reasons embedded for PRISMA traceability
+          </p>
+        )}
 
         {error && <p style={{ color: "#c5221f", fontSize: "0.82rem", marginBottom: "0.75rem" }}>{error}</p>}
 
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
           <button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn-primary" disabled={!name.trim() || busy} onClick={() => void handleCreate()}>
-            {busy ? "Creating…" : "Create Sub-Project"}
+          <button className="btn-primary" disabled={!name.trim() || selectedCats.length === 0 || busy} onClick={() => void handleCreate()}>
+            {busy ? "Creating…" : `Create Sub-Project`}
           </button>
         </div>
       </div>
@@ -1111,7 +1151,7 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
           ))}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
-          {run.status === "completed" && run.included_count > 0 && (
+          {run.status === "completed" && run.processed_records > 0 && (
             <button onClick={() => setShowSubproject(true)} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem", color: "#6366f1", borderColor: "#6366f1" }}>
               <GitCompare size={13} /> Fork as Sub-Project
             </button>
@@ -1161,14 +1201,13 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
               <thead>
                 <tr style={{ background: "#f1f3f4", fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: "0.04em", color: "#5f6368" }}>
-                  <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Record ID</th>
+                  <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Title</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>TA</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>FT</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Reason</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>New Concepts</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Extracted</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Full Text</th>
-                  <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Review</th>
                 </tr>
               </thead>
               <tbody>

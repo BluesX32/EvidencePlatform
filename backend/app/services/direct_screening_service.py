@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.extraction_record import ExtractionRecord
+from app.models.import_job import ImportJob
 from app.models.overlap_cluster import OverlapCluster
 from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.record import Record
@@ -182,6 +183,8 @@ async def get_project_sources_with_stats(
     # cross-source cluster (and vice-versa).
     ta_screened_slots: set = set()
     ta_included_slots: set = set()
+    ta_excluded_slots: set = set()
+    ta_uncertain_slots: set = set()
     ft_screened_slots: set = set()
     ft_included_slots: set = set()
     ft_excluded_slots: set = set()
@@ -195,6 +198,10 @@ async def get_project_sources_with_stats(
             ta_screened_slots.add(slot)
             if row.decision == "include":
                 ta_included_slots.add(slot)
+            elif row.decision == "exclude":
+                ta_excluded_slots.add(slot)
+            elif row.decision == "uncertain":
+                ta_uncertain_slots.add(slot)
         elif row.stage == "FT":
             ft_screened_slots.add(slot)
             if row.decision == "include":
@@ -214,10 +221,24 @@ async def get_project_sources_with_stats(
         else:
             extracted_slots.add(f"cluster:{row.cluster_id}")
 
-    # 6. Build per-source stats
-    def _stats(slots: set) -> Dict:
+    # 6. Detect which source IDs are LLM imports
+    llm_import_source_ids: set = set()
+    if sources:
+        llm_jobs = (await db.execute(
+            select(ImportJob.source_id)
+            .where(
+                ImportJob.source_id.in_([s.id for s in sources]),
+                ImportJob.file_format == "llm_import",
+            )
+        )).scalars().all()
+        llm_import_source_ids = set(llm_jobs)
+
+    # 7. Build per-source stats
+    def _stats(slots: set, is_llm: bool = False) -> Dict:
         ta_s = len(slots & ta_screened_slots)
         ta_i = len(slots & ta_included_slots)
+        ta_e = len(slots & ta_excluded_slots)
+        ta_u = len(slots & ta_uncertain_slots)
         ft_s = len(slots & ft_screened_slots)
         ft_i = len(slots & ft_included_slots)
         # FT-excluded papers don't count toward extracted_count even if extraction data exists
@@ -226,13 +247,16 @@ async def get_project_sources_with_stats(
             "record_count": len(slots),
             "ta_screened": ta_s,
             "ta_included": ta_i,
+            "ta_excluded": ta_e,
+            "ta_uncertain": ta_u,
             "ft_screened": ft_s,
             "ft_included": ft_i,
             "extracted_count": ex,
+            "is_llm_import": is_llm,
         }
 
     result_list: List[Dict] = [
-        {"id": str(s.id), "name": s.name, **_stats(source_slots[s.id])}
+        {"id": str(s.id), "name": s.name, **_stats(source_slots[s.id], is_llm=s.id in llm_import_source_ids)}
         for s in sources
     ]
     # Aggregate "all" row
@@ -1562,7 +1586,7 @@ async def _fetch_standalone_record(
     row = result.one_or_none()
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None,
-                "doi": None, "source_names": [], "pmid": None, "pmcid": None}
+                "doi": None, "source_names": [], "pmid": None, "pmcid": None, "llm_screening": None}
     # Fetch one raw_data for pmid/pmcid extraction (any record_source is fine).
     raw_result = await db.execute(
         select(RecordSource.raw_data)
@@ -1571,6 +1595,7 @@ async def _fetch_standalone_record(
     )
     raw_data = raw_result.scalar_one_or_none()
     pmid, pmcid = _extract_pmid_pmcid(raw_data)
+    llm_screening = raw_data.get("_llm_screening") if raw_data else None
     return {
         "title": row.title,
         "abstract": row.abstract,
@@ -1580,6 +1605,7 @@ async def _fetch_standalone_record(
         "source_names": list(row.source_names or []),
         "pmid": pmid,
         "pmcid": pmcid,
+        "llm_screening": llm_screening,
     }
 
 
@@ -1620,7 +1646,7 @@ async def _fetch_cluster_record(
         row = result.one_or_none()
     if row is None:
         return {"title": None, "abstract": None, "year": None, "authors": None,
-                "doi": None, "source_names": [], "pmid": None, "pmcid": None}
+                "doi": None, "source_names": [], "pmid": None, "pmcid": None, "llm_screening": None}
 
     src_result = await db.execute(
         select(Source.name)
@@ -1630,6 +1656,7 @@ async def _fetch_cluster_record(
         .distinct()
     )
     pmid, pmcid = _extract_pmid_pmcid(row.raw_data)
+    llm_screening = row.raw_data.get("_llm_screening") if row.raw_data else None
     return {
         "title": row.title,
         "abstract": row.abstract,
@@ -1639,6 +1666,7 @@ async def _fetch_cluster_record(
         "source_names": list(src_result.scalars().all()),
         "pmid": pmid,
         "pmcid": pmcid,
+        "llm_screening": llm_screening,
     }
 
 
