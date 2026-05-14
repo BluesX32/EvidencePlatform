@@ -1,12 +1,36 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import settings
+from app.database import SessionLocal
 from app.routers import annotations, auth, citations, concept_extraction, concept_taxonomy, consensus, dedup_jobs, extractions, fulltext, imports, labels, ontology, overlaps, projects, records, sources, strategies, teams, thematic
 from app.routers import screening
 from app.routers import llm_screening
 
-app = FastAPI(title="EvidencePlatform API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Mark any runs that were left in 'running' state (orphaned by a server restart) as failed.
+    async with SessionLocal() as db:
+        await db.execute(
+            text("""
+                UPDATE llm_screening_runs
+                SET status = 'interrupted',
+                    error_message = 'Run interrupted by server restart. Click Resume to continue.',
+                    completed_at = :now
+                WHERE status = 'running'
+            """),
+            {"now": datetime.now(tz=timezone.utc)},
+        )
+        await db.commit()
+    yield
+
+
+app = FastAPI(title="EvidencePlatform API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

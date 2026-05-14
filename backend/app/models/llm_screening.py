@@ -104,10 +104,22 @@ class LlmScreeningRun(Base):
         String(20), nullable=False, server_default="single"
     )
     agent_pipeline: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Two-phase screening fields (migration 038)
+    # source_run_id: for ft_only runs, points to the ta_only run whose included
+    # papers this run will screen at the full-text stage.
+    source_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_screening_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    abstract_only_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
 
     __table_args__ = (
         CheckConstraint(
-            "mode IN ('prisma_scr', 'saturation')", name="ck_llm_run_mode"
+            "mode IN ('prisma_scr', 'saturation', 'ta_only', 'ft_only')",
+            name="ck_llm_run_mode",
         ),
     )
 

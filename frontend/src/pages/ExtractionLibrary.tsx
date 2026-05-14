@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi } from "../api/client";
@@ -687,11 +687,13 @@ function buildSeenValues(
 function countNovelty(
   ce: ConceptExtractionRecord,
   seenValues: Map<string, Set<string>>,
+  entityFieldIds: Set<string>,
 ): { newCount: number; existingCount: number } {
   const cells = ce.extracted_json?.cells ?? {};
   const storedNovelty = ce.extracted_json?.novelty ?? {};
   let newCount = 0, existingCount = 0;
   for (const [fieldId, val] of Object.entries(cells)) {
+    if (!entityFieldIds.has(fieldId)) continue;
     const activeVals = Array.isArray(val) ? val : (val ? [val as string] : []);
     const fieldNovelty = storedNovelty[fieldId] ?? {};
     const seen = seenValues.get(fieldId) ?? new Set<string>();
@@ -707,10 +709,17 @@ function countNovelty(
 function ConceptNoveltyChart({
   items,
   conceptExtractions,
+  conceptTemplate,
 }: {
   items: ExtractionLibraryItem[];
   conceptExtractions: ConceptExtractionRecord[];
+  conceptTemplate: ConceptTemplate | null;
 }) {
+  const entityFieldIds = new Set(
+    (conceptTemplate?.fields ?? []).filter((f) => f.field_type === "entity").map((f) => f.id)
+  );
+  const svgRef = useRef<SVGSVGElement>(null);
+
   const ceMap = new Map(
     conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
   );
@@ -719,102 +728,224 @@ function ConceptNoveltyChart({
     const key = item.record_id ?? item.cluster_id ?? "";
     const ce = ceMap.get(key);
     const seenValues = ce ? buildSeenValues(conceptExtractions, key) : new Map();
-    const counts = ce ? countNovelty(ce, seenValues) : { newCount: 0, existingCount: 0 };
-    return {
-      title: (item.title ?? "Untitled").slice(0, 22),
-      year: item.year,
-      ...counts,
-    };
+    const counts = ce ? countNovelty(ce, seenValues, entityFieldIds) : { newCount: 0, existingCount: 0 };
+    const rawTitle = item.title ?? "Untitled";
+    // Use "AuthorYear" style label if possible, else truncated title
+    const firstAuthor = item.authors?.[0]?.split(",")[0]?.trim() ?? "";
+    const label = firstAuthor && item.year
+      ? `${firstAuthor} ${item.year}`
+      : rawTitle.slice(0, 20);
+    return { label, title: rawTitle, year: item.year, ...counts };
   });
 
-  const BAR_W = 32;
-  const GAP = 6;
-  const ML = 44, MR = 16, MT = 24, MB = 74;
-  const plotH = 200;
+  const BAR_W = 44;
+  const GAP = 10;
+  const ML = 52, MR = 24, MT = 52, MB = 90;
+  const plotH = 220;
   const chartW = ML + data.length * (BAR_W + GAP) + MR;
   const chartH = plotH + MT + MB;
   const yMax = Math.max(1, ...data.map((d) => d.newCount + d.existingCount));
-  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+
+  // Nice round tick intervals
+  const rawStep = yMax / 4;
+  const step = Math.ceil(rawStep) || 1;
+  const yTicks: number[] = [];
+  for (let v = 0; v <= yMax + step; v += step) yTicks.push(v);
 
   const hasAnyNovelty = data.some((d) => d.newCount + d.existingCount > 0);
 
+  const NEW_COLOR = "#16a34a";
+  const EXIST_COLOR = "#818cf8";
+  const AXIS_COLOR = "#94a3b8";
+  const GRID_COLOR = "#f1f5f9";
+  const TEXT_COLOR = "#1e293b";
+  const SUB_COLOR = "#64748b";
+
+  function downloadPng() {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const serializer = new XMLSerializer();
+    const svgStr = serializer.serializeToString(svg);
+    const scale = 3;
+    const canvas = document.createElement("canvas");
+    canvas.width = chartW * scale;
+    canvas.height = chartH * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(scale, scale);
+    const img = new Image();
+    img.onload = () => {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, chartW, chartH);
+      ctx.drawImage(img, 0, 0);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "concept-novelty.png";
+        a.click();
+        URL.revokeObjectURL(url);
+      }, "image/png");
+    };
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
+  }
+
   return (
-    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "16px 12px 8px", marginBottom: 20 }}>
-      {/* Legend */}
-      <div style={{ display: "flex", gap: 20, justifyContent: "center", marginBottom: 10 }}>
-        {[["#16a34a", "New concepts"], ["#6366f1", "Existing concepts"]].map(([color, label]) => (
-          <span key={label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            <span style={{ width: 12, height: 12, borderRadius: 2, background: color, display: "inline-block" }} />
-            {label}
-          </span>
-        ))}
+    <div style={{
+      background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12,
+      padding: "20px 20px 12px", marginBottom: 20,
+      boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: TEXT_COLOR, letterSpacing: "-0.01em" }}>
+            Concept Novelty by Article
+          </div>
+          <div style={{ fontSize: 12, color: SUB_COLOR, marginTop: 2 }}>
+            Number of new vs. existing concepts introduced per extracted article
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {/* Legend */}
+          <div style={{ display: "flex", gap: 14 }}>
+            {([[ NEW_COLOR, "New" ], [ EXIST_COLOR, "Existing" ]] as [string, string][]).map(([color, label]) => (
+              <span key={label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: SUB_COLOR }}>
+                <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: "inline-block", flexShrink: 0 }} />
+                {label}
+              </span>
+            ))}
+          </div>
+          <button
+            onClick={downloadPng}
+            title="Download as PNG"
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              fontSize: 12, fontWeight: 600, padding: "5px 12px",
+              borderRadius: 6, border: "1px solid #e2e8f0",
+              background: "#f8fafc", color: "#374151",
+              cursor: "pointer", whiteSpace: "nowrap",
+            }}
+          >
+            ↓ Download PNG
+          </button>
+        </div>
       </div>
 
-      {!hasAnyNovelty && (
-        <p style={{ textAlign: "center", color: "#9ca3af", fontSize: 13, margin: "12px 0" }}>
-          No novelty data yet. Open an article, fill in concept fields, and ★NEW / =SEEN badges will appear.
-        </p>
-      )}
+      {!hasAnyNovelty ? (
+        <div style={{
+          textAlign: "center", padding: "28px 0", color: "#94a3b8", fontSize: 13,
+          background: "#f8fafc", borderRadius: 8, border: "1px dashed #e2e8f0",
+        }}>
+          No novelty data yet — open an article and fill concept fields to see the chart.
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <svg ref={svgRef} width={chartW} height={chartH} style={{ display: "block", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+            {/* White background (needed for PNG export) */}
+            <rect width={chartW} height={chartH} fill="#ffffff" />
 
-      <div style={{ overflowX: "auto" }}>
-        <svg width={chartW} height={chartH} style={{ display: "block" }}>
-          {/* Y gridlines + labels */}
-          {yTicks.map((f) => {
-            const y = MT + plotH * (1 - f);
-            const val = Math.round(yMax * f);
-            return (
-              <g key={f}>
-                <line x1={ML} y1={y} x2={chartW - MR} y2={y} stroke="#e5e7eb" strokeWidth={1} />
-                <text x={ML - 6} y={y} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#9ca3af">{val}</text>
-              </g>
-            );
-          })}
+            {/* Y-axis label */}
+            <text
+              x={14} y={MT + plotH / 2}
+              transform={`rotate(-90, 14, ${MT + plotH / 2})`}
+              textAnchor="middle" fontSize={11} fill={SUB_COLOR} fontWeight={500}
+            >
+              Number of Concepts
+            </text>
 
-          {/* Bars */}
-          {data.map((d, i) => {
-            const x = ML + i * (BAR_W + GAP);
-            const existH = (d.existingCount / yMax) * plotH;
-            const newH = (d.newCount / yMax) * plotH;
-            const totalH = existH + newH;
-            const total = d.newCount + d.existingCount;
+            {/* Grid lines + Y tick labels */}
+            {yTicks.filter((v) => v <= yMax + step / 2).map((v) => {
+              const y = MT + plotH - (v / yMax) * plotH;
+              return (
+                <g key={v}>
+                  <line x1={ML} y1={y} x2={chartW - MR} y2={y}
+                    stroke={v === 0 ? AXIS_COLOR : GRID_COLOR} strokeWidth={v === 0 ? 1.5 : 1} />
+                  <text x={ML - 8} y={y} textAnchor="end" dominantBaseline="middle"
+                    fontSize={10} fill={AXIS_COLOR}>{v}</text>
+                </g>
+              );
+            })}
 
-            return (
-              <g key={i}>
-                {existH > 0 && (
-                  <rect x={x} y={MT + plotH - existH} width={BAR_W} height={existH} fill="#6366f1" rx={2}>
-                    <title>{`${d.title} (${d.year ?? "—"}): ${d.existingCount} existing`}</title>
-                  </rect>
-                )}
-                {newH > 0 && (
-                  <rect x={x} y={MT + plotH - totalH} width={BAR_W} height={newH} fill="#16a34a" rx={2}>
-                    <title>{`${d.title} (${d.year ?? "—"}): ${d.newCount} new`}</title>
-                  </rect>
-                )}
-                {total > 0 && (
-                  <text x={x + BAR_W / 2} y={MT + plotH - totalH - 4} textAnchor="middle" fontSize={9} fill="#374151" fontWeight={600}>
-                    {total}
+            {/* Left axis */}
+            <line x1={ML} y1={MT} x2={ML} y2={MT + plotH} stroke={AXIS_COLOR} strokeWidth={1.5} />
+
+            {/* Bars */}
+            {data.map((d, i) => {
+              const x = ML + i * (BAR_W + GAP);
+              const total = d.newCount + d.existingCount;
+              const existH = (d.existingCount / yMax) * plotH;
+              const newH   = (d.newCount / yMax) * plotH;
+              const totalH = existH + newH;
+              const barTop = MT + plotH - totalH;
+
+              return (
+                <g key={i}>
+                  {/* Existing (bottom segment) */}
+                  {existH > 0 && (
+                    <g>
+                      <rect x={x} y={MT + plotH - existH} width={BAR_W} height={existH}
+                        fill={EXIST_COLOR} rx={existH < 4 ? 2 : 0}>
+                        <title>{`${d.title} (${d.year ?? "—"}): ${d.existingCount} existing`}</title>
+                      </rect>
+                      {existH >= 14 ? (
+                        <text x={x + BAR_W / 2} y={MT + plotH - existH / 2}
+                          textAnchor="middle" dominantBaseline="middle"
+                          fontSize={10} fill="#ffffff" fontWeight={700}>
+                          {d.existingCount}
+                        </text>
+                      ) : (
+                        <text x={x + BAR_W / 2} y={MT + plotH + 2}
+                          textAnchor="middle" dominantBaseline="hanging"
+                          fontSize={9} fill={EXIST_COLOR} fontWeight={700}>
+                          {d.existingCount}
+                        </text>
+                      )}
+                    </g>
+                  )}
+                  {/* New (top segment) */}
+                  {newH > 0 && (
+                    <g>
+                      <rect x={x} y={barTop} width={BAR_W} height={newH}
+                        fill={NEW_COLOR} rx={2}>
+                        <title>{`${d.title} (${d.year ?? "—"}): ${d.newCount} new`}</title>
+                      </rect>
+                      {newH >= 14 ? (
+                        <text x={x + BAR_W / 2} y={barTop + newH / 2}
+                          textAnchor="middle" dominantBaseline="middle"
+                          fontSize={10} fill="#ffffff" fontWeight={700}>
+                          {d.newCount}
+                        </text>
+                      ) : (
+                        <text x={x + BAR_W / 2} y={barTop - 2}
+                          textAnchor="middle" dominantBaseline="auto"
+                          fontSize={9} fill={NEW_COLOR} fontWeight={700}>
+                          {d.newCount}
+                        </text>
+                      )}
+                    </g>
+                  )}
+                  {/* Total label above bar */}
+                  {total > 0 && (
+                    <text x={x + BAR_W / 2} y={barTop - (newH < 14 ? 14 : 5)}
+                      textAnchor="middle" fontSize={10} fill={TEXT_COLOR} fontWeight={600}>
+                      {total}
+                    </text>
+                  )}
+                  {/* X-axis label — rotated */}
+                  <text
+                    x={x + BAR_W / 2} y={MT + plotH + 10}
+                    transform={`rotate(-45, ${x + BAR_W / 2}, ${MT + plotH + 10})`}
+                    textAnchor="end" fontSize={10} fill={SUB_COLOR}
+                  >
+                    {d.label}
                   </text>
-                )}
-                {/* X label rotated */}
-                <text
-                  x={x + BAR_W / 2}
-                  y={MT + plotH + 10}
-                  transform={`rotate(-45,${x + BAR_W / 2},${MT + plotH + 10})`}
-                  textAnchor="end"
-                  fontSize={10}
-                  fill="#6b7280"
-                >
-                  {d.title}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Axes */}
-          <line x1={ML} y1={MT} x2={ML} y2={MT + plotH} stroke="#d1d5db" strokeWidth={1} />
-          <line x1={ML} y1={MT + plotH} x2={chartW - MR} y2={MT + plotH} stroke="#d1d5db" strokeWidth={1} />
-        </svg>
-      </div>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      )}
     </div>
   );
 }
@@ -827,16 +958,51 @@ export default function ExtractionLibrary() {
   const { id: projectId } = useParams<{ id: string }>();
 
   const [search, setSearch] = useState("");
-  const [filterLevels, setFilterLevels] = useState<Set<string>>(new Set());
-  const [filterDims, setFilterDims] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showChart, setShowChart] = useState(true);
+  const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
+  const dragIdx = useRef<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["extractions-library", projectId],
     queryFn: () => extractionLibraryApi.list(projectId!).then((r) => r.data),
     enabled: !!projectId,
   });
+
+  // Sync server data into orderedItems, preserving any custom drag order
+  useEffect(() => {
+    if (items.length === 0) { setOrderedItems([]); return; }
+    setOrderedItems((prev) => {
+      const itemMap = new Map(items.map((i) => [i.id, i]));
+      const prevIds = new Set(prev.map((i) => i.id));
+      const newItems = items.filter((i) => !prevIds.has(i.id));
+      const updated = prev.map((p) => itemMap.get(p.id)).filter(Boolean) as ExtractionLibraryItem[];
+      return [...updated, ...newItems];
+    });
+  }, [items]);
+
+  const handleDragStart = useCallback((_e: React.DragEvent, idx: number) => {
+    dragIdx.current = idx;
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    setDragOverIdx(idx);
+  }, []);
+
+  const handleDrop = useCallback((_e: React.DragEvent, dropIdx: number) => {
+    const from = dragIdx.current;
+    if (from === null || from === dropIdx) { dragIdx.current = null; setDragOverIdx(null); return; }
+    setOrderedItems((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(dropIdx, 0, moved);
+      return next;
+    });
+    dragIdx.current = null;
+    setDragOverIdx(null);
+  }, []);
 
   // Fetch template rows so EditPanel can render the table
   const { data: project } = useQuery({
@@ -858,42 +1024,23 @@ export default function ExtractionLibrary() {
     conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
   );
 
-  // ── Client-side filter ───────────────────────────────────────────────────
-  const visible = items.filter((item) => {
+  // ── Client-side filter (search only; applied on top of drag order) ───────
+  const visible = orderedItems.filter((item) => {
+    if (!search) return true;
     const text = [item.title ?? "", item.doi ?? "", ...(item.authors ?? [])]
-      .join(" ")
-      .toLowerCase();
-    const matchSearch = !search || text.includes(search.toLowerCase());
-    const levels = item.extracted_json.levels ?? [];
-    const dims = item.extracted_json.dimensions ?? [];
-    const matchLevels =
-      filterLevels.size === 0 || [...filterLevels].every((l) => levels.includes(l));
-    const matchDims =
-      filterDims.size === 0 || [...filterDims].every((d) => dims.includes(d));
-    return matchSearch && matchLevels && matchDims;
+      .join(" ").toLowerCase();
+    return text.includes(search.toLowerCase());
   });
-
-  function toggleFilter(
-    setter: React.Dispatch<React.SetStateAction<Set<string>>>,
-    v: string,
-  ) {
-    setter((prev) => {
-      const next = new Set(prev);
-      if (next.has(v)) next.delete(v);
-      else next.add(v);
-      return next;
-    });
-  }
 
   // ── Render ───────────────────────────────────────────────────────────────
 
   const hasConceptTemplate = conceptTemplate && conceptTemplate.fields.length > 0;
-  // Grid: Title | Year | Sources | [Extraction] | [Concepts] | Levels+Dims | Note
+  // Grid: ⠿ | Title | Year | Sources | [Extraction] | [Concepts] | Date | Note
   const COLS = [
-    "1fr", "48px", "100px",
+    "20px", "1fr", "48px", "100px",
     ...(templateRows.length > 0 ? ["72px"] : []),
     ...(hasConceptTemplate ? ["68px"] : []),
-    "180px", "24px",
+    "90px", "24px",
   ].join(" ");
 
   return (
@@ -912,8 +1059,8 @@ export default function ExtractionLibrary() {
           <h2 style={{ margin: 0 }}>Extraction Library</h2>
           {!isLoading && (
             <span style={{ color: "#5f6368", fontSize: "0.88rem" }}>
-              {items.length} article{items.length !== 1 ? "s" : ""} extracted
-              {visible.length !== items.length && ` · ${visible.length} shown`}
+              {orderedItems.length} article{orderedItems.length !== 1 ? "s" : ""} extracted
+              {visible.length !== orderedItems.length && ` · ${visible.length} shown`}
             </span>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
@@ -931,10 +1078,10 @@ export default function ExtractionLibrary() {
                 fontSize: "0.82rem",
                 whiteSpace: "nowrap",
                 textDecoration: "none",
-                opacity: items.length === 0 ? 0.5 : 1,
-                pointerEvents: items.length === 0 ? "none" : "auto",
+                opacity: orderedItems.length === 0 ? 0.5 : 1,
+                pointerEvents: orderedItems.length === 0 ? "none" : "auto",
               }}
-              title={items.length === 0 ? "Extract papers first before running citation search" : "Find papers that reference or cite your extracted studies"}
+              title={orderedItems.length === 0 ? "Extract papers first before running citation search" : "Find papers that reference or cite your extracted studies"}
             >
               Citation Search
             </Link>
@@ -943,18 +1090,11 @@ export default function ExtractionLibrary() {
 
         {/* ── Concept novelty chart ────────────────────────────────────────── */}
         {showChart && (
-          <ConceptNoveltyChart items={items} conceptExtractions={conceptExtractions} />
+          <ConceptNoveltyChart items={visible} conceptExtractions={conceptExtractions} conceptTemplate={conceptTemplate} />
         )}
 
-        {/* ── Filters ─────────────────────────────────────────────────────── */}
-        <div
-          style={{
-            background: "#f8f9fa", border: "1px solid #dadce0",
-            borderRadius: "0.5rem", padding: "0.9rem 1rem",
-            marginBottom: "1.25rem", display: "flex",
-            flexDirection: "column", gap: "0.6rem",
-          }}
-        >
+        {/* ── Search ──────────────────────────────────────────────────────── */}
+        <div style={{ marginBottom: "1rem" }}>
           <input
             type="search"
             className="input"
@@ -963,26 +1103,12 @@ export default function ExtractionLibrary() {
             onChange={(e) => setSearch(e.target.value)}
             style={{ maxWidth: 400, fontSize: "0.88rem" }}
           />
-          <FilterRow
-            label="Levels"
-            values={LEVELS}
-            active={filterLevels}
-            color="blue"
-            onToggle={(v) => toggleFilter(setFilterLevels, v)}
-          />
-          <FilterRow
-            label="Dimensions"
-            values={DIMENSIONS}
-            active={filterDims}
-            color="purple"
-            onToggle={(v) => toggleFilter(setFilterDims, v)}
-          />
         </div>
 
         {/* ── Table ───────────────────────────────────────────────────────── */}
         {isLoading ? (
           <p style={{ color: "#888" }}>Loading…</p>
-        ) : items.length === 0 ? (
+        ) : orderedItems.length === 0 ? (
           <div
             style={{
               textAlign: "center", padding: "3rem 2rem",
@@ -1009,23 +1135,38 @@ export default function ExtractionLibrary() {
                 textTransform: "uppercase", letterSpacing: "0.03em",
               }}
             >
+              <span title="Drag to reorder" style={{ color: "#aaa" }}>⠿</span>
               <span>Title</span>
               <span>Year</span>
               <span>Sources</span>
               {templateRows.length > 0 && <span>Extraction</span>}
               {hasConceptTemplate && <span>Concepts</span>}
-              <span>Levels &amp; Dimensions</span>
+              <span>Extracted</span>
               <span />
             </div>
 
-            {visible.map((item) => {
+            {visible.map((item, rowIdx) => {
               const isExpanded = expandedId === item.id;
-              const levels = item.extracted_json.levels ?? [];
-              const dims = item.extracted_json.dimensions ?? [];
+              const isDragTarget = dragOverIdx === rowIdx;
               const hasNote = !!(item.extracted_json.free_note ?? "").trim();
+              const dateStr = item.created_at
+                ? new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                : "—";
 
               return (
-                <div key={item.id} style={{ borderBottom: "1px solid #ececec" }}>
+                <div
+                  key={item.id}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, rowIdx)}
+                  onDragOver={(e) => handleDragOver(e, rowIdx)}
+                  onDrop={(e) => handleDrop(e, rowIdx)}
+                  onDragEnd={() => { dragIdx.current = null; setDragOverIdx(null); }}
+                  style={{
+                    borderBottom: "1px solid #ececec",
+                    borderTop: isDragTarget ? "2px solid #4f46e5" : undefined,
+                    transition: "border-color 0.1s",
+                  }}
+                >
                   {/* Main row */}
                   <div
                     onClick={() => setExpandedId((prev) => (prev === item.id ? null : item.id))}
@@ -1043,6 +1184,14 @@ export default function ExtractionLibrary() {
                       if (!isExpanded) (e.currentTarget as HTMLElement).style.background = "transparent";
                     }}
                   >
+                    {/* Drag handle */}
+                    <div
+                      style={{ color: "#c4c9d4", fontSize: "0.85rem", paddingTop: "0.05rem", cursor: "grab", userSelect: "none" }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      ⠿
+                    </div>
+
                     {/* Title + authors */}
                     <div>
                       <div style={{ fontSize: "0.88rem", fontWeight: 500, color: "#202124", lineHeight: 1.35, marginBottom: "0.15rem" }}>
@@ -1089,13 +1238,9 @@ export default function ExtractionLibrary() {
                       </div>
                     )}
 
-                    {/* Levels + Dimensions combined */}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.2rem" }}>
-                      {levels.map((l) => <Chip key={l} label={l} active={true} color="blue" />)}
-                      {dims.map((d) => <Chip key={d} label={d} active={true} color="purple" />)}
-                      {levels.length === 0 && dims.length === 0 && (
-                        <span style={{ fontSize: "0.75rem", color: "#aaa" }}>—</span>
-                      )}
+                    {/* Extracted timestamp */}
+                    <div style={{ fontSize: "0.78rem", color: "#6b7280", paddingTop: "0.1rem" }}>
+                      {dateStr}
                     </div>
 
                     {/* Notes indicator */}

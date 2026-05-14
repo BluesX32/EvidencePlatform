@@ -38,12 +38,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import SessionLocal
 from app.models.extraction_record import ExtractionRecord
+from app.models.import_job import ImportJob
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
 from app.models.ontology_node import OntologyNode
 from app.models.project import Project
 from app.models.record import Record
 from app.models.record_source import RecordSource
+from app.models.screening_decision import ScreeningDecision
 from app.models.screening_queue import ScreeningQueue
+from app.models.source import Source
 from app.models.user import User
 from app.utils.fulltext_fetcher import get_full_text
 
@@ -392,6 +395,7 @@ async def create_and_launch_run(
     include_extraction: bool = True,
     agent_mode: str = "single",
     pipeline: Optional[list] = None,
+    source_run_id: Optional[uuid.UUID] = None,
 ) -> LlmScreeningRun:
     """Create an LlmScreeningRun row and enqueue the background execution."""
     # Resolve effective pipeline and store a snapshot
@@ -420,6 +424,7 @@ async def create_and_launch_run(
         include_extraction=include_extraction,
         agent_mode=agent_mode,
         agent_pipeline=effective_pipeline,
+        source_run_id=source_run_id,
     )
     db.add(run)
     await db.commit()
@@ -434,12 +439,249 @@ async def create_and_launch_run(
             anthropic_api_key, openrouter_api_key,
             effective_pipeline,
         )
+    elif mode == "ta_only":
+        background_tasks.add_task(
+            _execute_run_ta_only, project_id, run_id, model,
+            anthropic_api_key, openrouter_api_key, effective_pipeline,
+        )
+    elif mode == "ft_only":
+        background_tasks.add_task(
+            _execute_run_ft_only, project_id, run_id, model,
+            source_run_id,
+            anthropic_api_key, openrouter_api_key, effective_pipeline,
+        )
     else:
         background_tasks.add_task(
             _execute_run, project_id, run_id, model,
             anthropic_api_key, openrouter_api_key, effective_pipeline,
         )
     return run
+
+
+async def resume_run(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+) -> LlmScreeningRun:
+    """Re-queue an interrupted run, picking up where it left off."""
+    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    if run is None or run.project_id != project_id:
+        raise ValueError("Run not found")
+    if run.status != "interrupted":
+        raise ValueError(f"Only interrupted runs can be resumed (current status: {run.status!r})")
+
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(status="queued", error_message=None, completed_at=None)
+    )
+    await db.commit()
+    await db.refresh(run)
+
+    model = run.model
+    pipeline = run.agent_pipeline
+
+    if run.mode == "saturation":
+        background_tasks.add_task(
+            _execute_run_saturation,
+            project_id, run_id, model,
+            run.source_id, run.seed, run.saturation_threshold, run.include_extraction,
+            anthropic_api_key, openrouter_api_key, pipeline,
+        )
+    elif run.mode == "ta_only":
+        background_tasks.add_task(
+            _execute_run_ta_only, project_id, run_id, model,
+            anthropic_api_key, openrouter_api_key, pipeline,
+        )
+    elif run.mode == "ft_only":
+        background_tasks.add_task(
+            _execute_run_ft_only, project_id, run_id, model,
+            run.source_run_id, anthropic_api_key, openrouter_api_key, pipeline,
+        )
+    else:
+        background_tasks.add_task(
+            _execute_run, project_id, run_id, model,
+            anthropic_api_key, openrouter_api_key, pipeline,
+        )
+    return run
+
+
+async def create_subproject_from_run(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    name: str,
+    description: Optional[str],
+    stage: str,
+    triggered_by: uuid.UUID,
+) -> dict:
+    """Fork an LLM run's included papers into a new child project.
+
+    stage: "ta"  → records where ta_decision == "include"
+           "ft"  → records where ft_decision == "include"
+
+    Copies records + pre-populates ScreeningDecisions and ExtractionRecords
+    from the LLM output.  The LLM's reasons are embedded in raw_data under
+    the "_llm_screening" key so they survive any re-import workflow.
+    """
+    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    if run is None or run.project_id != project_id:
+        raise ValueError("Run not found")
+    if run.status != "completed":
+        raise ValueError("Only completed runs can be exported as a sub-project")
+
+    # Load included results
+    if stage == "ft":
+        stage_filter = LlmScreeningResult.ft_decision == "include"
+    else:
+        stage_filter = LlmScreeningResult.ta_decision == "include"
+
+    results = (
+        await db.execute(
+            select(LlmScreeningResult).where(
+                LlmScreeningResult.run_id == run_id,
+                stage_filter,
+                LlmScreeningResult.record_id.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    if not results:
+        raise ValueError(f"No {'FT' if stage == 'ft' else 'TA'}-included records in this run")
+
+    parent: Optional[Project] = await db.get(Project, project_id)
+
+    # Create child project inheriting criteria + templates from parent
+    child = Project(
+        name=name,
+        description=description,
+        created_by=triggered_by,
+        parent_project_id=project_id,
+        criteria=parent.criteria if parent else {},
+        extraction_template=parent.extraction_template if parent else None,
+        llm_config=parent.llm_config if parent else None,
+    )
+    db.add(child)
+    await db.flush()
+
+    # Single source + synthetic completed import job
+    source = Source(project_id=child.id, name="LLM Screening Import")
+    db.add(source)
+    await db.flush()
+
+    import_job = ImportJob(
+        project_id=child.id,
+        source_id=source.id,
+        created_by=triggered_by,
+        filename=f"llm_run_{run_id}",
+        file_format="llm_import",
+        status="completed",
+        record_count=len(results),
+        completed_at=datetime.now(tz=timezone.utc),
+    )
+    db.add(import_job)
+    await db.flush()
+
+    imported = 0
+    for result in results:
+        orig: Optional[Record] = await db.get(Record, result.record_id)
+        if orig is None:
+            continue
+
+        # Get raw_data from any existing RecordSource (for norm fields)
+        rs_orig = (
+            await db.execute(
+                select(RecordSource)
+                .where(RecordSource.record_id == orig.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        # Embed LLM annotations in raw_data for provenance
+        raw = dict(rs_orig.raw_data) if rs_orig else {}
+        raw["_llm_screening"] = {
+            "run_id": str(run_id),
+            "model": run.model,
+            "ta_decision": result.ta_decision,
+            "ta_reason": result.ta_reason,
+            "ft_decision": result.ft_decision,
+            "ft_reason": result.ft_reason,
+            "matched_codes": result.matched_codes,
+            "new_concepts": result.new_concepts,
+        }
+
+        # Copy record into child project
+        new_rec = Record(
+            project_id=child.id,
+            normalized_doi=orig.normalized_doi,
+            match_key=orig.match_key,
+            match_basis=orig.match_basis,
+            title=orig.title,
+            abstract=orig.abstract,
+            authors=orig.authors,
+            year=orig.year,
+            journal=orig.journal,
+            volume=orig.volume,
+            issue=orig.issue,
+            pages=orig.pages,
+            doi=orig.doi,
+            issn=orig.issn,
+            keywords=orig.keywords,
+            source_format=orig.source_format,
+        )
+        db.add(new_rec)
+        await db.flush()
+
+        db.add(RecordSource(
+            record_id=new_rec.id,
+            source_id=source.id,
+            import_job_id=import_job.id,
+            raw_data=raw,
+            norm_title=rs_orig.norm_title if rs_orig else None,
+            norm_first_author=rs_orig.norm_first_author if rs_orig else None,
+            match_year=rs_orig.match_year if rs_orig else None,
+            match_doi=rs_orig.match_doi if rs_orig else None,
+        ))
+
+        # Pre-populate TA screening decision (reviewer_id=NULL = LLM)
+        if result.ta_decision in ("include", "exclude", "uncertain"):
+            db.add(ScreeningDecision(
+                project_id=child.id,
+                record_id=new_rec.id,
+                cluster_id=None,
+                stage="TA",
+                decision=result.ta_decision,
+                reviewer_id=None,
+            ))
+
+        # Pre-populate FT decision if present
+        if result.ft_decision in ("include", "exclude", "uncertain"):
+            db.add(ScreeningDecision(
+                project_id=child.id,
+                record_id=new_rec.id,
+                cluster_id=None,
+                stage="FT",
+                decision=result.ft_decision,
+                reviewer_id=None,
+            ))
+
+        # Pre-populate extraction if available
+        if result.extracted_json:
+            db.add(ExtractionRecord(
+                project_id=child.id,
+                record_id=new_rec.id,
+                cluster_id=None,
+                extracted_json=result.extracted_json,
+                reviewer_id=None,
+            ))
+
+        imported += 1
+
+    await db.commit()
+    return {"project_id": str(child.id), "project_name": child.name, "imported_count": imported}
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +759,59 @@ async def _execute_run_saturation(
                 await err_db.commit()
 
 
+async def _restore_run_state(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    in_price: float,
+    out_price: float,
+) -> dict:
+    """Load already-processed results for a run to support resume.
+
+    Returns a dict with processed_ids and all accumulator values so each
+    _do_execute_run* function can skip done records and seed its counters.
+    """
+    existing = (
+        await db.execute(
+            select(LlmScreeningResult)
+            .where(LlmScreeningResult.run_id == run_id)
+            .order_by(LlmScreeningResult.created_at)
+        )
+    ).scalars().all()
+
+    processed_ids: set[uuid.UUID] = {r.record_id for r in existing if r.record_id is not None}
+    input_tok_total = sum(r.input_tokens or 0 for r in existing)
+    output_tok_total = sum(r.output_tokens or 0 for r in existing)
+
+    consecutive_no_new = 0
+    for r in reversed(existing):
+        if r.ta_decision != "include":
+            continue
+        if r.new_concepts and isinstance(r.new_concepts, list) and len(r.new_concepts) > 0:
+            break
+        consecutive_no_new += 1
+
+    return {
+        "processed_ids": processed_ids,
+        "ta_included": sum(1 for r in existing if r.ta_decision == "include"),
+        "ta_excluded": sum(1 for r in existing if r.ta_decision == "exclude"),
+        "ta_uncertain": sum(1 for r in existing if r.ta_decision == "uncertain"),
+        "ft_included": sum(1 for r in existing if r.ft_decision == "include"),
+        "ft_excluded": sum(1 for r in existing if r.ft_decision == "exclude"),
+        "ft_uncertain": sum(1 for r in existing if r.ft_decision == "uncertain"),
+        "abstract_only_count": sum(
+            1 for r in existing if r.full_text_source == "abstract_only" and r.ft_decision is None
+        ),
+        "new_concepts_total": sum(
+            len(r.new_concepts) if r.new_concepts and isinstance(r.new_concepts, list) else 0
+            for r in existing
+        ),
+        "input_tok_total": input_tok_total,
+        "output_tok_total": output_tok_total,
+        "actual_cost": input_tok_total * in_price + output_tok_total * out_price,
+        "consecutive_no_new": consecutive_no_new,
+    }
+
+
 async def _do_execute_run(
     db: AsyncSession,
     project_id: uuid.UUID,
@@ -591,11 +886,20 @@ async def _do_execute_run(
     # Load OneDrive token for full-text fetching (may refresh automatically)
     onedrive_token: Optional[str] = await _load_onedrive_token(db, triggered_by_id)
 
-    # Accumulate counters
-    included = excluded = uncertain = new_concepts_total = 0
-    input_tok_total = output_tok_total = 0
-    actual_cost = 0.0
     in_price, out_price = _cost_per_token(model)
+
+    # Resume: skip already-processed records and restore accumulators
+    _state = await _restore_run_state(db, run_id, in_price, out_price)
+    if _state["processed_ids"]:
+        logger.info("Resuming run %s: skipping %d already-processed records", run_id, len(_state["processed_ids"]))
+        records = [r for r in records if r.id not in _state["processed_ids"]]
+    included = _state["ta_included"]
+    excluded = _state["ta_excluded"]
+    uncertain = _state["ta_uncertain"]
+    new_concepts_total = _state["new_concepts_total"]
+    input_tok_total = _state["input_tok_total"]
+    output_tok_total = _state["output_tok_total"]
+    actual_cost = _state["actual_cost"]
 
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
@@ -604,92 +908,96 @@ async def _do_execute_run(
         nonlocal input_tok_total, output_tok_total, actual_cost
 
         async with semaphore:
-            try:
-                if agent_mode == "multi" and effective_pipeline:
-                    full_text, full_text_source = await _fetch_fulltext_for_record(
-                        record, project_id, db, onedrive_token=onedrive_token
+            # Each task gets its own session to avoid concurrent session corruption.
+            # Sharing a single AsyncSession across concurrent coroutines causes
+            # interleaved flush/commit/rollback calls that corrupt session state.
+            async with SessionLocal() as task_db:
+                try:
+                    if agent_mode == "multi" and effective_pipeline:
+                        full_text, full_text_source = await _fetch_fulltext_for_record(
+                            record, project_id, task_db, onedrive_token=onedrive_token
+                        )
+                        result = await _run_multi_agent_pipeline(
+                            record=record,
+                            full_text=full_text,
+                            full_text_source=full_text_source,
+                            pipeline=effective_pipeline,
+                            criteria=criteria,
+                            framework=framework_nodes,
+                            project_id=project_id,
+                            run_id=run_id,
+                            db=task_db,
+                            extraction_template=extraction_template,
+                            include_extraction=include_extraction,
+                            llm_config=llm_config,
+                            anthropic_api_key=anthropic_api_key,
+                            openrouter_api_key=openrouter_api_key,
+                        )
+                    else:
+                        result = await _screen_one_record(
+                            record=record,
+                            project_id=project_id,
+                            run_id=run_id,
+                            model=model,
+                            criteria=criteria,
+                            framework=framework_nodes,
+                            db=task_db,
+                            anthropic_api_key=anthropic_api_key,
+                            openrouter_api_key=openrouter_api_key,
+                            llm_config=llm_config,
+                            extraction_template=extraction_template,
+                            include_extraction=include_extraction,
+                            onedrive_token=onedrive_token,
+                        )
+                    if result is None:
+                        return
+
+                    task_db.add(result)
+                    await task_db.flush()
+
+                    # Mirror extraction into shared extraction_records table so the
+                    # Extraction Library and saturation counter see LLM extractions
+                    # alongside manual ones.
+                    if result.extracted_json:
+                        await _sync_extraction_to_shared_table(task_db, result, triggered_by_id)
+
+                    # Update counters (asyncio is single-threaded; += between awaits is safe)
+                    if result.ta_decision == "include":
+                        included += 1
+                    elif result.ta_decision == "exclude":
+                        excluded += 1
+                    elif result.ta_decision == "uncertain":
+                        uncertain += 1
+
+                    if result.new_concepts:
+                        if isinstance(result.new_concepts, list):
+                            new_concepts_total += len(result.new_concepts)
+
+                    itok = result.input_tokens or 0
+                    otok = result.output_tokens or 0
+                    input_tok_total += itok
+                    output_tok_total += otok
+                    actual_cost += itok * in_price + otok * out_price
+
+                    # Persist incremental progress
+                    await task_db.execute(
+                        update(LlmScreeningRun)
+                        .where(LlmScreeningRun.id == run_id)
+                        .values(
+                            processed_records=LlmScreeningRun.processed_records + 1,
+                            included_count=included,
+                            excluded_count=excluded,
+                            uncertain_count=uncertain,
+                            new_concepts_count=new_concepts_total,
+                            input_tokens=input_tok_total,
+                            output_tokens=output_tok_total,
+                        )
                     )
-                    result = await _run_multi_agent_pipeline(
-                        record=record,
-                        full_text=full_text,
-                        full_text_source=full_text_source,
-                        pipeline=effective_pipeline,
-                        criteria=criteria,
-                        framework=framework_nodes,
-                        project_id=project_id,
-                        run_id=run_id,
-                        db=db,
-                        extraction_template=extraction_template,
-                        include_extraction=include_extraction,
-                        llm_config=llm_config,
-                        anthropic_api_key=anthropic_api_key,
-                        openrouter_api_key=openrouter_api_key,
-                    )
-                else:
-                    result = await _screen_one_record(
-                        record=record,
-                        project_id=project_id,
-                        run_id=run_id,
-                        model=model,
-                        criteria=criteria,
-                        framework=framework_nodes,
-                        db=db,
-                        anthropic_api_key=anthropic_api_key,
-                        openrouter_api_key=openrouter_api_key,
-                        llm_config=llm_config,
-                        extraction_template=extraction_template,
-                        include_extraction=include_extraction,
-                        onedrive_token=onedrive_token,
-                    )
-                if result is None:
-                    return
+                    await task_db.commit()
 
-                db.add(result)
-                await db.flush()
-
-                # Mirror extraction into shared extraction_records table so the
-                # Extraction Library and saturation counter see LLM extractions
-                # alongside manual ones.
-                if result.extracted_json:
-                    await _sync_extraction_to_shared_table(db, result, triggered_by_id)
-
-                # Update counters
-                if result.ta_decision == "include":
-                    included += 1
-                elif result.ta_decision == "exclude":
-                    excluded += 1
-                elif result.ta_decision == "uncertain":
-                    uncertain += 1
-
-                if result.new_concepts:
-                    if isinstance(result.new_concepts, list):
-                        new_concepts_total += len(result.new_concepts)
-
-                itok = result.input_tokens or 0
-                otok = result.output_tokens or 0
-                input_tok_total += itok
-                output_tok_total += otok
-                actual_cost += itok * in_price + otok * out_price
-
-                # Persist incremental progress
-                await db.execute(
-                    update(LlmScreeningRun)
-                    .where(LlmScreeningRun.id == run_id)
-                    .values(
-                        processed_records=LlmScreeningRun.processed_records + 1,
-                        included_count=included,
-                        excluded_count=excluded,
-                        uncertain_count=uncertain,
-                        new_concepts_count=new_concepts_total,
-                        input_tokens=input_tok_total,
-                        output_tokens=output_tok_total,
-                    )
-                )
-                await db.commit()
-
-            except Exception:
-                logger.exception("Error screening record %s", record.id)
-                await db.rollback()
+                except Exception:
+                    logger.exception("Error screening record %s", record.id)
+                    # No explicit rollback — async with SessionLocal() close() handles it
 
     tasks = [_process(record) for record in records]
     await asyncio.gather(*tasks)
@@ -877,11 +1185,21 @@ async def _do_execute_run_saturation(
     # Load OneDrive token for full-text fetching
     onedrive_token_sat: Optional[str] = await _load_onedrive_token(db, triggered_by_id_sat)
 
-    included = excluded = uncertain = new_concepts_total = 0
-    input_tok_total = output_tok_total = 0
-    actual_cost = 0.0
     in_price, out_price = _cost_per_token(model)
-    consecutive_no_new = 0
+
+    # Resume: skip already-processed records and restore accumulators
+    _state = await _restore_run_state(db, run_id, in_price, out_price)
+    if _state["processed_ids"]:
+        logger.info("Resuming saturation run %s: skipping %d records", run_id, len(_state["processed_ids"]))
+        record_ids = [rid for rid in record_ids if rid not in _state["processed_ids"]]
+    included = _state["ta_included"]
+    excluded = _state["ta_excluded"]
+    uncertain = _state["ta_uncertain"]
+    new_concepts_total = _state["new_concepts_total"]
+    input_tok_total = _state["input_tok_total"]
+    output_tok_total = _state["output_tok_total"]
+    actual_cost = _state["actual_cost"]
+    consecutive_no_new = _state["consecutive_no_new"]
     stopped_early = False
 
     for record_id in record_ids:
@@ -946,13 +1264,19 @@ async def _do_execute_run_saturation(
         elif result.ta_decision == "uncertain":
             uncertain += 1
 
-        # Saturation counter: track consecutive records with no new concepts
-        has_new_concepts = bool(result.new_concepts and len(result.new_concepts) > 0)
-        if has_new_concepts:
-            new_concepts_total += len(result.new_concepts)  # type: ignore[arg-type]
-            consecutive_no_new = 0
-        else:
-            consecutive_no_new += 1
+        # New-concepts total (display metric — counts all papers)
+        if result.new_concepts and isinstance(result.new_concepts, list):
+            new_concepts_total += len(result.new_concepts)
+
+        # Saturation counter: mirrors human review — only included papers count.
+        # Excluded/uncertain papers are skipped, exactly as framework_updated is
+        # only set during extraction (which never happens for excluded papers).
+        if result.ta_decision == "include":
+            has_new_concepts = bool(result.new_concepts and len(result.new_concepts) > 0)
+            if has_new_concepts:
+                consecutive_no_new = 0
+            else:
+                consecutive_no_new += 1
 
         itok = result.input_tokens or 0
         otok = result.output_tokens or 0
@@ -1184,6 +1508,538 @@ async def _screen_one_record(
         model=model,
         extracted_json=extracted_json,
     )
+
+
+# ---------------------------------------------------------------------------
+# TA-only screening (Phase 1 of two-phase interactive workflow)
+# ---------------------------------------------------------------------------
+
+
+async def _execute_run_ta_only(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
+) -> None:
+    """Background task: TA-only screening — no full-text fetch, no FT decision."""
+    async with SessionLocal() as db:
+        try:
+            await _do_execute_run_ta_only(db, project_id, run_id, model, anthropic_api_key, openrouter_api_key, pipeline)
+        except Exception as exc:
+            logger.exception("LLM ta_only run %s failed", run_id)
+            async with SessionLocal() as err_db:
+                await err_db.execute(
+                    update(LlmScreeningRun)
+                    .where(LlmScreeningRun.id == run_id)
+                    .values(
+                        status="failed",
+                        error_message=str(exc),
+                        completed_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+                await err_db.commit()
+
+
+async def _do_execute_run_ta_only(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
+) -> None:
+    """Screen every record by title/abstract only — no full-text fetch.
+
+    Produces ta_decision for every record.  ft_decision is always null.
+    full_text_source is always 'abstract_only'.
+    On completion, status = 'awaiting_fulltext' so the UI can prompt the user
+    to supply PDFs before triggering the FT phase.
+    """
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(status="running", started_at=datetime.now(tz=timezone.utc))
+    )
+    await db.commit()
+
+    records = (
+        await db.execute(select(Record).where(Record.project_id == project_id))
+    ).scalars().all()
+    total = len(records)
+
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(total_records=total)
+    )
+    await db.commit()
+
+    project: Optional[Project] = await db.get(Project, project_id)
+    criteria: dict = {}
+    llm_config: Optional[dict] = None
+    if project:
+        criteria = project.criteria or {}
+        llm_config = project.llm_config
+
+    framework_nodes = (
+        await db.execute(
+            select(OntologyNode)
+            .where(
+                OntologyNode.project_id == project_id,
+                OntologyNode.namespace.in_(["theme", "code"]),
+            )
+            .order_by(OntologyNode.namespace.desc(), OntologyNode.position)
+        )
+    ).scalars().all()
+
+    run_row: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    agent_mode: str = "single"
+    effective_pipeline: list[dict] = pipeline or []
+    triggered_by_id: Optional[uuid.UUID] = None
+    if run_row is not None:
+        agent_mode = run_row.agent_mode or "single"
+        if not effective_pipeline and run_row.agent_pipeline:
+            effective_pipeline = run_row.agent_pipeline
+        triggered_by_id = run_row.triggered_by
+
+    in_price, out_price = _cost_per_token(model)
+
+    # Resume: skip already-processed records and restore accumulators
+    _state = await _restore_run_state(db, run_id, in_price, out_price)
+    if _state["processed_ids"]:
+        logger.info("Resuming ta_only run %s: skipping %d records", run_id, len(_state["processed_ids"]))
+        records = [r for r in records if r.id not in _state["processed_ids"]]
+    included = _state["ta_included"]
+    excluded = _state["ta_excluded"]
+    uncertain = _state["ta_uncertain"]
+    new_concepts_total = _state["new_concepts_total"]
+    input_tok_total = _state["input_tok_total"]
+    output_tok_total = _state["output_tok_total"]
+    actual_cost = _state["actual_cost"]
+    # total is the original full count (set before filtering above)
+    abstract_only_total = total
+
+    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+
+    async def _process_ta(record: Record) -> None:
+        nonlocal included, excluded, uncertain, new_concepts_total
+        nonlocal input_tok_total, output_tok_total, actual_cost
+
+        async with semaphore:
+            async with SessionLocal() as task_db:
+                try:
+                    # Build prompt with abstract only (pass full_text=None explicitly)
+                    system_prompt: Optional[str] = None
+                    if llm_config:
+                        if llm_config.get("use_full_override") and llm_config.get("full_override_prompt"):
+                            system_prompt = llm_config["full_override_prompt"]
+                        elif llm_config.get("custom_system_additions"):
+                            system_prompt = llm_config["custom_system_additions"] + "\n\n" + _SYSTEM_PROMPT
+
+                    prompt = _build_prompt(
+                        record,
+                        full_text=None,
+                        full_text_source="abstract_only",
+                        criteria=criteria,
+                        framework=framework_nodes,
+                        llm_config=llm_config,
+                        extraction_template=None,
+                        include_extraction=False,
+                    )
+
+                    try:
+                        llm_output = await _call_llm(
+                            model, prompt,
+                            anthropic_api_key, openrouter_api_key,
+                            system_prompt_override=system_prompt,
+                        )
+                    except Exception:
+                        logger.exception("LLM call failed for record %s (ta_only)", record.id)
+                        return
+
+                    result = LlmScreeningResult(
+                        run_id=run_id,
+                        project_id=project_id,
+                        record_id=record.id,
+                        cluster_id=None,
+                        ta_decision=llm_output.get("ta_decision"),
+                        ta_reason=llm_output.get("ta_reason"),
+                        ft_decision=None,
+                        ft_reason=None,
+                        matched_codes=llm_output.get("matched_codes") or [],
+                        new_concepts=llm_output.get("new_concepts") or [],
+                        full_text_source="abstract_only",
+                        input_tokens=llm_output.get("_input_tokens"),
+                        output_tokens=llm_output.get("_output_tokens"),
+                        model=model,
+                        extracted_json=None,
+                    )
+
+                    task_db.add(result)
+                    await task_db.flush()
+
+                    if result.ta_decision == "include":
+                        included += 1
+                    elif result.ta_decision == "exclude":
+                        excluded += 1
+                    elif result.ta_decision == "uncertain":
+                        uncertain += 1
+                    if result.new_concepts and isinstance(result.new_concepts, list):
+                        new_concepts_total += len(result.new_concepts)
+
+                    itok = result.input_tokens or 0
+                    otok = result.output_tokens or 0
+                    input_tok_total += itok
+                    output_tok_total += otok
+                    actual_cost += itok * in_price + otok * out_price
+
+                    await task_db.execute(
+                        update(LlmScreeningRun)
+                        .where(LlmScreeningRun.id == run_id)
+                        .values(
+                            processed_records=LlmScreeningRun.processed_records + 1,
+                            included_count=included,
+                            excluded_count=excluded,
+                            uncertain_count=uncertain,
+                            new_concepts_count=new_concepts_total,
+                            input_tokens=input_tok_total,
+                            output_tokens=output_tok_total,
+                        )
+                    )
+                    await task_db.commit()
+
+                except Exception:
+                    logger.exception("Error in ta_only task for record %s", record.id)
+                    # No explicit rollback — async with SessionLocal() close() handles it
+
+    tasks = [_process_ta(record) for record in records]
+    await asyncio.gather(*tasks)
+
+    # TA phase done — mark completed; the UI will show the FT Queue panel as
+    # an optional next step if the user wants to proceed to full-text screening.
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(
+            status="completed",
+            completed_at=datetime.now(tz=timezone.utc),
+            actual_cost_usd=Decimal(str(round(actual_cost, 6))),
+            included_count=included,
+            excluded_count=excluded,
+            uncertain_count=uncertain,
+            new_concepts_count=new_concepts_total,
+            input_tokens=input_tok_total,
+            output_tokens=output_tok_total,
+            abstract_only_count=abstract_only_total,
+        )
+    )
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# FT-only screening (Phase 2 of two-phase interactive workflow)
+# ---------------------------------------------------------------------------
+
+
+async def _execute_run_ft_only(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    source_run_id: Optional[uuid.UUID],
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
+) -> None:
+    """Background task: FT screening for records that passed TA in source_run_id."""
+    async with SessionLocal() as db:
+        try:
+            await _do_execute_run_ft_only(
+                db, project_id, run_id, model, source_run_id,
+                anthropic_api_key, openrouter_api_key, pipeline,
+            )
+        except Exception as exc:
+            logger.exception("LLM ft_only run %s failed", run_id)
+            async with SessionLocal() as err_db:
+                await err_db.execute(
+                    update(LlmScreeningRun)
+                    .where(LlmScreeningRun.id == run_id)
+                    .values(
+                        status="failed",
+                        error_message=str(exc),
+                        completed_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+                await err_db.commit()
+
+
+async def _do_execute_run_ft_only(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    model: str,
+    source_run_id: Optional[uuid.UUID],
+    anthropic_api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
+    pipeline: Optional[list] = None,
+) -> None:
+    """Screen at the full-text stage records that were TA-included in source_run_id.
+
+    For each record:
+      - Attempts full-text fetch (uploaded PDF → OneDrive → Unpaywall → PMC).
+      - If full text found: makes FT include/exclude decision + runs extraction.
+      - If still abstract_only: leaves ft_decision=null, increments abstract_only_count.
+    """
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(status="running", started_at=datetime.now(tz=timezone.utc))
+    )
+    await db.commit()
+
+    # Load records that were TA-included in the source (ta_only) run
+    if source_run_id is None:
+        logger.error("ft_only run %s has no source_run_id", run_id)
+        await db.execute(
+            update(LlmScreeningRun).where(LlmScreeningRun.id == run_id)
+            .values(status="failed", error_message="No source_run_id provided",
+                    completed_at=datetime.now(tz=timezone.utc))
+        )
+        await db.commit()
+        return
+
+    included_record_ids: list[uuid.UUID] = [
+        row.record_id
+        for row in (
+            await db.execute(
+                select(LlmScreeningResult.record_id)
+                .where(
+                    LlmScreeningResult.run_id == source_run_id,
+                    LlmScreeningResult.ta_decision == "include",
+                    LlmScreeningResult.record_id.isnot(None),
+                )
+            )
+        ).all()
+    ]
+
+    total = len(included_record_ids)
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(total_records=total)
+    )
+    await db.commit()
+
+    project: Optional[Project] = await db.get(Project, project_id)
+    criteria: dict = {}
+    llm_config: Optional[dict] = None
+    extraction_template: Optional[dict] = None
+    if project:
+        criteria = project.criteria or {}
+        llm_config = project.llm_config
+        extraction_template = project.extraction_template
+
+    framework_nodes = (
+        await db.execute(
+            select(OntologyNode)
+            .where(
+                OntologyNode.project_id == project_id,
+                OntologyNode.namespace.in_(["theme", "code"]),
+            )
+            .order_by(OntologyNode.namespace.desc(), OntologyNode.position)
+        )
+    ).scalars().all()
+
+    run_row: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    include_extraction: bool = True
+    triggered_by_id: Optional[uuid.UUID] = None
+    effective_pipeline: list[dict] = pipeline or []
+    if run_row is not None:
+        include_extraction = run_row.include_extraction
+        triggered_by_id = run_row.triggered_by
+        if not effective_pipeline and run_row.agent_pipeline:
+            effective_pipeline = run_row.agent_pipeline
+
+    onedrive_token: Optional[str] = await _load_onedrive_token(db, triggered_by_id)
+
+    in_price, out_price = _cost_per_token(model)
+
+    # Resume: skip already-processed records and restore accumulators
+    _state = await _restore_run_state(db, run_id, in_price, out_price)
+    if _state["processed_ids"]:
+        logger.info("Resuming ft_only run %s: skipping %d records", run_id, len(_state["processed_ids"]))
+        included_record_ids = [rid for rid in included_record_ids if rid not in _state["processed_ids"]]
+    ft_included = _state["ft_included"]
+    ft_excluded = _state["ft_excluded"]
+    ft_uncertain = _state["ft_uncertain"]
+    new_concepts_total = _state["new_concepts_total"]
+    input_tok_total = _state["input_tok_total"]
+    output_tok_total = _state["output_tok_total"]
+    actual_cost = _state["actual_cost"]
+    abstract_only_count = _state["abstract_only_count"]
+
+    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+
+    async def _process_ft(record_id: uuid.UUID) -> None:
+        nonlocal ft_included, ft_excluded, ft_uncertain, new_concepts_total
+        nonlocal input_tok_total, output_tok_total, actual_cost, abstract_only_count
+
+        async with semaphore:
+            async with SessionLocal() as task_db:
+                try:
+                    record: Optional[Record] = await task_db.get(Record, record_id)
+                    if record is None:
+                        return
+
+                    full_text, full_text_source = await _fetch_fulltext_for_record(
+                        record, project_id, task_db, onedrive_token=onedrive_token
+                    )
+
+                    if full_text_source == "abstract_only":
+                        # Still no full text even after user had a chance to upload.
+                        # Record the gap and move on without an FT decision.
+                        abstract_only_count += 1
+                        await task_db.execute(
+                            update(LlmScreeningRun)
+                            .where(LlmScreeningRun.id == run_id)
+                            .values(
+                                processed_records=LlmScreeningRun.processed_records + 1,
+                                abstract_only_count=LlmScreeningRun.abstract_only_count + 1,
+                            )
+                        )
+                        await task_db.commit()
+                        return
+
+                    system_prompt: Optional[str] = None
+                    if llm_config:
+                        if llm_config.get("use_full_override") and llm_config.get("full_override_prompt"):
+                            system_prompt = llm_config["full_override_prompt"]
+                        elif llm_config.get("custom_system_additions"):
+                            system_prompt = llm_config["custom_system_additions"] + "\n\n" + _SYSTEM_PROMPT
+
+                    prompt = _build_prompt(
+                        record,
+                        full_text=full_text,
+                        full_text_source=full_text_source,
+                        criteria=criteria,
+                        framework=framework_nodes,
+                        llm_config=llm_config,
+                        extraction_template=extraction_template,
+                        include_extraction=include_extraction,
+                    )
+
+                    try:
+                        llm_output = await _call_llm(
+                            model, prompt,
+                            anthropic_api_key, openrouter_api_key,
+                            system_prompt_override=system_prompt,
+                        )
+                    except Exception:
+                        logger.exception("LLM call failed for record %s (ft_only)", record.id)
+                        return
+
+                    extracted_json: Optional[dict] = None
+                    if (
+                        include_extraction
+                        and extraction_template
+                        and extraction_template.get("rows")
+                        and llm_output.get("ft_decision") == "include"
+                    ):
+                        try:
+                            extracted_json = await _extract_one_record(
+                                record=record,
+                                full_text=full_text,
+                                extraction_template=extraction_template,
+                                llm_config=llm_config,
+                                model=model,
+                                anthropic_api_key=anthropic_api_key,
+                                openrouter_api_key=openrouter_api_key,
+                                system_prompt_override=system_prompt,
+                            )
+                        except Exception:
+                            logger.exception("Extraction failed for record %s (ft_only)", record.id)
+
+                    result = LlmScreeningResult(
+                        run_id=run_id,
+                        project_id=project_id,
+                        record_id=record.id,
+                        cluster_id=None,
+                        ta_decision="include",  # carried from phase 1
+                        ta_reason=None,
+                        ft_decision=llm_output.get("ft_decision"),
+                        ft_reason=llm_output.get("ft_reason"),
+                        matched_codes=llm_output.get("matched_codes") or [],
+                        new_concepts=llm_output.get("new_concepts") or [],
+                        full_text_source=full_text_source,
+                        input_tokens=llm_output.get("_input_tokens"),
+                        output_tokens=llm_output.get("_output_tokens"),
+                        model=model,
+                        extracted_json=extracted_json,
+                    )
+
+                    task_db.add(result)
+                    await task_db.flush()
+
+                    if result.extracted_json:
+                        await _sync_extraction_to_shared_table(task_db, result, triggered_by_id)
+
+                    ft_dec = result.ft_decision
+                    if ft_dec == "include":
+                        ft_included += 1
+                    elif ft_dec == "exclude":
+                        ft_excluded += 1
+                    elif ft_dec == "uncertain":
+                        ft_uncertain += 1
+                    if result.new_concepts and isinstance(result.new_concepts, list):
+                        new_concepts_total += len(result.new_concepts)
+
+                    itok = result.input_tokens or 0
+                    otok = result.output_tokens or 0
+                    input_tok_total += itok
+                    output_tok_total += otok
+                    actual_cost += itok * in_price + otok * out_price
+
+                    await task_db.execute(
+                        update(LlmScreeningRun)
+                        .where(LlmScreeningRun.id == run_id)
+                        .values(
+                            processed_records=LlmScreeningRun.processed_records + 1,
+                            included_count=ft_included,
+                            excluded_count=ft_excluded,
+                            uncertain_count=ft_uncertain,
+                            new_concepts_count=new_concepts_total,
+                            input_tokens=input_tok_total,
+                            output_tokens=output_tok_total,
+                        )
+                    )
+                    await task_db.commit()
+
+                except Exception:
+                    logger.exception("Error in ft_only task for record %s", record_id)
+                    # No explicit rollback — async with SessionLocal() close() handles it
+
+    tasks = [_process_ft(rid) for rid in included_record_ids]
+    await asyncio.gather(*tasks)
+
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(
+            status="completed",
+            completed_at=datetime.now(tz=timezone.utc),
+            actual_cost_usd=Decimal(str(round(actual_cost, 6))),
+            included_count=ft_included,
+            excluded_count=ft_excluded,
+            uncertain_count=ft_uncertain,
+            new_concepts_count=new_concepts_total,
+            input_tokens=input_tok_total,
+            output_tokens=output_tok_total,
+            abstract_only_count=abstract_only_count,
+        )
+    )
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------

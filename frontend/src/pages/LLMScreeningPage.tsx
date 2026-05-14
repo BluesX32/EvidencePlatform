@@ -8,7 +8,7 @@
  *   D. Compare   — LLM vs human agreement stats + disagreement table + send to consensus
  */
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -46,6 +46,8 @@ import {
   type ScreeningQueueHistoryEntry,
   type TeamMember,
   type MissingPdfRecord,
+  type FtQueuePaper,
+  type FtQueueResponse,
 } from "../api/client";
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
@@ -404,10 +406,11 @@ function decisionBadge(decision: string | null, small?: boolean) {
 
 function statusBadge(status: string) {
   const map: Record<string, { label: string; color: string }> = {
-    queued:    { label: "Queued",    color: "#9aa0a6" },
-    running:   { label: "Running…",  color: "#1a73e8" },
-    completed: { label: "Completed", color: "#188038" },
-    failed:    { label: "Failed",    color: "#c5221f" },
+    queued:      { label: "Queued",      color: "#9aa0a6" },
+    running:     { label: "Running…",    color: "#1a73e8" },
+    completed:   { label: "Completed",   color: "#188038" },
+    failed:      { label: "Failed",      color: "#c5221f" },
+    interrupted: { label: "Interrupted", color: "#b06000" },
   };
   const s = map[status] ?? { label: status, color: "#5f6368" };
   return <span style={{ color: s.color, fontWeight: 600, fontSize: "0.82rem" }}>{s.label}</span>;
@@ -682,6 +685,213 @@ function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }:
 
 // ── Missing PDFs Panel ────────────────────────────────────────────────────────
 
+// ── Full Text Queue Panel (ta_only runs) ─────────────────────────────────────
+
+function FtQueuePanel({ projectId, taRun }: { projectId: string; taRun: LlmRunResponse }) {
+  const qc = useQueryClient();
+  const [collapsed, setCollapsed] = useState(false);
+  const [uploading, setUploading] = useState<string | null>(null);
+  const [pasteTarget, setPasteTarget] = useState<string | null>(null); // record_id
+  const [pasteText, setPasteText] = useState("");
+  const [launching, setLaunching] = useState(false);
+
+  const { data: queue, refetch } = useQuery({
+    queryKey: ["llm-ft-queue", taRun.id],
+    queryFn: () => llmScreeningApi.getFtQueue(projectId, taRun.id).then((r) => r.data),
+    staleTime: 10_000,
+    refetchInterval: false,
+  });
+
+  const papers: FtQueuePaper[] = queue?.papers ?? [];
+  const ftRun: LlmRunResponse | null = queue?.ft_run ?? null;
+  const providedCount = papers.filter((p) => p.has_pdf).length;
+
+  async function handleUpload(paper: FtQueuePaper, file: File) {
+    setUploading(paper.record_id);
+    try {
+      await fulltextApi.upload(projectId, file, { record_id: paper.record_id });
+      void refetch();
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  async function handlePasteSubmit(paper: FtQueuePaper) {
+    if (!pasteText.trim()) return;
+    setUploading(paper.record_id);
+    try {
+      // Upload pasted text as a plain-text blob named after the record
+      const blob = new Blob([pasteText], { type: "text/plain" });
+      const file = new File([blob], `${paper.record_id}.txt`, { type: "text/plain" });
+      await fulltextApi.upload(projectId, file, { record_id: paper.record_id });
+      setPasteTarget(null);
+      setPasteText("");
+      void refetch();
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  async function launchFtRun() {
+    setLaunching(true);
+    try {
+      await llmScreeningApi.createRun(projectId, {
+        model: taRun.model,
+        mode: "ft_only",
+        source_run_id: taRun.id,
+        include_extraction: taRun.include_extraction,
+        agent_mode: taRun.agent_mode as "single" | "multi",
+      });
+      qc.invalidateQueries({ queryKey: ["llm-runs", projectId] });
+      void refetch();
+    } finally {
+      setLaunching(false);
+    }
+  }
+
+  const ftRunning = ftRun && (ftRun.status === "running" || ftRun.status === "queued");
+
+  return (
+    <div style={{ border: "2px solid #b06000", borderRadius: "0.5rem", background: "#fffbeb", marginBottom: "1.25rem" }}>
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.75rem 1rem", background: "transparent", border: "none", cursor: "pointer", fontSize: "0.9rem", fontWeight: 700, color: "#92400e" }}
+      >
+        <span>
+          📄 Full-Text Review Queue — {papers.length} paper{papers.length !== 1 ? "s" : ""} included in TA
+          {providedCount > 0 && <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", fontWeight: 400 }}>· {providedCount} PDF{providedCount !== 1 ? "s" : ""} provided</span>}
+        </span>
+        {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+      </button>
+
+      {!collapsed && (
+        <div style={{ padding: "0 1rem 1rem" }}>
+          <p style={{ fontSize: "0.82rem", color: "#78350f", margin: "0 0 0.75rem" }}>
+            These papers passed title/abstract screening. Upload PDFs (or paste article text) so the LLM can perform full-text review and extraction. Papers without a PDF will be skipped in the FT phase.
+          </p>
+
+          {/* Status banner for existing FT run */}
+          {ftRun && (
+            <div style={{ background: ftRun.status === "completed" ? "#e6f4ea" : "#e8f0fe", border: `1px solid ${ftRun.status === "completed" ? "#34a853" : "#1a73e8"}`, borderRadius: "0.375rem", padding: "0.5rem 0.75rem", marginBottom: "0.75rem", fontSize: "0.83rem", color: ftRun.status === "completed" ? "#188038" : "#1a73e8" }}>
+              {ftRun.status === "completed"
+                ? `✓ Full-text screening complete — ${ftRun.included_count} included, ${ftRun.excluded_count} excluded, ${ftRun.abstract_only_count} still no full text`
+                : `Running full-text screening… ${ftRun.processed_records}/${ftRun.total_records ?? "?"} done`}
+            </div>
+          )}
+
+          {/* Paper list */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", maxHeight: 420, overflowY: "auto", marginBottom: "0.75rem" }}>
+            {papers.map((paper) => (
+              <div key={paper.record_id} style={{ background: "#fff", border: `1px solid ${paper.has_pdf ? "#34a853" : "#fde68a"}`, borderRadius: "0.375rem", padding: "0.6rem 0.75rem", fontSize: "0.82rem" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, color: "#1c1b1f", marginBottom: "0.15rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {paper.has_pdf && <span style={{ color: "#34a853", marginRight: "0.3rem" }}>✓</span>}
+                      {paper.title || "(no title)"}
+                    </div>
+                    <div style={{ color: "#5f6368", fontSize: "0.77rem" }}>
+                      {paper.authors ? `${paper.authors.split(";")[0].trim()}${paper.authors.includes(";") ? " et al." : ""}` : ""}
+                      {paper.year ? ` · ${paper.year}` : ""}
+                      {paper.journal ? ` · ${paper.journal}` : ""}
+                    </div>
+                    {paper.ta_reason && <div style={{ color: "#6366f1", fontSize: "0.76rem", marginTop: "0.2rem", fontStyle: "italic" }}>TA: {paper.ta_reason}</div>}
+                  </div>
+
+                  <div style={{ display: "flex", gap: "0.4rem", flexShrink: 0, alignItems: "center" }}>
+                    {/* Open in browser */}
+                    {paper.doi && (
+                      <a
+                        href={`https://doi.org/${paper.doi}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-secondary btn-sm"
+                        style={{ textDecoration: "none", fontSize: "0.78rem" }}
+                      >
+                        Open ↗
+                      </a>
+                    )}
+
+                    {/* Upload PDF */}
+                    <label style={{ cursor: "pointer" }}>
+                      <input
+                        type="file"
+                        accept=".pdf,.txt"
+                        style={{ display: "none" }}
+                        disabled={uploading === paper.record_id}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) void handleUpload(paper, file);
+                          e.target.value = "";
+                        }}
+                      />
+                      <span className="btn-secondary btn-sm" style={{ pointerEvents: uploading === paper.record_id ? "none" : "auto", opacity: uploading === paper.record_id ? 0.6 : 1 }}>
+                        {uploading === paper.record_id ? "Uploading…" : paper.has_pdf ? "Replace" : "Upload PDF"}
+                      </span>
+                    </label>
+
+                    {/* Paste text */}
+                    <button
+                      className="btn-secondary btn-sm"
+                      onClick={() => { setPasteTarget(pasteTarget === paper.record_id ? null : paper.record_id); setPasteText(""); }}
+                    >
+                      Paste text
+                    </button>
+                  </div>
+                </div>
+
+                {/* Inline paste area */}
+                {pasteTarget === paper.record_id && (
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <p style={{ fontSize: "0.77rem", color: "#5f6368", margin: "0 0 0.3rem" }}>Open the paper in your browser, select all text (Ctrl+A / ⌘A), copy, and paste below.</p>
+                    <textarea
+                      value={pasteText}
+                      onChange={(e) => setPasteText(e.target.value)}
+                      placeholder="Paste article full text here…"
+                      rows={6}
+                      style={{ width: "100%", fontSize: "0.8rem", padding: "0.4rem", borderRadius: "0.25rem", border: "1px solid #dadce0", resize: "vertical", boxSizing: "border-box" }}
+                    />
+                    <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.3rem" }}>
+                      <button className="btn-primary btn-sm" disabled={!pasteText.trim() || uploading === paper.record_id} onClick={() => void handlePasteSubmit(paper)}>
+                        {uploading === paper.record_id ? "Saving…" : "Save text"}
+                      </button>
+                      <button className="btn-secondary btn-sm" onClick={() => { setPasteTarget(null); setPasteText(""); }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Launch FT screening */}
+          {!ftRun && !ftRunning && (
+            <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+              <button
+                className="btn-primary"
+                disabled={launching || papers.length === 0}
+                onClick={() => void launchFtRun()}
+                style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}
+              >
+                <Play size={14} />
+                {launching ? "Launching…" : `Start Full-Text Screening (${papers.length} papers)`}
+              </button>
+              {providedCount < papers.length && (
+                <span style={{ fontSize: "0.8rem", color: "#b06000" }}>
+                  {papers.length - providedCount} paper{papers.length - providedCount !== 1 ? "s" : ""} without PDF will be skipped
+                </span>
+              )}
+            </div>
+          )}
+
+          {ftRunning && (
+            <p style={{ fontSize: "0.83rem", color: "#1a73e8" }}>Full-text screening is running… check the run history above for progress.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function MissingPdfsPanel({ projectId, runId }: { projectId: string; runId: string }) {
   const [collapsed, setCollapsed] = useState(true);
   const [uploading, setUploading] = useState<string | null>(null); // record_id being uploaded
@@ -759,6 +969,98 @@ function MissingPdfsPanel({ projectId, runId }: { projectId: string; runId: stri
 }
 
 
+function SubprojectModal({ projectId, run, onClose }: {
+  projectId: string;
+  run: LlmRunResponse;
+  onClose: () => void;
+}) {
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [stage, setStage] = useState<"ta" | "ft">(
+    run.mode === "ta_only" ? "ta" : run.included_count > 0 ? "ft" : "ta"
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasTA = run.included_count > 0;
+  const hasFT = run.mode !== "ta_only" && run.included_count > 0;
+
+  async function handleCreate() {
+    if (!name.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await llmScreeningApi.createSubproject(projectId, run.id, {
+        name: name.trim(),
+        description: description.trim() || undefined,
+        stage,
+      });
+      navigate(`/projects/${res.data.project_id}`);
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Failed to create sub-project";
+      setError(msg);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: "0.75rem", padding: "1.5rem", width: 420, boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ margin: "0 0 0.25rem" }}>Fork as Sub-Project</h3>
+        <p style={{ margin: "0 0 1.25rem", fontSize: "0.85rem", color: "#5f6368" }}>
+          Creates a new project containing only the LLM-included papers, pre-annotated with decisions, reasons, and extractions.
+        </p>
+
+        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>Project name *</label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Full-text review — LLM selected"
+          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.75rem" }}
+        />
+
+        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>Description (optional)</label>
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Optional notes"
+          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.75rem" }}
+        />
+
+        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.4rem" }}>Import which papers?</label>
+        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
+          {hasTA && (
+            <button onClick={() => setStage("ta")}
+              style={{ flex: 1, padding: "0.5rem", borderRadius: "0.5rem", border: `2px solid ${stage === "ta" ? "#1a73e8" : "#dadce0"}`, background: stage === "ta" ? "#e8f0fe" : "#f8f9fa", color: stage === "ta" ? "#1a73e8" : "#5f6368", fontWeight: stage === "ta" ? 700 : 400, cursor: "pointer", fontSize: "0.85rem" }}>
+              TA Included<br />
+              <span style={{ fontSize: "0.75rem", fontWeight: 400 }}>{run.included_count} papers</span>
+            </button>
+          )}
+          {hasFT && (
+            <button onClick={() => setStage("ft")}
+              style={{ flex: 1, padding: "0.5rem", borderRadius: "0.5rem", border: `2px solid ${stage === "ft" ? "#1a73e8" : "#dadce0"}`, background: stage === "ft" ? "#e8f0fe" : "#f8f9fa", color: stage === "ft" ? "#1a73e8" : "#5f6368", fontWeight: stage === "ft" ? 700 : 400, cursor: "pointer", fontSize: "0.85rem" }}>
+              FT Included<br />
+              <span style={{ fontSize: "0.75rem", fontWeight: 400 }}>papers with FT decision</span>
+            </button>
+          )}
+        </div>
+
+        {error && <p style={{ color: "#c5221f", fontSize: "0.82rem", marginBottom: "0.75rem" }}>{error}</p>}
+
+        <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+          <button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-primary" disabled={!name.trim() || busy} onClick={() => void handleCreate()}>
+            {busy ? "Creating…" : "Create Sub-Project"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function ResultsPanel({ projectId, run, extractionTemplate }: {
   projectId: string;
   run: LlmRunResponse;
@@ -768,6 +1070,7 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
   const [page, setPage] = useState(1);
   const [decisionFilter, setDecisionFilter] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [showSubproject, setShowSubproject] = useState(false);
   const PAGE_SIZE = 50;
 
   const { data, isLoading, refetch } = useQuery({
@@ -808,6 +1111,11 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
           ))}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+          {run.status === "completed" && run.included_count > 0 && (
+            <button onClick={() => setShowSubproject(true)} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem", color: "#6366f1", borderColor: "#6366f1" }}>
+              <GitCompare size={13} /> Fork as Sub-Project
+            </button>
+          )}
           <button onClick={handleExport} disabled={exporting || run.status !== "completed"} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem" }}>
             <Download size={13} /> {exporting ? "Exporting…" : "Export CSV"}
           </button>
@@ -816,6 +1124,10 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
           </button>
         </div>
       </div>
+
+      {showSubproject && (
+        <SubprojectModal projectId={projectId} run={run} onClose={() => setShowSubproject(false)} />
+      )}
 
       {/* Summary stats */}
       <div style={{ display: "flex", gap: "1.5rem", background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.65rem 1rem", marginBottom: "1rem", fontSize: "0.85rem", flexWrap: "wrap" }}>
@@ -827,8 +1139,15 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
         <span style={{ marginLeft: "auto", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} · {(run.input_tokens + run.output_tokens).toLocaleString()} tokens</span>
       </div>
 
-      {/* Missing PDFs prompt — only shown when run is complete */}
-      {run.status === "completed" && <MissingPdfsPanel projectId={projectId} runId={run.id} />}
+      {/* Full Text Queue — shown for completed ta_only runs as an optional next step */}
+      {run.mode === "ta_only" && run.status === "completed" && (
+        <FtQueuePanel projectId={projectId} taRun={run} />
+      )}
+
+      {/* Missing PDFs prompt — shown for completed prisma_scr / saturation runs */}
+      {run.status === "completed" && run.mode !== "ta_only" && run.mode !== "ft_only" && (
+        <MissingPdfsPanel projectId={projectId} runId={run.id} />
+      )}
 
       {isLoading ? (
         <p style={{ color: "#5f6368" }}>Loading results…</p>
@@ -1819,7 +2138,7 @@ function PipelineEditor({
 
 // ── Run History Table ─────────────────────────────────────────────────────────
 
-function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void }) {
+function RunHistoryTable({ runs, selectedRunId, onSelect, onResume }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void }) {
   if (runs.length === 0) return <p className="muted">No runs yet. Launch your first LLM run above.</p>;
 
   return (
@@ -1834,6 +2153,7 @@ function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunRespon
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Progress</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Include</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Exclude</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Abstract Only</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>New Concepts</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Cost</th>
           </tr>
@@ -1848,8 +2168,8 @@ function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunRespon
                 <td style={{ padding: "0.55rem 0.75rem", color: "#5f6368", fontSize: "0.78rem" }}>{modelLabel}</td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-                    <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : "#5f6368" }}>
-                      {run.mode === "saturation" ? "Saturation" : "PRISMA-ScR"}
+                    <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : run.mode === "ta_only" ? "#b06000" : run.mode === "ft_only" ? "#1a73e8" : "#5f6368" }}>
+                      {run.mode === "saturation" ? "Saturation" : run.mode === "ta_only" ? "TA Only" : run.mode === "ft_only" ? "FT Only" : "PRISMA-ScR"}
                       {run.stopped_at_saturation && " ⬡"}
                     </span>
                     {run.agent_mode === "multi" && (
@@ -1859,7 +2179,18 @@ function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunRespon
                     )}
                   </div>
                 </td>
-                <td style={{ padding: "0.55rem 0.75rem" }}>{statusBadge(run.status)}{run.error_message && <span title={run.error_message} style={{ marginLeft: "0.35rem", cursor: "help" }}>⚠</span>}</td>
+                <td style={{ padding: "0.55rem 0.75rem" }}>
+                  {statusBadge(run.status)}
+                  {run.status === "interrupted" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onResume(run.id); }}
+                      style={{ marginLeft: "0.5rem", fontSize: "0.75rem", padding: "0.1rem 0.5rem", background: "#fff3e0", color: "#b06000", border: "1px solid #b06000", borderRadius: "0.25rem", cursor: "pointer", fontWeight: 600 }}
+                    >Resume</button>
+                  )}
+                  {run.error_message && run.status !== "interrupted" && (
+                    <span title={run.error_message} style={{ marginLeft: "0.35rem", cursor: "help" }}>⚠</span>
+                  )}
+                </td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
                   {run.status === "running" || run.status === "queued" ? (
                     <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -1872,6 +2203,9 @@ function RunHistoryTable({ runs, selectedRunId, onSelect }: { runs: LlmRunRespon
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#188038", fontWeight: 600 }}>{run.included_count}</td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#c5221f", fontWeight: 600 }}>{run.excluded_count}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: run.abstract_only_count > 0 ? "#b06000" : "#9aa0a6", fontWeight: run.abstract_only_count > 0 ? 600 : 400 }}>
+                  {run.abstract_only_count > 0 ? run.abstract_only_count : "—"}
+                </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#6366f1", fontWeight: 600 }}>{run.new_concepts_count > 0 ? `+${run.new_concepts_count}` : "—"}</td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.82rem", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}</td>
               </tr>
@@ -1901,7 +2235,7 @@ export default function LLMScreeningPage() {
 
   // ── Run config state ───────────────────────────────────────────────────────
   const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-6");
-  const [mode, setMode] = useState<"prisma_scr" | "saturation">("prisma_scr");
+  const [mode, setMode] = useState<"prisma_scr" | "saturation" | "ta_only">("prisma_scr");
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   // Seed: "random" | "custom" | "<number>" (selected from reviewer queue history)
   const [seedSelection, setSeedSelection] = useState<string>("random");
@@ -2014,7 +2348,7 @@ export default function LLMScreeningPage() {
           agent_mode: agentMode,
           pipeline: agentMode === "multi" && pipeline.length > 0 ? pipeline : undefined,
         }
-      ),
+      ).then((r) => ({ data: r.data })),
     onSuccess: (res) => {
       setLaunchError(null);
       qc.invalidateQueries({ queryKey: ["llm-runs", projectId] });
@@ -2039,7 +2373,16 @@ export default function LLMScreeningPage() {
   })();
 
   const hasRunningRun = !!runningRun;
-  const canLaunch = !hasRunningRun && (estimate?.total_records ?? 0) > 0 && (mode === "prisma_scr" || !!selectedSourceId);
+  const canLaunch = !hasRunningRun && (estimate?.total_records ?? 0) > 0 && (mode !== "saturation" || !!selectedSourceId);
+
+  const handleResume = async (runId: string) => {
+    try {
+      await llmScreeningApi.resumeRun(projectId!, runId);
+      void refetchRuns();
+    } catch (e) {
+      console.error("Resume failed", e);
+    }
+  };
 
   // ── Tab definitions ────────────────────────────────────────────────────────
   const TABS: { id: Tab; label: string }[] = [
@@ -2098,10 +2441,11 @@ export default function LLMScreeningPage() {
             <section style={{ background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "1.25rem", marginBottom: "2rem", maxWidth: 700 }}>
               <h3 style={{ marginTop: 0, marginBottom: "1rem" }}>Screening Mode</h3>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1.25rem" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem", marginBottom: "1.25rem" }}>
                 {[
-                  { id: "prisma_scr" as const, label: "PRISMA-ScR Mode", desc: "Screen all records in parallel: TA → FT → Extract. Standard systematic review workflow." },
-                  { id: "saturation" as const, label: "Saturation Mode", desc: "Process one corpus sequentially in queue order. Stop when no new concepts are found (mirrors human saturation)." },
+                  { id: "prisma_scr" as const, label: "PRISMA-ScR", desc: "Screen all records: TA → FT → Extract in parallel. Standard systematic review workflow." },
+                  { id: "ta_only" as const, label: "TA Only (interactive)", desc: "Screen by title/abstract only. Pauses so you can upload PDFs for included papers, then launch FT screening." },
+                  { id: "saturation" as const, label: "Saturation", desc: "Process one corpus sequentially. Stop when no new concepts found (mirrors human saturation review)." },
                 ].map(({ id, label, desc }) => (
                   <div key={id} onClick={() => setMode(id)} style={{ padding: "0.85rem", border: `2px solid ${mode === id ? "#6366f1" : "#dadce0"}`, borderRadius: "0.5rem", cursor: "pointer", background: mode === id ? "#ede9fe" : "#fff" }}>
                     <div style={{ fontWeight: 700, color: mode === id ? "#6366f1" : "#3c4043", marginBottom: "0.25rem" }}>{label}</div>
@@ -2278,7 +2622,7 @@ export default function LLMScreeningPage() {
                   <RefreshCw size={12} /> Refresh
                 </button>
               </div>
-              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} />
+              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} />
             </section>
           </>
         )}

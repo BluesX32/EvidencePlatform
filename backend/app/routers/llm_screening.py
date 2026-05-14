@@ -145,6 +145,9 @@ class LlmRunResponse(BaseModel):
     # Agent fields (migration 027)
     agent_mode: str
     agent_pipeline: Optional[Any]
+    # Two-phase fields (migration 038)
+    source_run_id: Optional[str]
+    abstract_only_count: int
 
 
 class LlmResultResponse(BaseModel):
@@ -179,6 +182,7 @@ class CreateRunBody(BaseModel):
     include_extraction: bool = True
     agent_mode: str = "single"
     pipeline: Optional[list] = None
+    source_run_id: Optional[str] = None  # ft_only runs only
 
 
 class ReviewBody(BaseModel):
@@ -244,6 +248,8 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
         stopped_at_saturation=run.stopped_at_saturation or False,
         agent_mode=run.agent_mode or "single",
         agent_pipeline=run.agent_pipeline,
+        source_run_id=str(run.source_run_id) if run.source_run_id else None,
+        abstract_only_count=run.abstract_only_count or 0,
     )
 
 
@@ -404,8 +410,8 @@ async def create_run(
     project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
 
     # Validate mode-specific requirements
-    if body.mode not in ("prisma_scr", "saturation"):
-        raise HTTPException(400, "mode must be 'prisma_scr' or 'saturation'")
+    if body.mode not in ("prisma_scr", "saturation", "ta_only", "ft_only"):
+        raise HTTPException(400, "mode must be 'prisma_scr', 'saturation', 'ta_only', or 'ft_only'")
     if body.mode == "saturation" and not body.source_id:
         raise HTTPException(422, "source_id is required for saturation mode")
 
@@ -442,6 +448,19 @@ async def create_run(
         except ValueError:
             raise HTTPException(400, "Invalid source_id")
 
+    source_run_uuid: Optional[uuid.UUID] = None
+    if body.source_run_id:
+        try:
+            source_run_uuid = uuid.UUID(body.source_run_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid source_run_id")
+        # Verify the source run belongs to this project
+        src_run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, source_run_uuid)
+        if src_run is None or src_run.project_id != project.id:
+            raise HTTPException(404, "source_run_id not found in this project")
+        if src_run.mode != "ta_only":
+            raise HTTPException(400, "source_run_id must reference a ta_only run")
+
     run = await svc.create_and_launch_run(
         db=db,
         project_id=project.id,
@@ -457,6 +476,7 @@ async def create_run(
         include_extraction=body.include_extraction,
         agent_mode=body.agent_mode,
         pipeline=body.pipeline,
+        source_run_id=source_run_uuid,
     )
     return _run_to_response(run)
 
@@ -960,6 +980,100 @@ async def send_to_consensus(
 
 
 # ---------------------------------------------------------------------------
+# Resume
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/resume",
+    response_model=LlmRunResponse,
+)
+async def resume_run(
+    project_id: str,
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    x_anthropic_api_key: Optional[str] = Header(None, alias="X-Anthropic-Api-Key"),
+    x_openrouter_api_key: Optional[str] = Header(None, alias="X-OpenRouter-Api-Key"),
+) -> LlmRunResponse:
+    """Resume an interrupted run from where it left off."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    run = await _require_run(run_id, project, db)
+
+    profile_keys = user.api_keys or {}
+    effective_anthropic = (
+        x_anthropic_api_key
+        or profile_keys.get("anthropic")
+        or os.environ.get("ANTHROPIC_API_KEY")
+    )
+    effective_openrouter = (
+        x_openrouter_api_key
+        or profile_keys.get("openrouter")
+        or os.environ.get("OPENROUTER_API_KEY")
+    )
+
+    try:
+        run = await svc.resume_run(
+            db=db,
+            project_id=project.id,
+            run_id=run.id,
+            background_tasks=background_tasks,
+            anthropic_api_key=effective_anthropic,
+            openrouter_api_key=effective_openrouter,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    return _run_to_response(run)
+
+
+# ---------------------------------------------------------------------------
+# Sub-project export
+# ---------------------------------------------------------------------------
+
+
+class CreateSubprojectBody(BaseModel):
+    name: str
+    description: Optional[str] = None
+    stage: str = "ta"  # "ta" | "ft"
+
+
+@router.post(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/create-subproject",
+    status_code=201,
+)
+async def create_subproject(
+    project_id: str,
+    run_id: str,
+    body: CreateSubprojectBody,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Fork LLM-included papers into a new child project, pre-annotated with LLM output."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    run = await _require_run(run_id, project, db)
+
+    if body.stage not in ("ta", "ft"):
+        raise HTTPException(400, "stage must be 'ta' or 'ft'")
+
+    try:
+        result = await svc.create_subproject_from_run(
+            db=db,
+            project_id=project.id,
+            run_id=run.id,
+            name=body.name,
+            description=body.description,
+            stage=body.stage,
+            triggered_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Prompt preview
 # ---------------------------------------------------------------------------
 
@@ -1033,3 +1147,90 @@ async def get_missing_pdfs(
         }
         for result, record in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Two-phase interactive screening: FT queue + FT run launcher
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/ft-queue",
+)
+async def get_ft_queue(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """Return all TA-included records from a ta_only run, with full-text availability info.
+
+    Used by the Full Text Queue panel to show the user which papers need PDFs
+    before the FT phase can run.
+    """
+    from app.models.fulltext_pdf import FulltextPdf
+
+    project = await _require_project(project_id, db, user)
+    run = await _require_run(run_id, project, db)
+
+    # Works for ta_only runs (all included papers) and also falls back to
+    # the same abstract_only filter for prisma_scr / saturation runs.
+    ta_rows = (
+        await db.execute(
+            select(LlmScreeningResult, Record)
+            .join(Record, Record.id == LlmScreeningResult.record_id)
+            .where(
+                LlmScreeningResult.run_id == run.id,
+                LlmScreeningResult.ta_decision == "include",
+                LlmScreeningResult.record_id.isnot(None),
+            )
+            .order_by(Record.title)
+        )
+    ).all()
+
+    # Collect record IDs that already have an uploaded PDF
+    record_ids = [result.record_id for result, _ in ta_rows]
+    uploaded_ids: set[uuid.UUID] = set()
+    if record_ids:
+        pdf_rows = (
+            await db.execute(
+                select(FulltextPdf.record_id).where(
+                    FulltextPdf.project_id == project.id,
+                    FulltextPdf.record_id.in_(record_ids),
+                )
+            )
+        ).scalars().all()
+        uploaded_ids = {r for r in pdf_rows if r is not None}
+
+    # Check whether an ft_only run already exists for this ta_only run
+    ft_run = (
+        await db.execute(
+            select(LlmScreeningRun)
+            .where(
+                LlmScreeningRun.project_id == project.id,
+                LlmScreeningRun.source_run_id == run.id,
+                LlmScreeningRun.mode == "ft_only",
+            )
+            .order_by(LlmScreeningRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return {  # type: ignore[return-value]
+        "ta_run_id": str(run.id),
+        "ft_run": _run_to_response(ft_run).model_dump() if ft_run else None,
+        "papers": [
+            {
+                "record_id": str(result.record_id),
+                "title": record.title or "",
+                "authors": record.authors or "",
+                "year": record.year,
+                "doi": record.doi,
+                "journal": record.journal or "",
+                "ta_reason": result.ta_reason,
+                "has_pdf": result.record_id in uploaded_ids,
+                "ft_decision": result.ft_decision,  # populated after ft_only run
+            }
+            for result, record in ta_rows
+        ],
+    }

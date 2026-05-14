@@ -75,10 +75,14 @@ async def _text_from_uploaded_pdf(
     project_id: Optional[object],
     db: AsyncSession,
 ) -> Optional[str]:
-    """Query fulltext_pdfs table for storage_path, extract text via pdfplumber."""
-    try:
-        import uuid as _uuid
+    """Return text from an uploaded file (PDF or plain text) for a record.
 
+    For PDF files: extracts via pdfplumber.
+    For plain-text files (.txt or content_type text/*): decodes bytes directly.
+    This supports both PDF uploads and the "paste text" workflow where the user
+    copies article text from their browser and submits it as a .txt file.
+    """
+    try:
         stmt = select(FulltextPdf).where(
             FulltextPdf.project_id == project_id,
             FulltextPdf.record_id == record_id,
@@ -91,8 +95,18 @@ async def _text_from_uploaded_pdf(
         path = pathlib.Path(row.storage_path)
         if not path.exists():
             return None
-        pdf_bytes = path.read_bytes()
-        text = _extract_pdf_text(pdf_bytes)
+
+        raw = path.read_bytes()
+        ct = (row.content_type or "").lower()
+        is_text = ct.startswith("text/") or (row.original_filename or "").lower().endswith(".txt")
+
+        if is_text:
+            # Pasted full text stored as plain text — decode and return directly.
+            text = raw.decode("utf-8", errors="replace").strip()
+            return _words_up_to(text, _MAX_WORDS) if text else None
+
+        # Default: treat as PDF
+        text = _extract_pdf_text(raw)
         if text:
             return _words_up_to(text, _MAX_WORDS)
         return None

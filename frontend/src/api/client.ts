@@ -60,6 +60,24 @@ export interface MissingPdfRecord {
   ta_reason: string | null;
 }
 
+export interface FtQueuePaper {
+  record_id: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  doi: string | null;
+  journal: string;
+  ta_reason: string | null;
+  has_pdf: boolean;
+  ft_decision: string | null;
+}
+
+export interface FtQueueResponse {
+  ta_run_id: string;
+  ft_run: LlmRunResponse | null;
+  papers: FtQueuePaper[];
+}
+
 export const authApi = {
   register: (email: string, password: string, name: string) =>
     api.post<RegisterResponse>("/auth/register", { email, password, name }),
@@ -1383,7 +1401,7 @@ export interface LlmRunResponse {
   triggered_by: string | null;
   progress_pct: number;
   // Mode fields (migration 025)
-  mode: "prisma_scr" | "saturation";
+  mode: "prisma_scr" | "saturation" | "ta_only" | "ft_only";
   source_id: string | null;
   seed: number | null;
   saturation_threshold: number;
@@ -1392,6 +1410,9 @@ export interface LlmRunResponse {
   // Agent fields (migration 027)
   agent_mode: "single" | "multi";
   agent_pipeline: AgentSpec[] | null;
+  // Two-phase fields (migration 038)
+  source_run_id: string | null;
+  abstract_only_count: number;
 }
 
 export interface MatchedCode {
@@ -1494,13 +1515,14 @@ export const llmScreeningApi = {
     projectId: string,
     body: {
       model: string;
-      mode?: "prisma_scr" | "saturation";
+      mode?: "prisma_scr" | "saturation" | "ta_only" | "ft_only";
       source_id?: string;
       seed?: number;
       saturation_threshold?: number;
       include_extraction?: boolean;
       agent_mode?: "single" | "multi";
       pipeline?: AgentSpec[];
+      source_run_id?: string;
     }
   ) =>
     api.post<LlmRunResponse>(`/projects/${projectId}/llm-screening/runs`, body),
@@ -1578,6 +1600,27 @@ export const llmScreeningApi = {
   getMissingPdfs: (projectId: string, runId: string) =>
     api.get<MissingPdfRecord[]>(
       `/projects/${projectId}/llm-screening/runs/${runId}/missing-pdfs`
+    ),
+
+  getFtQueue: (projectId: string, runId: string) =>
+    api.get<FtQueueResponse>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/ft-queue`
+    ),
+
+  resumeRun: (projectId: string, runId: string) =>
+    api.post<LlmRunResponse>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/resume`,
+      {}
+    ),
+
+  createSubproject: (
+    projectId: string,
+    runId: string,
+    body: { name: string; description?: string; stage: "ta" | "ft" }
+  ) =>
+    api.post<{ project_id: string; project_name: string; imported_count: number }>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/create-subproject`,
+      body
     ),
 };
 
