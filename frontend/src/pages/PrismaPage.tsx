@@ -4,32 +4,31 @@ import { useQuery } from "@tanstack/react-query";
 import { projectsApi, screeningApi } from "../api/client";
 
 // ── Layout ──────────────────────────────────────────────────────────────────
-const PHASE_W = 130;
-const PHASE_X = 10;
-const MAIN_X  = 155;
-const MAIN_W  = 330;
-const SIDE_X  = MAIN_X + MAIN_W + 36;
-const SIDE_W  = 290;
-const W       = SIDE_X + SIDE_W + 24;
-const ROW_GAP = 40;
-
-// Box geometry
-const BOX_RX    = 10;
-const MAIN_MIN_H = 88;
-const SIDE_MIN_H = 88;
-const LINE_H    = 15;  // reason row height
-const REASON_TOP = 44; // y inside box where first reason starts
+const PHASE_W  = 128;
+const PHASE_X  = 10;
+const MAIN_X   = PHASE_X + PHASE_W + 18;
+const MAIN_W   = 330;
+const SIDE_GAP = 38;
+const SIDE_X   = MAIN_X + MAIN_W + SIDE_GAP;
+const SIDE_W   = 296;
+const W        = SIDE_X + SIDE_W + 20;
+const ROW_GAP  = 42;
+const BOX_RX   = 10;
+const MAIN_MIN_H = 92;
+const SIDE_MIN_H = 92;
+const LINE_H     = 16;
+const REASON_TOP = 48; // y-offset inside side box where first reason row starts
 
 // Colors
 const C = {
-  id:      { fill: "#eff6ff", stroke: "#2563eb", head: "#1d4ed8", body: "#1e40af" },
-  dedup:   { fill: "#f5f3ff", stroke: "#7c3aed", head: "#5b21b6", body: "#4c1d95" },
-  screen:  { fill: "#ecfdf5", stroke: "#059669", head: "#065f46", body: "#047857" },
-  excl:    { fill: "#fff1f2", stroke: "#e11d48", head: "#9f1239", body: "#be123c" },
-  incl:    { fill: "#f0fdf4", stroke: "#16a34a", head: "#14532d", body: "#15803d" },
-  arrow:   "#94a3b8",
-  muted:   "#64748b",
-  rule:    "#fda4af",
+  id:     { fill: "#eff6ff", stroke: "#2563eb", head: "#1e40af", body: "#1d4ed8" },
+  dedup:  { fill: "#f5f3ff", stroke: "#7c3aed", head: "#4c1d95", body: "#6d28d9" },
+  screen: { fill: "#ecfdf5", stroke: "#059669", head: "#064e3b", body: "#047857" },
+  excl:   { fill: "#fff1f2", stroke: "#e11d48", head: "#9f1239", body: "#be123c" },
+  incl:   { fill: "#f0fdf4", stroke: "#16a34a", head: "#14532d", body: "#166534" },
+  arrow:  "#94a3b8",
+  muted:  "#64748b",
+  phase:  "#475569",
 };
 
 function fmtReason(code: string | null): string {
@@ -37,13 +36,14 @@ function fmtReason(code: string | null): string {
   return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Group raw source list: collapse "Refs: …" → backward citations, "Citing: …" → forward citations
 function groupSources(raw: { name: string; count: number }[]) {
-  let bwCount = 0, bwN = 0, fwCount = 0, fwN = 0;
+  let bwN = 0, bwCount = 0, fwN = 0, fwCount = 0;
   const dbs: { name: string; count: number }[] = [];
   for (const s of raw) {
-    if (s.name.startsWith("Refs:") || s.name.startsWith("Refs ")) { bwN += s.count; bwCount++; }
-    else if (s.name.startsWith("Citing:") || s.name.startsWith("Citing ")) { fwN += s.count; fwCount++; }
+    // Strip leading non-alphabetic characters (← → arrows, spaces) before checking prefix
+    const core = s.name.replace(/^[^A-Za-z]+/, "");
+    if (core.startsWith("Refs:") || core.startsWith("Refs "))           { bwN += s.count; bwCount++; }
+    else if (core.startsWith("Citing:") || core.startsWith("Citing "))  { fwN += s.count; fwCount++; }
     else dbs.push(s);
   }
   const out = [...dbs];
@@ -53,64 +53,88 @@ function groupSources(raw: { name: string; count: number }[]) {
 }
 
 function sideH(reasons: { reason_code: string | null; count: number }[]): number {
-  if (reasons.length === 0) return SIDE_MIN_H;
-  return Math.max(SIDE_MIN_H, REASON_TOP + reasons.length * LINE_H + 12);
+  return Math.max(SIDE_MIN_H, REASON_TOP + reasons.length * LINE_H + 10);
 }
 
 // ── SVG primitives ──────────────────────────────────────────────────────────
-const cx = MAIN_X + MAIN_W / 2;
-const sxc = SIDE_X + SIDE_W / 2;
+const mainCx = MAIN_X + MAIN_W / 2;
+const sideCx  = SIDE_X + SIDE_W / 2;
 
+/** Renders "n =" in a small muted weight, then the big bold number. */
+function BigN({
+  x, y, value, color, size = 20,
+}: { x: number; y: number; value: number; color: string; size?: number }) {
+  return (
+    <text x={x} y={y} textAnchor="middle">
+      <tspan fontSize={size * 0.58} fontWeight="500" fill={color} opacity={0.55}>n = </tspan>
+      <tspan fontSize={size} fontWeight="800" fill={color}>{value.toLocaleString()}</tspan>
+    </text>
+  );
+}
+
+/** Main flow box with optional top accent stripe. */
 function Box({
-  x, y, w, h, fill, stroke, shadow = true,
-  children,
+  x, y, w, h, fill, stroke, accent = true, children,
 }: {
   x: number; y: number; w: number; h: number;
-  fill: string; stroke: string; shadow?: boolean;
+  fill: string; stroke: string; accent?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <g filter={shadow ? "url(#shadow)" : undefined}>
+    <g filter="url(#shadow)">
       <rect x={x} y={y} width={w} height={h} rx={BOX_RX} fill={fill} stroke={stroke} strokeWidth={1.6} />
+      {accent && (
+        <rect x={x + 2} y={y + 2} width={w - 4} height={6} rx={4} fill={stroke} opacity={0.14} />
+      )}
       {children}
     </g>
   );
 }
 
 function DownArrow({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
-  return <line x1={x} y1={y1} x2={x} y2={y2 - 7} stroke={C.arrow} strokeWidth={1.8} markerEnd="url(#ah)" />;
+  return <line x1={x} y1={y1} x2={x} y2={y2 - 8} stroke={C.arrow} strokeWidth={2} markerEnd="url(#ah)" />;
 }
 
 function RightArrow({ x1, x2, y }: { x1: number; x2: number; y: number }) {
-  return <line x1={x1} y1={y} x2={x2 - 7} y2={y} stroke={C.arrow} strokeWidth={1.8} markerEnd="url(#ah)" />;
+  return <line x1={x1} y1={y} x2={x2 - 8} y2={y} stroke={C.arrow} strokeWidth={2} markerEnd="url(#ah)" />;
 }
 
-function PhaseLabel({ label, y, h }: { label: string; y: number; h: number }) {
-  const midY = y + h / 2;
-  return (
-    <g>
-      <rect x={PHASE_X} y={y} width={PHASE_W} height={h} rx={6} fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1} />
-      <text x={PHASE_X + PHASE_W / 2} y={midY + 4} textAnchor="middle" fontSize={11} fontWeight="700" fill="#475569" letterSpacing="0.3">
-        {label}
-      </text>
-    </g>
-  );
-}
-
-function ReasonLines({
+/** Reason rows: label left-aligned, count right-aligned — reads like a table. */
+function ReasonRows({
   reasons, boxY,
 }: { reasons: { reason_code: string | null; count: number }[]; boxY: number }) {
+  if (reasons.length === 0) return null;
   return (
     <>
-      {reasons.length > 0 && (
-        <line x1={SIDE_X + 10} y1={boxY + 40} x2={SIDE_X + SIDE_W - 10} y2={boxY + 40} stroke={C.rule} strokeWidth={0.8} />
-      )}
-      {reasons.map((r, i) => (
-        <text key={i} x={SIDE_X + 14} y={boxY + REASON_TOP + i * LINE_H} fontSize={9.5} fill="#1e293b">
-          <tspan fill={C.excl.stroke} fontWeight="700">·</tspan>
-          {" "}{fmtReason(r.reason_code)}: n = {r.count.toLocaleString()}
-        </text>
-      ))}
+      {/* separator */}
+      <line
+        x1={SIDE_X + 10} y1={boxY + REASON_TOP - 8}
+        x2={SIDE_X + SIDE_W - 10} y2={boxY + REASON_TOP - 8}
+        stroke="#fca5a5" strokeWidth={0.8} strokeDasharray="3 3"
+      />
+      {reasons.map((r, i) => {
+        const ry = boxY + REASON_TOP + i * LINE_H;
+        const isEven = i % 2 === 0;
+        return (
+          <g key={i}>
+            {isEven && (
+              <rect
+                x={SIDE_X + 4} y={ry - 11}
+                width={SIDE_W - 8} height={LINE_H}
+                rx={2} fill="#fef2f2" opacity={0.7}
+              />
+            )}
+            {/* reason label */}
+            <text x={SIDE_X + 10} y={ry} fontSize={9.5} fill="#374151">
+              {fmtReason(r.reason_code)}
+            </text>
+            {/* count right-aligned */}
+            <text x={SIDE_X + SIDE_W - 10} y={ry} textAnchor="end" fontSize={9.5} fontWeight="700" fill={C.excl.stroke}>
+              {r.count.toLocaleString()}
+            </text>
+          </g>
+        );
+      })}
     </>
   );
 }
@@ -133,55 +157,101 @@ export default function PrismaPage() {
 
   const allSource    = sources.find((s) => s.id === "all");
   const indivSources = sources.filter((s) => s.id !== "all");
-  const grouped      = groupSources(prisma?.by_source ?? indivSources.map((s) => ({ name: s.name, count: s.record_count })));
+  const grouped      = groupSources(
+    prisma?.by_source ?? indivSources.map((s) => ({ name: s.name, count: s.record_count })),
+  );
 
   // Counts
-  const totalIdentified = prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0);
+  const totalIdentified  = prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0);
   const duplicatesRemoved = prisma?.duplicates_removed ?? 0;
-  const afterDedup   = prisma?.total_unique ?? (allSource?.record_count ?? 0);
-  const taScreened   = allSource?.ta_screened ?? 0;
-  const taIncluded   = allSource?.ta_included ?? 0;
-  const taExcluded   = allSource?.ta_excluded ?? (taScreened - taIncluded);
-  const taUncertain  = allSource?.ta_uncertain ?? 0;
-  const taNotScreened = Math.max(0, afterDedup - taScreened);
-  const ftScreened   = allSource?.ft_screened ?? 0;
-  const ftIncluded   = allSource?.ft_included ?? 0;
-  const ftExcluded   = ftScreened - ftIncluded;
-  const ftAwaiting   = Math.max(0, taIncluded - ftScreened);
-  const extracted    = allSource?.extracted_count ?? 0;
-  const taReasons    = prisma?.ta_exclude_reasons ?? [];
-  const ftReasons    = prisma?.ft_exclude_reasons ?? [];
+  const afterDedup       = prisma?.total_unique ?? (allSource?.record_count ?? 0);
+  const taScreened       = allSource?.ta_screened ?? 0;
+  const taIncluded       = allSource?.ta_included ?? 0;
+  const taExcluded       = allSource?.ta_excluded ?? (taScreened - taIncluded);
+  const taUncertain      = allSource?.ta_uncertain ?? 0;
+  const taNotScreened    = Math.max(0, afterDedup - taScreened);
+  const ftScreened       = allSource?.ft_screened ?? 0;
+  const ftIncluded       = allSource?.ft_included ?? 0;
+  const ftExcluded       = ftScreened - ftIncluded;
+  const ftAwaiting       = Math.max(0, taIncluded - ftScreened);
+  const extracted        = allSource?.extracted_count ?? 0;
+  const taReasons        = prisma?.ta_exclude_reasons ?? [];
+  const ftReasons        = prisma?.ft_exclude_reasons ?? [];
 
-  // Row heights
-  const ID_H = Math.max(MAIN_MIN_H, 56 + grouped.length * 18);
-  const DD_H = MAIN_MIN_H;
-  const TA_SIDE_H = sideH(taReasons);
-  const TA_H  = Math.max(MAIN_MIN_H, TA_SIDE_H);
-  const FT_SIDE_H = sideH(ftReasons);
-  const FT_H  = Math.max(MAIN_MIN_H, FT_SIDE_H);
-  const IN_H  = MAIN_MIN_H;
+  // Row heights — main boxes grow to match their side box when the side box is taller
+  // +26 when there is a "Total" line (separator line + text + bottom padding)
+  const ID_H       = Math.max(MAIN_MIN_H, 58 + grouped.length * 18 + (grouped.length > 1 ? 26 : 0));
+  const DD_MAIN_H  = MAIN_MIN_H;
+  const DD_SIDE_H  = SIDE_MIN_H;
+  const TA_SIDE_H  = sideH(taReasons);
+  const TA_MAIN_H  = Math.max(MAIN_MIN_H, TA_SIDE_H);
+  const FT_SIDE_H  = sideH(ftReasons);
+  const FT_MAIN_H  = Math.max(MAIN_MIN_H, FT_SIDE_H);
+  const IN_H       = 96;
 
-  // Row Y positions
-  const R = {
-    id:  50,
-    dd:  0, ta: 0, ft: 0, inc: 0,
-  };
-  R.dd  = R.id  + ID_H + ROW_GAP;
-  R.ta  = R.dd  + Math.max(DD_H, SIDE_MIN_H) + ROW_GAP;
-  R.ft  = R.ta  + Math.max(TA_H, TA_SIDE_H)  + ROW_GAP;
-  R.inc = R.ft  + Math.max(FT_H, FT_SIDE_H)  + ROW_GAP;
-  const H = R.inc + IN_H + 48;
+  // Y positions
+  const R: Record<string, number> = { id: 50 };
+  R.dd  = R.id + ID_H + ROW_GAP;
+  R.ta  = R.dd + Math.max(DD_MAIN_H, DD_SIDE_H) + ROW_GAP;
+  R.ft  = R.ta + Math.max(TA_MAIN_H, TA_SIDE_H) + ROW_GAP;
+  R.inc = R.ft + Math.max(FT_MAIN_H, FT_SIDE_H) + ROW_GAP;
+  const H = R.inc + IN_H + 52;
 
-  function downloadSVG() {
-    if (!svgRef.current) return;
-    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+  // Phase rail spans the full diagram height
+  const railTop = R.id - 6;
+  const railBot = R.inc + IN_H + 6;
+
+  // Phase label segments with dividers
+  const phases = [
+    { label: "Identification", y: R.id,  h: ID_H },
+    { label: "Deduplication",  y: R.dd,  h: Math.max(DD_MAIN_H, DD_SIDE_H) },
+    { label: "Screening",      y: R.ta,  h: Math.max(TA_MAIN_H, TA_SIDE_H) },
+    { label: "Eligibility",    y: R.ft,  h: Math.max(FT_MAIN_H, FT_SIDE_H) },
+    { label: "Included",       y: R.inc, h: IN_H },
+  ];
+
+  function downloadJPG() {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const scale = 2; // 2× for crisp output
+    const svgW  = Number(svgEl.getAttribute("width"));
+    const svgH  = Number(svgEl.getAttribute("height"));
+
+    // Clone and add a white background rect so the JPEG has no transparency artifacts
+    const clone = svgEl.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "prisma-diagram.svg";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("x", "0"); bg.setAttribute("y", "0");
+    bg.setAttribute("width", String(svgW)); bg.setAttribute("height", String(svgH));
+    bg.setAttribute("fill", "white");
+    clone.insertBefore(bg, clone.firstChild);
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+
+    const canvas = document.createElement("canvas");
+    canvas.width  = svgW * scale;
+    canvas.height = svgH * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const img = new Image();
+    img.onload = () => {
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "prisma-diagram.jpg";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, "image/jpeg", 0.95);
+    };
+    img.src = url;
   }
 
   if (srcLoading || prismaLoading) {
@@ -195,7 +265,7 @@ export default function PrismaPage() {
           <h1>PRISMA Flow Diagram</h1>
           <span className="subtitle">Preferred Reporting Items for Systematic Reviews and Meta-Analyses · 2020</span>
         </div>
-        <button className="btn-primary" onClick={downloadSVG}>Download SVG</button>
+        <button className="btn-primary" onClick={downloadJPG}>Download JPG</button>
       </header>
 
       <div style={{
@@ -203,9 +273,9 @@ export default function PrismaPage() {
         background: "#fff",
         border: "1px solid #e5e7eb",
         borderRadius: "0.75rem",
-        boxShadow: "0 2px 8px rgba(0,0,0,.06)",
+        boxShadow: "0 2px 12px rgba(0,0,0,.07)",
         display: "inline-block",
-        padding: "8px",
+        padding: "10px",
       }}>
         <svg
           ref={svgRef}
@@ -215,150 +285,155 @@ export default function PrismaPage() {
           style={{ display: "block", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}
         >
           <defs>
-            {/* Arrow marker */}
-            <marker id="ah" markerWidth={10} markerHeight={7} refX={9} refY={3.5} orient="auto">
-              <polygon points="0 0, 10 3.5, 0 7" fill={C.arrow} />
+            <marker id="ah" markerWidth={9} markerHeight={6} refX={8} refY={3} orient="auto">
+              <polygon points="0 0, 9 3, 0 6" fill={C.arrow} />
             </marker>
-            {/* Drop shadow */}
-            <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
-              <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="#00000018" />
+            <filter id="shadow" x="-10%" y="-10%" width="120%" height="128%">
+              <feDropShadow dx={0} dy={2} stdDeviation={3.5} floodColor="#00000016" />
             </filter>
           </defs>
 
-          {/* ── Phase labels (left rail) ─────────────────────────────── */}
-          <PhaseLabel label="Identification" y={R.id} h={ID_H} />
-          <PhaseLabel label="Deduplication"  y={R.dd} h={Math.max(DD_H, SIDE_MIN_H)} />
-          <PhaseLabel label="Screening"      y={R.ta} h={Math.max(TA_H, TA_SIDE_H)} />
-          <PhaseLabel label="Eligibility"    y={R.ft} h={Math.max(FT_H, FT_SIDE_H)} />
-          <PhaseLabel label="Included"       y={R.inc} h={IN_H} />
+          {/* ── Phase label rail (one unified sidebar) ───────────────── */}
+          <rect
+            x={PHASE_X} y={railTop}
+            width={PHASE_W} height={railBot - railTop}
+            rx={8} fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1}
+          />
+          {phases.map(({ label, y, h }, i) => {
+            const midY = y + h / 2;
+            return (
+              <g key={label}>
+                {/* divider between phases */}
+                {i > 0 && (
+                  <line
+                    x1={PHASE_X + 10} y1={y}
+                    x2={PHASE_X + PHASE_W - 10} y2={y}
+                    stroke="#e2e8f0" strokeWidth={0.8}
+                  />
+                )}
+                <text
+                  x={PHASE_X + PHASE_W / 2} y={midY + 4}
+                  textAnchor="middle" fontSize={10.5} fontWeight="700"
+                  fill={C.phase} letterSpacing="0.2"
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
 
-          {/* ══════════════════════════════════════════════════════════
-              ROW 1 — Identification
-          ══════════════════════════════════════════════════════════ */}
+          {/* ══ ROW 1 — Identification ══════════════════════════════ */}
           <Box x={MAIN_X} y={R.id} w={MAIN_W} h={ID_H} fill={C.id.fill} stroke={C.id.stroke}>
-            <text x={cx} y={R.id + 22} textAnchor="middle" fontSize={13} fontWeight="700" fill={C.id.head}>
+            <text x={mainCx} y={R.id + 24} textAnchor="middle" fontSize={12.5} fontWeight="700" fill={C.id.head}>
               Records identified in databases
             </text>
             {grouped.map((s, i) => (
-              <text key={s.name} x={cx} y={R.id + 40 + i * 18} textAnchor="middle" fontSize={11} fill={C.id.body}>
-                {s.name}: n = {s.count.toLocaleString()}
+              <text key={s.name} x={mainCx} y={R.id + 42 + i * 18} textAnchor="middle" fontSize={11} fill={C.id.body}>
+                {s.name}
+                <tspan fontWeight="700">  n = {s.count.toLocaleString()}</tspan>
               </text>
             ))}
             {grouped.length > 1 && (
-              <text x={cx} y={R.id + 40 + grouped.length * 18} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.id.head}>
-                Total: n = {totalIdentified.toLocaleString()}
-              </text>
+              <>
+                <line
+                  x1={MAIN_X + 20} y1={R.id + 42 + grouped.length * 18 - 10}
+                  x2={MAIN_X + MAIN_W - 20} y2={R.id + 42 + grouped.length * 18 - 10}
+                  stroke={C.id.stroke} strokeWidth={0.6} opacity={0.4}
+                />
+                <text x={mainCx} y={R.id + 42 + grouped.length * 18 + 5} textAnchor="middle" fontSize={11.5} fontWeight="800" fill={C.id.head}>
+                  Total  n = {totalIdentified.toLocaleString()}
+                </text>
+              </>
             )}
           </Box>
 
-          <DownArrow x={cx} y1={R.id + ID_H} y2={R.dd} />
+          <DownArrow x={mainCx} y1={R.id + ID_H} y2={R.dd} />
 
-          {/* ══════════════════════════════════════════════════════════
-              ROW 2 — Deduplication
-          ══════════════════════════════════════════════════════════ */}
-          <Box x={MAIN_X} y={R.dd} w={MAIN_W} h={DD_H} fill={C.dedup.fill} stroke={C.dedup.stroke}>
-            <text x={cx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.dedup.head}>
+          {/* ══ ROW 2 — Deduplication ═══════════════════════════════ */}
+          <Box x={MAIN_X} y={R.dd} w={MAIN_W} h={DD_MAIN_H} fill={C.dedup.fill} stroke={C.dedup.stroke}>
+            <text x={mainCx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.dedup.head}>
               Records after removing duplicates
             </text>
-            <text x={cx} y={R.dd + 56} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.dedup.stroke}>
-              n = {afterDedup.toLocaleString()}
-            </text>
+            <BigN x={mainCx} y={R.dd + 66} value={afterDedup} color={C.dedup.stroke} size={22} />
           </Box>
 
-          {/* Dedup side box */}
-          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.dd + DD_H / 2} />
-          <Box x={SIDE_X} y={R.dd} w={SIDE_W} h={SIDE_MIN_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sxc} y={R.dd + 26} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.dd + DD_MAIN_H / 2} />
+          <Box x={SIDE_X} y={R.dd} w={SIDE_W} h={DD_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
+            <text x={sideCx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
               Duplicates removed
             </text>
-            <text x={sxc} y={R.dd + 58} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.excl.stroke}>
-              n = {duplicatesRemoved.toLocaleString()}
-            </text>
+            <BigN x={sideCx} y={R.dd + 66} value={duplicatesRemoved} color={C.excl.stroke} size={22} />
           </Box>
 
-          <DownArrow x={cx} y1={R.dd + DD_H} y2={R.ta} />
+          <DownArrow x={mainCx} y1={R.dd + DD_MAIN_H} y2={R.ta} />
 
-          {/* ══════════════════════════════════════════════════════════
-              ROW 3 — Title & Abstract Screening
-          ══════════════════════════════════════════════════════════ */}
-          <Box x={MAIN_X} y={R.ta} w={MAIN_W} h={TA_H} fill={C.screen.fill} stroke={C.screen.stroke}>
-            <text x={cx} y={R.ta + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
+          {/* ══ ROW 3 — Title & Abstract Screening ══════════════════ */}
+          <Box x={MAIN_X} y={R.ta} w={MAIN_W} h={TA_MAIN_H} fill={C.screen.fill} stroke={C.screen.stroke}>
+            <text x={mainCx} y={R.ta + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
               Records screened
             </text>
-            <text x={cx} y={R.ta + 44} textAnchor="middle" fontSize={10} fill={C.muted}>(title &amp; abstract)</text>
-            <text x={cx} y={R.ta + 66} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.screen.stroke}>
-              n = {taScreened.toLocaleString()}
+            <text x={mainCx} y={R.ta + 44} textAnchor="middle" fontSize={10} fill={C.muted}>
+              (title &amp; abstract)
             </text>
+            <BigN x={mainCx} y={R.ta + 70} value={taScreened} color={C.screen.stroke} size={22} />
             {taNotScreened > 0 && (
-              <text x={cx} y={R.ta + 82} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+              <text x={mainCx} y={R.ta + 88} textAnchor="middle" fontSize={9.5} fill={C.muted}>
                 awaiting screening: n = {taNotScreened.toLocaleString()}
               </text>
             )}
             {taUncertain > 0 && (
-              <text x={cx} y={R.ta + (taNotScreened > 0 ? 95 : 82)} textAnchor="middle" fontSize={9.5} fill="#92400e">
+              <text x={mainCx} y={R.ta + (taNotScreened > 0 ? 102 : 88)} textAnchor="middle" fontSize={9.5} fill="#92400e">
                 uncertain: n = {taUncertain.toLocaleString()}
               </text>
             )}
           </Box>
 
-          {/* TA exclusion side box */}
           <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ta + TA_SIDE_H / 2} />
           <Box x={SIDE_X} y={R.ta} w={SIDE_W} h={TA_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sxc} y={R.ta + 20} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+            <text x={sideCx} y={R.ta + 22} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
               Records excluded (TA)
             </text>
-            <text x={sxc} y={R.ta + 38} textAnchor="middle" fontSize={14} fontWeight="700" fill={C.excl.stroke}>
-              n = {taExcluded.toLocaleString()}
-            </text>
-            <ReasonLines reasons={taReasons} boxY={R.ta} />
+            <BigN x={sideCx} y={R.ta + 42} value={taExcluded} color={C.excl.stroke} size={14} />
+            <ReasonRows reasons={taReasons} boxY={R.ta} />
           </Box>
 
-          <DownArrow x={cx} y1={R.ta + TA_H} y2={R.ft} />
+          <DownArrow x={mainCx} y1={R.ta + TA_MAIN_H} y2={R.ft} />
 
-          {/* ══════════════════════════════════════════════════════════
-              ROW 4 — Full-text Eligibility
-          ══════════════════════════════════════════════════════════ */}
-          <Box x={MAIN_X} y={R.ft} w={MAIN_W} h={FT_H} fill={C.screen.fill} stroke={C.screen.stroke}>
-            <text x={cx} y={R.ft + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
+          {/* ══ ROW 4 — Full-text Eligibility ═══════════════════════ */}
+          <Box x={MAIN_X} y={R.ft} w={MAIN_W} h={FT_MAIN_H} fill={C.screen.fill} stroke={C.screen.stroke}>
+            <text x={mainCx} y={R.ft + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
               Full-text articles assessed
             </text>
-            <text x={cx} y={R.ft + 42} textAnchor="middle" fontSize={10} fill={C.muted}>(eligibility)</text>
-            <text x={cx} y={R.ft + 64} textAnchor="middle" fontSize={18} fontWeight="700" fill={C.screen.stroke}>
-              n = {ftScreened.toLocaleString()}
+            <text x={mainCx} y={R.ft + 44} textAnchor="middle" fontSize={10} fill={C.muted}>
+              (eligibility)
             </text>
+            <BigN x={mainCx} y={R.ft + 70} value={ftScreened} color={C.screen.stroke} size={22} />
             {ftAwaiting > 0 && (
-              <text x={cx} y={R.ft + 80} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+              <text x={mainCx} y={R.ft + 88} textAnchor="middle" fontSize={9.5} fill={C.muted}>
                 awaiting review: n = {ftAwaiting.toLocaleString()}
               </text>
             )}
           </Box>
 
-          {/* FT exclusion side box */}
           <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ft + FT_SIDE_H / 2} />
           <Box x={SIDE_X} y={R.ft} w={SIDE_W} h={FT_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sxc} y={R.ft + 20} textAnchor="middle" fontSize={11.5} fontWeight="700" fill={C.excl.head}>
+            <text x={sideCx} y={R.ft + 22} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
               Articles excluded (FT)
             </text>
-            <text x={sxc} y={R.ft + 38} textAnchor="middle" fontSize={14} fontWeight="700" fill={C.excl.stroke}>
-              n = {ftExcluded.toLocaleString()}
-            </text>
-            <ReasonLines reasons={ftReasons} boxY={R.ft} />
+            <BigN x={sideCx} y={R.ft + 42} value={ftExcluded} color={C.excl.stroke} size={14} />
+            <ReasonRows reasons={ftReasons} boxY={R.ft} />
           </Box>
 
-          <DownArrow x={cx} y1={R.ft + FT_H} y2={R.inc} />
+          <DownArrow x={mainCx} y1={R.ft + FT_MAIN_H} y2={R.inc} />
 
-          {/* ══════════════════════════════════════════════════════════
-              ROW 5 — Included
-          ══════════════════════════════════════════════════════════ */}
+          {/* ══ ROW 5 — Included ════════════════════════════════════ */}
           <Box x={MAIN_X} y={R.inc} w={MAIN_W} h={IN_H} fill={C.incl.fill} stroke={C.incl.stroke}>
-            <text x={cx} y={R.inc + 26} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.incl.head}>
+            <text x={mainCx} y={R.inc + 26} textAnchor="middle" fontSize={12.5} fontWeight="700" fill={C.incl.head}>
               Studies included in review
             </text>
-            <text x={cx} y={R.inc + 54} textAnchor="middle" fontSize={22} fontWeight="800" fill={C.incl.stroke}>
-              n = {ftIncluded.toLocaleString()}
-            </text>
+            <BigN x={mainCx} y={R.inc + 64} value={ftIncluded} color={C.incl.stroke} size={26} />
             {extracted > 0 && (
-              <text x={cx} y={R.inc + 76} textAnchor="middle" fontSize={9.5} fill={C.muted}>
+              <text x={mainCx} y={R.inc + 84} textAnchor="middle" fontSize={9.5} fill={C.muted}>
                 data extracted: n = {extracted.toLocaleString()}
               </text>
             )}
