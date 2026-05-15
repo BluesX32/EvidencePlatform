@@ -99,7 +99,7 @@ _PRICING: dict[str, tuple[float, float]] = {
     "qwen/qwen3.5-plus-02-15":            (0.50 / 1_000_000,   1.50 / 1_000_000),
     "qwen/qwen3-max-thinking":            (1.80 / 1_000_000,   5.40 / 1_000_000),
     # ── NVIDIA Nemotron (free) via OpenRouter ─────────────────────────────
-    "nemotron/nemotron-3-super":          (0.00 / 1_000_000,   0.00 / 1_000_000),
+    "nvidia/nemotron-3-super-120b-a12b:free": (0.00 / 1_000_000, 0.00 / 1_000_000),
     # ── Cohere via OpenRouter ─────────────────────────────────────────────
     "cohere/command-a-03-2025":           (2.50 / 1_000_000,  10.00 / 1_000_000),
 }
@@ -136,11 +136,14 @@ _MINUTES_PER_RECORD: dict[str, float] = {
     "deepseek/deepseek-v3.2":              0.009,
     "qwen/qwen3.5-plus-02-15":              0.010,
     "qwen/qwen3-max-thinking":              0.022,
-    "nemotron/nemotron-3-super":            0.010,
+    "nvidia/nemotron-3-super-120b-a12b:free": 0.010,
     "cohere/command-a-03-2025":             0.012,
 }
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
+
+# Run IDs for which a stop has been requested; checked inside each processing loop.
+_CANCEL_REQUESTS: set[uuid.UUID] = set()
 
 # Estimated tokens per record (abstract-only baseline)
 _AVG_INPUT_TOKENS = 1500
@@ -511,6 +514,34 @@ async def resume_run(
             _execute_run, project_id, run_id, model,
             anthropic_api_key, openrouter_api_key, pipeline,
         )
+    return run
+
+
+async def cancel_run(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> LlmScreeningRun:
+    """Request a graceful stop for a running or queued LLM screening run.
+
+    Sets the DB status to 'cancelling' immediately so the UI updates, then
+    adds the run_id to _CANCEL_REQUESTS.  Each processing loop checks this
+    set before dispatching the next record and exits cleanly when it is set.
+    """
+    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    if run is None or run.project_id != project_id:
+        raise ValueError("Run not found")
+    if run.status not in ("running", "queued"):
+        raise ValueError(f"Run is not active (status: {run.status!r})")
+
+    _CANCEL_REQUESTS.add(run_id)
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(status="cancelling")
+    )
+    await db.commit()
+    await db.refresh(run)
     return run
 
 
@@ -929,7 +960,11 @@ async def _do_execute_run(
         nonlocal included, excluded, uncertain, new_concepts_total
         nonlocal input_tok_total, output_tok_total, actual_cost
 
+        if run_id in _CANCEL_REQUESTS:
+            return
         async with semaphore:
+            if run_id in _CANCEL_REQUESTS:
+                return
             # Each task gets its own session to avoid concurrent session corruption.
             # Sharing a single AsyncSession across concurrent coroutines causes
             # interleaved flush/commit/rollback calls that corrupt session state.
@@ -1024,12 +1059,14 @@ async def _do_execute_run(
     tasks = [_process(record) for record in records]
     await asyncio.gather(*tasks)
 
-    # Final update
+    was_cancelled = run_id in _CANCEL_REQUESTS
+    _CANCEL_REQUESTS.discard(run_id)
+
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="completed",
+            status="cancelled" if was_cancelled else "completed",
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,
@@ -1225,6 +1262,10 @@ async def _do_execute_run_saturation(
     stopped_early = False
 
     for record_id in record_ids:
+        if run_id in _CANCEL_REQUESTS:
+            stopped_early = True
+            break
+
         record: Optional[Record] = await db.get(Record, record_id)
         if record is None:
             continue
@@ -1331,11 +1372,14 @@ async def _do_execute_run_saturation(
             )
             break
 
+    was_cancelled = run_id in _CANCEL_REQUESTS
+    _CANCEL_REQUESTS.discard(run_id)
+
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="completed",
+            status="cancelled" if was_cancelled else "completed",
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,
@@ -1344,7 +1388,7 @@ async def _do_execute_run_saturation(
             new_concepts_count=new_concepts_total,
             input_tokens=input_tok_total,
             output_tokens=output_tok_total,
-            stopped_at_saturation=stopped_early,
+            stopped_at_saturation=stopped_early and not was_cancelled,
         )
     )
     await db.commit()
@@ -1650,7 +1694,11 @@ async def _do_execute_run_ta_only(
         nonlocal included, excluded, uncertain, new_concepts_total
         nonlocal input_tok_total, output_tok_total, actual_cost
 
+        if run_id in _CANCEL_REQUESTS:
+            return
         async with semaphore:
+            if run_id in _CANCEL_REQUESTS:
+                return
             async with SessionLocal() as task_db:
                 try:
                     # Build prompt with abstract only (pass full_text=None explicitly)
@@ -1740,13 +1788,15 @@ async def _do_execute_run_ta_only(
     tasks = [_process_ta(record) for record in records]
     await asyncio.gather(*tasks)
 
-    # TA phase done — mark completed; the UI will show the FT Queue panel as
-    # an optional next step if the user wants to proceed to full-text screening.
+    was_cancelled = run_id in _CANCEL_REQUESTS
+    _CANCEL_REQUESTS.discard(run_id)
+
+    final_status = "cancelled" if was_cancelled else "completed"
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="completed",
+            status=final_status,
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,

@@ -1640,6 +1640,12 @@ export const llmScreeningApi = {
       {}
     ),
 
+  cancelRun: (projectId: string, runId: string) =>
+    api.post<LlmRunResponse>(
+      `/projects/${projectId}/llm-screening/runs/${runId}/cancel`,
+      {}
+    ),
+
   createSubproject: (
     projectId: string,
     runId: string,

@@ -342,8 +342,8 @@ const MODEL_CATALOG: ModelGroup[] = [
     key: "openrouter",
     models: [
       {
-        id: "nemotron/nemotron-3-super",
-        label: "Nemotron 3 Super (Free)",
+        id: "nvidia/nemotron-3-super-120b-a12b:free",
+        label: "Nemotron 3 Super 120B (Free)",
         cost_per_1k: "Free",
         speed: "Medium",
         context: "128k tokens",
@@ -2177,7 +2177,7 @@ function PipelineEditor({
 
 // ── Run History Table ─────────────────────────────────────────────────────────
 
-function RunHistoryTable({ runs, selectedRunId, onSelect, onResume }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void }) {
+function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void; onCancel: (runId: string) => void }) {
   if (runs.length === 0) return <p className="muted">No runs yet. Launch your first LLM run above.</p>;
 
   return (
@@ -2220,6 +2220,12 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume }: { runs: Ll
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
                   {statusBadge(run.status)}
+                  {(run.status === "running" || run.status === "queued") && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onCancel(run.id); }}
+                      style={{ marginLeft: "0.5rem", fontSize: "0.75rem", padding: "0.1rem 0.5rem", background: "#fce8e6", color: "#c5221f", border: "1px solid #c5221f", borderRadius: "0.25rem", cursor: "pointer", fontWeight: 600 }}
+                    >Stop</button>
+                  )}
                   {run.status === "interrupted" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onResume(run.id); }}
@@ -2420,6 +2426,15 @@ export default function LLMScreeningPage() {
       void refetchRuns();
     } catch (e) {
       console.error("Resume failed", e);
+    }
+  };
+
+  const handleCancel = async (runId: string) => {
+    try {
+      await llmScreeningApi.cancelRun(projectId!, runId);
+      void refetchRuns();
+    } catch (e) {
+      console.error("Cancel failed", e);
     }
   };
 
@@ -2661,7 +2676,7 @@ export default function LLMScreeningPage() {
                   <RefreshCw size={12} /> Refresh
                 </button>
               </div>
-              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} />
+              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} onCancel={handleCancel} />
             </section>
           </>
         )}

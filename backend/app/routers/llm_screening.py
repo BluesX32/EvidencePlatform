@@ -1098,6 +1098,26 @@ async def resume_run(
     return _run_to_response(run)
 
 
+@router.post(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/cancel",
+    response_model=LlmRunResponse,
+)
+async def cancel_run(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> LlmRunResponse:
+    """Request a graceful stop for a running or queued LLM screening run."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    run = await _require_run(run_id, project, db)
+    try:
+        run = await svc.cancel_run(db=db, project_id=project.id, run_id=run.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _run_to_response(run)
+
+
 # ---------------------------------------------------------------------------
 # Sub-project export
 # ---------------------------------------------------------------------------
