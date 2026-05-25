@@ -257,54 +257,98 @@ function LLMMock() {
 
 // ── Ontology visual ───────────────────────────────────────────────────────────
 function OntologyMock() {
+  // Ontology-style: rectangular class boxes, namespace prefixes, directed labelled arrows
+  const NW = 80, NH = 26, NR = 4, hw = NW / 2, hh = NH / 2;
+
   const nodes = [
-    { id: "cvd", label: "Cardiovascular Disease", x: 160, y: 40, color: "#6366f1", r: 28 },
-    { id: "diet", label: "Dietary Pattern", x: 60, y: 120, color: "#10b981", r: 22 },
-    { id: "om3", label: "Omega-3", x: 260, y: 120, color: "#10b981", r: 18 },
-    { id: "inflam", label: "Inflammation", x: 140, y: 160, color: "#f59e0b", r: 20 },
-    { id: "ldl", label: "LDL-C", x: 240, y: 170, color: "#f59e0b", r: 16 },
-    { id: "pop", label: "Adults 40-70", x: 70, y: 195, color: "#ef4444", r: 16 },
+    { id: "entity",  label: "Entity",      ns: "owl:Class",           cx: 170, cy: 26,  stroke: "#818cf8", fill: "#1e1b4b", nsCol: "#6366f1" },
+    { id: "disease", label: "Disease",     ns: "owl:Class",           cx: 76,  cy: 94,  stroke: "#818cf8", fill: "#1e1b4b", nsCol: "#6366f1" },
+    { id: "bio",     label: "Biomarker",   ns: "owl:Class",           cx: 172, cy: 94,  stroke: "#818cf8", fill: "#1e1b4b", nsCol: "#6366f1" },
+    { id: "interv",  label: "Intervention",ns: "owl:Class",           cx: 272, cy: 94,  stroke: "#818cf8", fill: "#1e1b4b", nsCol: "#6366f1" },
+    { id: "cvd",     label: "CVD",         ns: "owl:NamedIndividual", cx: 65,  cy: 164, stroke: "#c4b5fd", fill: "#13103a", nsCol: "#a78bfa" },
+    { id: "crp",     label: "CRP",         ns: "owl:NamedIndividual", cx: 172, cy: 164, stroke: "#34d399", fill: "#022c22", nsCol: "#6ee7b7" },
+    { id: "diet",    label: "Med. Diet",   ns: "owl:NamedIndividual", cx: 278, cy: 164, stroke: "#fb923c", fill: "#431407", nsCol: "#fdba74" },
   ];
+
   const edges = [
-    { x1: 160, y1: 40, x2: 60, y2: 120 },
-    { x1: 160, y1: 40, x2: 260, y2: 120 },
-    { x1: 160, y1: 40, x2: 140, y2: 160 },
-    { x1: 260, y1: 120, x2: 240, y2: 170 },
-    { x1: 60, y1: 120, x2: 70, y2: 195 },
-    { x1: 140, y1: 160, x2: 240, y2: 170 },
+    // subClassOf hierarchy
+    { x1: 170, y1: 39, x2: 76,  y2: 81,  label: "rdfs:subClassOf", lx: 108, ly: 56, dashed: false, col: "#475569" },
+    { x1: 170, y1: 39, x2: 172, y2: 81,  label: "rdfs:subClassOf", lx: 203, ly: 57, dashed: false, col: "#475569" },
+    { x1: 170, y1: 39, x2: 272, y2: 81,  label: "rdfs:subClassOf", lx: 234, ly: 55, dashed: false, col: "#475569" },
+    // rdf:type instantiation
+    { x1: 76,  y1: 107, x2: 65,  y2: 151, label: "rdf:type", lx: 93,  ly: 131, dashed: false, col: "#64748b" },
+    { x1: 172, y1: 107, x2: 172, y2: 151, label: "rdf:type", lx: 198, ly: 131, dashed: false, col: "#64748b" },
+    { x1: 272, y1: 107, x2: 278, y2: 151, label: "rdf:type", lx: 254, ly: 131, dashed: false, col: "#64748b" },
+    // cross-property relation
+    { x1: 103, y1: 164, x2: 133, y2: 164, label: "hasBiomarker", lx: 118, ly: 156, dashed: true, col: "#f97316" },
   ];
+
   return (
     <MockCard>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>Concept Ontology — 2D canvas</div>
-        <div style={{ display: "flex", gap: 5 }}>
-          {[{ c: "#6366f1", l: "Entity" }, { c: "#10b981", l: "Exposure" }, { c: "#f59e0b", l: "Outcome" }, { c: "#ef4444", l: "Population" }].map(n => (
-            <span key={n.l} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9.5, color: "#64748b" }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: n.c }} />{n.l}
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>Knowledge Graph — Ontology</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[{ c: "#818cf8", l: "owl:Class" }, { c: "#c4b5fd", l: "NamedIndividual" }].map(n => (
+            <span key={n.l} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: "#64748b", fontFamily: "monospace" }}>
+              <span style={{ width: 10, height: 9, borderRadius: 2, border: `1.5px solid ${n.c}`, display: "inline-block" }} />
+              {n.l}
             </span>
           ))}
         </div>
       </div>
-      <svg viewBox="0 0 320 220" style={{ width: "100%", height: "auto", background: "#0f172a", borderRadius: 10 }}>
+      <svg viewBox="0 0 340 192" style={{ width: "100%", height: "auto", background: "#0f172a", borderRadius: 10 }}>
         <defs>
-          <filter id="glow">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
+          <marker id="ont-arr"  markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#475569" />
+          </marker>
+          <marker id="ont-arrT" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#64748b" />
+          </marker>
+          <marker id="ont-arrP" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#f97316" />
+          </marker>
         </defs>
-        {edges.map((e, i) => (
-          <line key={i} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
-            stroke="#334155" strokeWidth="1.5" strokeDasharray="4 3" />
+
+        {/* Subtle canvas grid */}
+        {[28, 56, 84, 112, 140, 168].map(y => (
+          <line key={y} x1={0} y1={y} x2={340} y2={y} stroke="#1e293b" strokeWidth={0.5} />
         ))}
+        {[60, 120, 180, 240, 300].map(x => (
+          <line key={x} x1={x} y1={0} x2={x} y2={192} stroke="#1e293b" strokeWidth={0.5} />
+        ))}
+
+        {/* Edges */}
+        {edges.map((e, i) => {
+          const markerId = e.dashed ? "url(#ont-arrP)" : i < 3 ? "url(#ont-arr)" : "url(#ont-arrT)";
+          return (
+            <g key={i}>
+              <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+                stroke={e.col} strokeWidth={1.5}
+                strokeDasharray={e.dashed ? "4 3" : undefined}
+                markerEnd={markerId}
+              />
+              <text x={e.lx} y={e.ly} textAnchor="middle" fontSize={6.5}
+                fill={e.col} fontFamily="monospace">
+                {e.label}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Nodes */}
         {nodes.map(n => (
           <g key={n.id}>
-            <circle cx={n.x} cy={n.y} r={n.r + 4} fill={n.color} opacity={0.15} />
-            <circle cx={n.x} cy={n.y} r={n.r} fill={n.color} opacity={0.9} />
-            <text x={n.x} y={n.y + 1} textAnchor="middle" dominantBaseline="middle"
-              fontSize={n.r > 22 ? 9 : 8} fill="#fff" fontWeight="700">
-              {n.label.split(" ").map((w, i) => (
-                <tspan key={i} x={n.x} dy={i === 0 ? (n.label.includes(" ") ? -5 : 0) : 11}>{w}</tspan>
-              ))}
+            <rect x={n.cx - hw} y={n.cy - hh} width={NW} height={NH} rx={NR}
+              fill={n.fill} stroke={n.stroke} strokeWidth={1.5} />
+            {/* Namespace prefix (top half of box) */}
+            <text x={n.cx} y={n.cy - 4} textAnchor="middle"
+              fontSize={6} fill={n.nsCol} fontFamily="monospace" opacity={0.85}>
+              {n.ns}
+            </text>
+            {/* Concept label (bottom half of box) */}
+            <text x={n.cx} y={n.cy + 7} textAnchor="middle"
+              fontSize={8.5} fill="#e2e8f0" fontWeight={700}>
+              {n.label}
             </text>
           </g>
         ))}
@@ -518,8 +562,8 @@ const PIPELINE_STEPS = [
   { label: "Overlap", sub: "Euler + matrix", color: "#0891b2", icon: "⭕" },
   { label: "Screen", sub: "TA · FT · AI", color: "#059669", icon: "📋" },
   { label: "Extract", sub: "Custom templates", color: "#d97706", icon: "🔬" },
-  { label: "Ontology", sub: "2D/3D graph", color: "#f59e0b", icon: "🕸️" },
   { label: "Thematic", sub: "Code · theme", color: "#ec4899", icon: "🎨" },
+  { label: "Ontology", sub: "2D/3D graph", color: "#f59e0b", icon: "🕸️" },
   { label: "PRISMA", sub: "Publication-ready", color: "#16a34a", icon: "📊" },
 ];
 
@@ -557,7 +601,7 @@ export default function LandingPage() {
             <span style={{
               marginLeft: 8, fontSize: 10.5, fontWeight: 600, color: "#4f46e5",
               background: "#eef2ff", padding: "1px 7px", borderRadius: 99,
-            }}>research</span>
+            }}>literature</span>
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -607,7 +651,7 @@ export default function LandingPage() {
           marginBottom: "1.75rem", position: "relative",
         }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4f46e5" }} />
-          End-to-end evidence synthesis · From import to publication
+          All-in-one literature management · From import to publication
         </div>
 
         <h1 style={{
@@ -617,12 +661,12 @@ export default function LandingPage() {
           margin: "0 auto 1.4rem",
           color: "#0f172a", position: "relative",
         }}>
-          The complete infrastructure<br />
+          The all-in-one platform<br />
           <span style={{
             background: "linear-gradient(90deg, #4f46e5 0%, #7c3aed 40%, #ec4899 100%)",
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
           }}>
-            for systematic reviews
+            for literature management
           </span>
         </h1>
 
@@ -631,9 +675,9 @@ export default function LandingPage() {
           maxWidth: 640, margin: "0 auto 2.5rem",
           lineHeight: 1.7, position: "relative",
         }}>
-          Import from any database, deduplicate with 5-tier matching, screen with AI assistance,
-          extract structured evidence, build concept ontologies, and auto-generate publication-ready PRISMA —
-          all in one fully auditable platform.
+          Import from any database, deduplicate, screen with AI assistance, extract structured evidence,
+          build concept ontologies, and collaborate with your team —
+          everything you need to manage literature, from first import to final publication.
         </p>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center", position: "relative" }}>
@@ -751,7 +795,7 @@ export default function LandingPage() {
             tag="Citation Sourcing — Novel"
             accent="#ec4899"
             title="Discover papers you didn't know to search for"
-            description="Starting from your extracted papers, EvidencePlatform queries Semantic Scholar to fetch every reference each paper cites (backward) and every paper that cites it (forward). Candidates are cross-deduplicated against your existing records, surfaced for review, and imported directly into the normal pipeline — deduplication, overlap detection, and screening included. No other systematic review tool does this automatically."
+            description="Starting from your extracted papers, EvidencePlatform queries Semantic Scholar to fetch every reference each paper cites (backward) and every paper that cites it (forward). Candidates are cross-deduplicated against your existing records, surfaced for review, and imported directly into the normal pipeline — deduplication, overlap detection, and screening included. No other literature management tool does this automatically."
             visual={<CitationMock />}
           />
 
@@ -878,7 +922,7 @@ export default function LandingPage() {
               },
               {
                 icon: "🤝", title: "AI assists, never decides",
-                desc: "LLM components support researchers. Every AI-assisted step has a human review point. Scientific judgment stays with you.",
+                desc: "LLM components support your workflow. Every AI-assisted step has a human review point. Your judgment stays in control.",
                 color: "#d97706",
               },
               {
@@ -933,10 +977,10 @@ export default function LandingPage() {
             margin: "0 auto 1rem", maxWidth: 660,
             letterSpacing: "-1px", lineHeight: 1.15,
           }}>
-            Start your systematic review today
+            Start managing your literature today
           </h2>
           <p style={{ color: "#94a3b8", fontSize: "1.1rem", maxWidth: 500, margin: "0 auto 2.5rem" }}>
-            No credit card. No lock-in. Just open infrastructure that lets you focus on the science.
+            No credit card. No lock-in. One platform for every stage of your literature workflow.
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <button
@@ -980,7 +1024,7 @@ export default function LandingPage() {
           <span style={{ color: "#94a3b8", fontWeight: 600, letterSpacing: "-0.2px" }}>EvidencePlatform</span>
         </div>
         <div style={{ display: "flex", gap: "1.5rem", color: "#475569" }}>
-          <span>Evidence synthesis infrastructure</span>
+          <span>Literature management platform</span>
           <span>·</span>
           <span>christelle.xiong.32@gmail.com</span>
         </div>

@@ -20,6 +20,20 @@ import LabelManager from "../components/LabelManager";
 import CreateSubProjectModal from "../components/CreateSubProjectModal";
 
 // ---------------------------------------------------------------------------
+// Safe UUID generator — genId() requires HTTPS (secure context).
+// This fallback works on HTTP (AWS without TLS) as well.
+// ---------------------------------------------------------------------------
+function genId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return genId();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Field chip definitions for the overlap strategy builder (9 fields)
 // ---------------------------------------------------------------------------
 
@@ -204,7 +218,7 @@ function parseTemplateTable(text: string): ExtractionTemplateRow[] {
     const { label, type: detectedType, options: detectedOpts } = detectAnnotation(rawItem);
 
     rows.push({
-      id: crypto.randomUUID(),
+      id: genId(),
       domain,
       item: label,
       type: explicitType ?? detectedType,
@@ -714,7 +728,7 @@ export default function ProjectPage() {
   function addCriterion(type: "inclusion" | "exclusion") {
     setLocalCriteria((prev) => ({
       ...prev,
-      [type]: [...prev[type], { id: crypto.randomUUID(), text: "" }],
+      [type]: [...prev[type], { id: genId(), text: "" }],
     }));
   }
 
@@ -1434,7 +1448,7 @@ export default function ProjectPage() {
                   setTemplateRows((prev) => [
                     ...prev,
                     {
-                      id: crypto.randomUUID(),
+                      id: genId(),
                       domain: "",
                       item: "",
                       type: "string",
@@ -1706,7 +1720,7 @@ export default function ProjectPage() {
                 type="button"
                 className="btn-secondary"
                 style={{ fontSize: "0.82rem" }}
-                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "entity", input_type: "string", options: [], allow_custom_options: false }])}
+                onClick={() => setConceptFields((prev) => [...prev, { id: genId(), label: "", field_type: "entity", input_type: "string", options: [], allow_custom_options: false }])}
               >
                 + Entity field
               </button>
@@ -1714,7 +1728,7 @@ export default function ProjectPage() {
                 type="button"
                 className="btn-secondary"
                 style={{ fontSize: "0.82rem" }}
-                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "relation", input_type: "string", options: [], allow_custom_options: false }])}
+                onClick={() => setConceptFields((prev) => [...prev, { id: genId(), label: "", field_type: "relation", input_type: "string", options: [], allow_custom_options: false }])}
               >
                 + Relation field
               </button>
@@ -1722,7 +1736,7 @@ export default function ProjectPage() {
                 type="button"
                 className="btn-secondary"
                 style={{ fontSize: "0.82rem" }}
-                onClick={() => setConceptFields((prev) => [...prev, { id: crypto.randomUUID(), label: "", field_type: "metadata", input_type: "string", options: [], allow_custom_options: false }])}
+                onClick={() => setConceptFields((prev) => [...prev, { id: genId(), label: "", field_type: "metadata", input_type: "string", options: [], allow_custom_options: false }])}
               >
                 + Other field
               </button>
@@ -1734,11 +1748,11 @@ export default function ProjectPage() {
                   className="btn-secondary"
                   style={{ fontSize: "0.82rem", borderStyle: "dashed" }}
                   onClick={() => setConceptFields([
-                    { id: crypto.randomUUID(), label: "Entity Name", field_type: "entity", input_type: "string", options: [], allow_custom_options: false, placeholder: "e.g. COVID-19, mortality…" },
-                    { id: crypto.randomUUID(), label: "Entity Type", field_type: "entity", input_type: "single_select", options: ["Disease", "Phenotype", "Gene", "Drug", "Pathway", "Process", "Other"], allow_custom_options: true },
-                    { id: crypto.randomUUID(), label: "Relation Type", field_type: "relation", input_type: "single_select", options: ["causes", "associates_with", "inhibits", "activates", "part_of", "is_a", "other"], allow_custom_options: true },
-                    { id: crypto.randomUUID(), label: "Source Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at start of relation…" },
-                    { id: crypto.randomUUID(), label: "Target Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at end of relation…" },
+                    { id: genId(), label: "Entity Name", field_type: "entity", input_type: "string", options: [], allow_custom_options: false, placeholder: "e.g. COVID-19, mortality…" },
+                    { id: genId(), label: "Entity Type", field_type: "entity", input_type: "single_select", options: ["Disease", "Phenotype", "Gene", "Drug", "Pathway", "Process", "Other"], allow_custom_options: true },
+                    { id: genId(), label: "Relation Type", field_type: "relation", input_type: "single_select", options: ["causes", "associates_with", "inhibits", "activates", "part_of", "is_a", "other"], allow_custom_options: true },
+                    { id: genId(), label: "Source Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at start of relation…" },
+                    { id: genId(), label: "Target Entity", field_type: "relation", input_type: "string", options: [], allow_custom_options: false, placeholder: "Entity at end of relation…" },
                   ])}
                 >
                   ✦ Load ontology preset

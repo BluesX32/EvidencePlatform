@@ -24,9 +24,13 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://evidence:evidence@db:5432/evidenceplatform
-      SECRET_KEY: ${SECRET_KEY:-change-me}
+      SECRET_KEY: ${SECRET_KEY:-change-me-use-a-strong-random-key}
       ACCESS_TOKEN_EXPIRE_HOURS: ${ACCESS_TOKEN_EXPIRE_HOURS:-24}
-      BACKEND_CORS_ORIGINS: http://localhost:5173, http://10.249.112.120:5173
+      # All browser traffic goes through the Vite proxy so CORS is only needed
+      # for direct API access (e.g. Swagger UI).  The frontend URL is enough.
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173}
+      INVITE_REQUIRED: ${INVITE_REQUIRED:-true}
+      ADMIN_SECRET: ${ADMIN_SECRET:-}
       # Used by entrypoint.sh to wait for Postgres before migrating.
       DB_HOST: db
       DB_PORT: "5432"
@@ -41,6 +45,10 @@ services:
     build: ./frontend
     depends_on:
       - backend
+    environment:
+      # Tells the Vite dev-server proxy where to forward API requests.
+      # Uses the Docker service name so it works on any machine / AWS instance.
+      API_TARGET: http://backend:8000
     ports:
       - "5173:5173"
     volumes:
