@@ -40,6 +40,7 @@ import {
   type LlmResultResponse,
   type LlmConfig,
   type LlmComparisonResponse,
+  type RunVsRunResponse,
   type AgentSpec,
   type EstimateStage,
   type Source,
@@ -404,7 +405,14 @@ function decisionBadge(decision: string | null, small?: boolean) {
   );
 }
 
-function statusBadge(status: string) {
+function isEffectivelyCompleted(run: { status: string; processed_records: number; total_records?: number | null }) {
+  if (run.status === "completed") return true;
+  const total = run.total_records ?? 0;
+  return total > 0 && run.processed_records >= total && (run.status === "cancelled" || run.status === "interrupted");
+}
+
+function statusBadge(run: { status: string; processed_records: number; total_records?: number | null }) {
+  const effectiveStatus = isEffectivelyCompleted(run) ? "completed" : run.status;
   const map: Record<string, { label: string; color: string }> = {
     queued:      { label: "Queued",      color: "#9aa0a6" },
     running:     { label: "Running…",    color: "#1a73e8" },
@@ -412,7 +420,7 @@ function statusBadge(status: string) {
     failed:      { label: "Failed",      color: "#c5221f" },
     interrupted: { label: "Interrupted", color: "#b06000" },
   };
-  const s = map[status] ?? { label: status, color: "#5f6368" };
+  const s = map[effectiveStatus] ?? { label: effectiveStatus, color: "#5f6368" };
   return <span style={{ color: s.color, fontWeight: 600, fontSize: "0.82rem" }}>{s.label}</span>;
 }
 
@@ -966,22 +974,7 @@ function MissingPdfsPanel({ projectId, runId }: { projectId: string; runId: stri
 }
 
 
-type LlmCategory = "include" | "uncertain" | "exclude";
-
-const CATEGORY_DEFS: Array<{
-  value: LlmCategory;
-  label: string;
-  corpusName: string;
-  count: (run: LlmRunResponse) => number;
-  color: string;
-  bg: string;
-  border: string;
-  defaultOn: boolean;
-}> = [
-  { value: "include",  label: "Included",  corpusName: "LLM Included",  count: (r) => r.included_count,  color: "#166534", bg: "#dcfce7", border: "#86efac", defaultOn: true  },
-  { value: "uncertain",label: "Uncertain", corpusName: "LLM Uncertain", count: (r) => r.uncertain_count, color: "#92400e", bg: "#fef3c7", border: "#fcd34d", defaultOn: true  },
-  { value: "exclude",  label: "Excluded",  corpusName: "LLM Excluded",  count: (r) => r.excluded_count,  color: "#991b1b", bg: "#fee2e2", border: "#fca5a5", defaultOn: false },
-];
+type SubprojectTopChoice = "corpora" | "included" | "excluded";
 
 function SubprojectModal({ projectId, run, onClose }: {
   projectId: string;
@@ -989,35 +982,75 @@ function SubprojectModal({ projectId, run, onClose }: {
   onClose: () => void;
 }) {
   const navigate = useNavigate();
+
+  // Step 1: top-level choice
+  const [topChoice, setTopChoice] = useState<SubprojectTopChoice | null>(null);
+
+  // Step 2 — "included" sub-options
+  const [includeUncertain, setIncludeUncertain] = useState(false);
+
+  // Step 2 — "excluded" sub-options
+  const [excludedSummaryFetched, setExcludedSummaryFetched] = useState(false);
+  const [reasonCodes, setReasonCodes] = useState<Array<{ reason_code: string; count: number }>>([]);
+  const [hasReasonCodes, setHasReasonCodes] = useState(false);
+  const [sampleReasons, setSampleReasons] = useState<string[]>([]);
+  const [selectedReasonCode, setSelectedReasonCode] = useState<string | null>(null);
+  const [reasonTextFilter, setReasonTextFilter] = useState("");
+  const [loadingSummary, setLoadingSummary] = useState(false);
+
+  // Step 3 — common
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [checked, setChecked] = useState<Set<LlmCategory>>(
-    new Set(CATEGORY_DEFS.filter((c) => c.defaultOn && c.count(run) > 0).map((c) => c.value))
-  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function toggle(cat: LlmCategory) {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat); else next.add(cat);
-      return next;
-    });
+  async function fetchExcludedSummary() {
+    if (excludedSummaryFetched) return;
+    setLoadingSummary(true);
+    try {
+      const res = await llmScreeningApi.getExcludedSummary(projectId, run.id);
+      setReasonCodes(res.data.reason_codes);
+      setHasReasonCodes(res.data.has_reason_codes);
+      setSampleReasons(res.data.sample_reasons);
+    } catch { /* ignore */ }
+    setLoadingSummary(false);
+    setExcludedSummaryFetched(true);
   }
 
-  const selectedCats = CATEGORY_DEFS.filter((c) => checked.has(c.value) && c.count(run) > 0);
-  const totalPapers = selectedCats.reduce((s, c) => s + c.count(run), 0);
+  function handleTopChoice(choice: SubprojectTopChoice) {
+    setTopChoice(choice);
+    setError(null);
+    if (choice === "excluded") void fetchExcludedSummary();
+  }
+
+  function estimatedCount(): number {
+    if (topChoice === "corpora") return run.total_records ?? 0;
+    if (topChoice === "included") return run.included_count + (includeUncertain ? run.uncertain_count : 0);
+    if (topChoice === "excluded") return run.excluded_count;
+    return 0;
+  }
+
+  function getCategories(): Array<"include" | "uncertain" | "exclude"> {
+    if (topChoice === "corpora") return ["include", "uncertain", "exclude"];
+    if (topChoice === "included") return includeUncertain ? ["include", "uncertain"] : ["include"];
+    return ["exclude"];
+  }
 
   async function handleCreate() {
-    if (!name.trim() || selectedCats.length === 0) return;
+    if (!name.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await llmScreeningApi.createSubproject(projectId, run.id, {
+      const body: Parameters<typeof llmScreeningApi.createSubproject>[2] = {
         name: name.trim(),
         description: description.trim() || undefined,
-        categories: selectedCats.map((c) => c.value),
-      });
+        categories: getCategories(),
+      };
+      if (topChoice === "excluded") {
+        if (selectedReasonCode) body.reason_code_filter = selectedReasonCode;
+        else if (reasonTextFilter.trim()) body.ta_reason_contains = reasonTextFilter.trim();
+      }
+      const res = await llmScreeningApi.createSubproject(projectId, run.id, body);
       navigate(`/projects/${res.data.project_id}`);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Failed to create sub-project";
@@ -1026,73 +1059,139 @@ function SubprojectModal({ projectId, run, onClose }: {
     }
   }
 
+  const canCreate = !!name.trim() && !!topChoice && estimatedCount() > 0 && !busy;
+
+  const TOP_CHOICES: Array<{ value: SubprojectTopChoice; label: string; sub: string; count: number; color: string; bg: string; border: string }> = [
+    { value: "corpora",  label: "All papers",     sub: "Fork the entire corpus regardless of LLM decision", count: run.total_records ?? 0, color: "#1e3a5f", bg: "#eff6ff", border: "#93c5fd" },
+    { value: "included", label: "Included papers", sub: "Papers the LLM passed to full-text review",        count: run.included_count,              color: "#166534", bg: "#dcfce7", border: "#86efac" },
+    { value: "excluded", label: "Excluded papers", sub: "Papers the LLM excluded — filter by reason below", count: run.excluded_count,              color: "#991b1b", bg: "#fee2e2", border: "#fca5a5" },
+  ];
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
-      <div style={{ background: "#fff", borderRadius: "0.75rem", padding: "1.5rem", width: 460, boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ background: "#fff", borderRadius: "0.75rem", padding: "1.5rem", width: 520, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: "0 0 0.25rem" }}>Fork as Sub-Project</h3>
         <p style={{ margin: "0 0 1.25rem", fontSize: "0.85rem", color: "#5f6368" }}>
-          Each selected category becomes a separate corpus. Human reviewers can screen them independently and see the LLM rationale inline.
+          Choose what to include, then name your sub-project. LLM decisions and reasons are embedded for PRISMA traceability.
         </p>
 
-        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>Project name *</label>
-        <input
-          autoFocus
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Full-text review — LLM pre-screened"
-          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.75rem" }}
-        />
-
-        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>Description (optional)</label>
-        <input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Optional notes"
-          style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.85rem" }}
-        />
-
-        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.5rem" }}>Select corpora to create</label>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "0.85rem" }}>
-          {CATEGORY_DEFS.map((cat) => {
-            const count = cat.count(run);
-            const isOn = checked.has(cat.value) && count > 0;
-            const disabled = count === 0;
+        {/* ── Step 1: Top-level choice ─────────────────────────────────── */}
+        <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.5rem" }}>1. What papers to include</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "1rem" }}>
+          {TOP_CHOICES.map((c) => {
+            const active = topChoice === c.value;
+            const disabled = c.count === 0;
             return (
-              <label key={cat.value}
-                style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0.85rem", borderRadius: "0.5rem", border: `1.5px solid ${isOn ? cat.border : "#e5e7eb"}`, background: isOn ? cat.bg : "#f9fafb", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1 }}>
-                <input
-                  type="checkbox"
-                  checked={isOn}
-                  disabled={disabled}
-                  onChange={() => toggle(cat.value)}
-                  style={{ width: 15, height: 15, accentColor: "#4f46e5", flexShrink: 0 }}
-                />
+              <button key={c.value} onClick={() => !disabled && handleTopChoice(c.value)}
+                style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.65rem 0.9rem", borderRadius: "0.5rem", border: `1.5px solid ${active ? c.border : "#e5e7eb"}`, background: active ? c.bg : "#f9fafb", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.4 : 1, textAlign: "left", width: "100%" }}>
+                <input type="radio" readOnly checked={active} style={{ accentColor: "#4f46e5", flexShrink: 0 }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: 700, fontSize: "0.88rem", color: isOn ? cat.color : "#6b7280" }}>{cat.label}</span>
-                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: isOn ? cat.color : "#9ca3af" }}>{count.toLocaleString()} papers</span>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 700, fontSize: "0.88rem", color: active ? c.color : "#374151" }}>{c.label}</span>
+                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: active ? c.color : "#9ca3af" }}>{c.count.toLocaleString()} papers</span>
                   </div>
-                  <div style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: "0.1rem" }}>
-                    Corpus: <em>{cat.corpusName}</em>
-                  </div>
+                  <div style={{ fontSize: "0.75rem", color: "#6b7280", marginTop: "0.1rem" }}>{c.sub}</div>
                 </div>
-              </label>
+              </button>
             );
           })}
         </div>
 
-        {selectedCats.length > 0 && (
-          <p style={{ margin: "0 0 0.85rem", fontSize: "0.8rem", color: "#6b7280" }}>
-            {selectedCats.length} corpus{selectedCats.length > 1 ? " corpora" : ""} · {totalPapers.toLocaleString()} papers total · LLM decisions and reasons embedded for PRISMA traceability
-          </p>
+        {/* ── Step 2a: Included sub-options ───────────────────────────── */}
+        {topChoice === "included" && (
+          <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "0.5rem" }}>
+            <label style={{ fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.4rem", display: "block" }}>2. Sub-options</label>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem", cursor: "pointer" }}>
+              <input type="checkbox" checked={includeUncertain} onChange={(e) => setIncludeUncertain(e.target.checked)} style={{ accentColor: "#4f46e5" }} />
+              Also include uncertain papers
+              <span style={{ color: "#6b7280", fontSize: "0.8rem" }}>({run.uncertain_count.toLocaleString()} papers)</span>
+            </label>
+          </div>
+        )}
+
+        {/* ── Step 2b: Excluded sub-options ───────────────────────────── */}
+        {topChoice === "excluded" && (
+          <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#fff7f7", border: "1px solid #fecaca", borderRadius: "0.5rem" }}>
+            <label style={{ fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.5rem", display: "block" }}>2. Filter by exclusion reason (optional)</label>
+
+            {loadingSummary && <p style={{ fontSize: "0.82rem", color: "#6b7280", margin: 0 }}>Loading reason summary…</p>}
+
+            {!loadingSummary && hasReasonCodes && (
+              <>
+                <p style={{ fontSize: "0.78rem", color: "#6b7280", margin: "0 0 0.4rem" }}>Select a category or leave blank to fork all excluded papers:</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", maxHeight: 200, overflowY: "auto" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.83rem", cursor: "pointer", padding: "0.35rem 0.5rem", borderRadius: "0.375rem", background: selectedReasonCode === null ? "#e0e7ff" : "transparent" }}>
+                    <input type="radio" checked={selectedReasonCode === null} onChange={() => setSelectedReasonCode(null)} style={{ accentColor: "#4f46e5" }} />
+                    <span style={{ fontWeight: selectedReasonCode === null ? 700 : 400 }}>All excluded ({run.excluded_count.toLocaleString()})</span>
+                  </label>
+                  {reasonCodes.map((rc) => (
+                    <label key={rc.reason_code} style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.83rem", cursor: "pointer", padding: "0.35rem 0.5rem", borderRadius: "0.375rem", background: selectedReasonCode === rc.reason_code ? "#fee2e2" : "transparent" }}>
+                      <input type="radio" checked={selectedReasonCode === rc.reason_code} onChange={() => setSelectedReasonCode(rc.reason_code)} style={{ accentColor: "#991b1b" }} />
+                      <code style={{ background: "#f1f5f9", padding: "0.1rem 0.35rem", borderRadius: "0.25rem", fontSize: "0.78rem" }}>{rc.reason_code}</code>
+                      <span style={{ color: "#6b7280", fontSize: "0.78rem" }}>{rc.count.toLocaleString()} papers</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {!loadingSummary && !hasReasonCodes && (
+              <>
+                <p style={{ fontSize: "0.78rem", color: "#6b7280", margin: "0 0 0.5rem" }}>
+                  This run was screened before reason codes were added. Use a keyword search to filter papers by their exclusion reason text.
+                </p>
+                <input
+                  value={reasonTextFilter}
+                  onChange={(e) => setReasonTextFilter(e.target.value)}
+                  placeholder='e.g. "conceptualization" or "non-healthcare" — leave blank for all excluded'
+                  style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "0.375rem", border: "1.5px solid #fca5a5", fontSize: "0.85rem", boxSizing: "border-box" }}
+                />
+                {sampleReasons.length > 0 && (
+                  <details style={{ marginTop: "0.5rem" }}>
+                    <summary style={{ fontSize: "0.78rem", color: "#6b7280", cursor: "pointer" }}>Sample exclusion reasons from this run ({sampleReasons.length})</summary>
+                    <ul style={{ margin: "0.35rem 0 0", paddingLeft: "1.1rem", fontSize: "0.75rem", color: "#374151", maxHeight: 160, overflowY: "auto" }}>
+                      {sampleReasons.map((r, i) => <li key={i} style={{ marginBottom: "0.2rem" }}>{r}</li>)}
+                    </ul>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Step 3: Name & create ────────────────────────────────────── */}
+        {topChoice && (
+          <>
+            <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.25rem" }}>3. Sub-project name *</label>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={
+                topChoice === "included" ? "e.g. Full-text review — LLM included"
+                : topChoice === "excluded" ? "e.g. Excluded — not severity conceptualization"
+                : "e.g. All papers sub-review"
+              }
+              style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.6rem" }}
+            />
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Description (optional)"
+              style={{ width: "100%", padding: "0.45rem 0.65rem", borderRadius: "0.375rem", border: "1.5px solid #dadce0", fontSize: "0.9rem", boxSizing: "border-box", marginBottom: "0.85rem" }}
+            />
+            <p style={{ margin: "0 0 0.85rem", fontSize: "0.8rem", color: "#6b7280" }}>
+              ~{estimatedCount().toLocaleString()} papers · LLM decisions embedded for PRISMA traceability
+            </p>
+          </>
         )}
 
         {error && <p style={{ color: "#c5221f", fontSize: "0.82rem", marginBottom: "0.75rem" }}>{error}</p>}
 
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
           <button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn-primary" disabled={!name.trim() || selectedCats.length === 0 || busy} onClick={() => void handleCreate()}>
-            {busy ? "Creating…" : `Create Sub-Project`}
+          <button className="btn-primary" disabled={!canCreate} onClick={() => void handleCreate()}>
+            {busy ? "Creating…" : "Create Sub-Project"}
           </button>
         </div>
       </div>
@@ -1151,12 +1250,12 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
           ))}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
-          {run.status === "completed" && run.processed_records > 0 && (
+          {isEffectivelyCompleted(run) && run.processed_records > 0 && (
             <button onClick={() => setShowSubproject(true)} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem", color: "#6366f1", borderColor: "#6366f1" }}>
               <GitCompare size={13} /> Fork as Sub-Project
             </button>
           )}
-          <button onClick={handleExport} disabled={exporting || run.status !== "completed"} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem" }}>
+          <button onClick={handleExport} disabled={exporting || !isEffectivelyCompleted(run)} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.82rem" }}>
             <Download size={13} /> {exporting ? "Exporting…" : "Export CSV"}
           </button>
           <button onClick={() => void refetch()} className="btn-ghost" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
@@ -1180,12 +1279,12 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
       </div>
 
       {/* Full Text Queue — shown for completed ta_only runs as an optional next step */}
-      {run.mode === "ta_only" && run.status === "completed" && (
+      {run.mode === "ta_only" && isEffectivelyCompleted(run) && (
         <FtQueuePanel projectId={projectId} taRun={run} />
       )}
 
       {/* Missing PDFs prompt — shown for completed prisma_scr / saturation runs */}
-      {run.status === "completed" && run.mode !== "ta_only" && run.mode !== "ft_only" && (
+      {isEffectivelyCompleted(run) && run.mode !== "ta_only" && run.mode !== "ft_only" && (
         <MissingPdfsPanel projectId={projectId} runId={run.id} />
       )}
 
@@ -1656,6 +1755,9 @@ function PromptConfigPanel({
 // ── Compare Panel ─────────────────────────────────────────────────────────────
 
 function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResponse[] }) {
+  const [mode, setMode] = useState<"human" | "run">("human");
+
+  // ── LLM vs Human state ────────────────────────────────────────────────────
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [comparison, setComparison] = useState<LlmComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1664,7 +1766,13 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
   const [sendingConsensus, setSendingConsensus] = useState(false);
   const [sendResult, setSendResult] = useState<{ created: number } | null>(null);
 
-  const completedRuns = runs.filter((r) => r.status === "completed");
+  // ── LLM vs LLM state ─────────────────────────────────────────────────────
+  const [runAId, setRunAId] = useState<string>("");
+  const [runBId, setRunBId] = useState<string>("");
+  const [runVsRun, setRunVsRun] = useState<RunVsRunResponse | null>(null);
+  const [rvLoading, setRvLoading] = useState(false);
+
+  const completedRuns = runs.filter(isEffectivelyCompleted);
   const hasRunningRun = runs.some((r) => r.status === "running" || r.status === "queued");
 
   async function loadComparison(runId: string) {
@@ -1708,6 +1816,18 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
     }
   }
 
+  async function loadRunVsRun() {
+    if (!runAId || !runBId) return;
+    setRvLoading(true);
+    setRunVsRun(null);
+    try {
+      const res = await llmScreeningApi.compareRuns(projectId, runAId, runBId);
+      setRunVsRun(res.data);
+    } finally {
+      setRvLoading(false);
+    }
+  }
+
   const disagreeItems = comparison?.items.filter((i) => i.ta_agrees === false || i.ft_agrees === false) ?? [];
 
   function kappaColor(kappa: number | null) {
@@ -1717,8 +1837,131 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
     return "#c5221f";
   }
 
+  const runLabel = (r: LlmRunResponse) =>
+    `${fmtDate(r.started_at ?? r.created_at)} — ${MODEL_BY_ID[r.model]?.label ?? r.model} (${r.mode})`;
+
   return (
     <section style={{ maxWidth: 900 }}>
+      {/* Mode toggle */}
+      <div style={{ display: "flex", gap: 0, marginBottom: "1.5rem", border: "1px solid #dadce0", borderRadius: "0.5rem", overflow: "hidden", width: "fit-content" }}>
+        {(["human", "run"] as const).map((m) => (
+          <button key={m} type="button" onClick={() => setMode(m)}
+            style={{ padding: "0.45rem 1.1rem", fontSize: "0.85rem", fontWeight: mode === m ? 700 : 400, background: mode === m ? "#4f46e5" : "#fff", color: mode === m ? "#fff" : "#5f6368", border: "none", cursor: "pointer", borderRight: m === "human" ? "1px solid #dadce0" : "none" }}>
+            {m === "human" ? "LLM vs Human" : "LLM vs LLM"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── LLM vs LLM ────────────────────────────────────────────────────── */}
+      {mode === "run" && (
+        <div>
+          <p className="muted" style={{ marginBottom: "1.25rem" }}>
+            Compare TA decisions between two completed screening runs — useful for evaluating model agreement or prompt changes.
+          </p>
+          <div style={{ display: "flex", gap: "1rem", alignItems: "flex-end", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+            <div>
+              <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem", fontSize: "0.85rem" }}>Run A</label>
+              <select value={runAId} onChange={(e) => { setRunAId(e.target.value); setRunVsRun(null); }}
+                style={{ padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", minWidth: 260 }}>
+                <option value="">— choose run A —</option>
+                {completedRuns.map((r) => <option key={r.id} value={r.id}>{runLabel(r)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontWeight: 600, display: "block", marginBottom: "0.4rem", fontSize: "0.85rem" }}>Run B</label>
+              <select value={runBId} onChange={(e) => { setRunBId(e.target.value); setRunVsRun(null); }}
+                style={{ padding: "0.4rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", minWidth: 260 }}>
+                <option value="">— choose run B —</option>
+                {completedRuns.filter((r) => r.id !== runAId).map((r) => <option key={r.id} value={r.id}>{runLabel(r)}</option>)}
+              </select>
+            </div>
+            <button className="btn-primary" disabled={!runAId || !runBId || rvLoading}
+              onClick={() => void loadRunVsRun()} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              <GitCompare size={14} /> {rvLoading ? "Loading…" : "Compare Runs"}
+            </button>
+          </div>
+
+          {runVsRun && (() => {
+            const s = runVsRun.stats;
+            const runALabel = completedRuns.find((r) => r.id === runAId);
+            const runBLabel = completedRuns.find((r) => r.id === runBId);
+            return (
+              <>
+                {/* Stats */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem", marginBottom: "1.5rem" }}>
+                  {[
+                    { label: "Papers compared", value: s.n_compared.toLocaleString(), color: "#1a73e8" },
+                    { label: "TA agreement", value: s.ta_agreement_pct != null ? `${s.ta_agreement_pct}%` : "—", color: kappaColor(s.kappa_ta) },
+                    { label: "Cohen's κ", value: s.kappa_ta != null ? `${s.kappa_ta.toFixed(2)} · ${s.kappa_ta_label}` : "—", color: kappaColor(s.kappa_ta) },
+                    { label: "Disagreements", value: runVsRun.disagreements.length.toLocaleString(), color: runVsRun.disagreements.length > 0 ? "#c5221f" : "#188038" },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} style={{ background: "#f8f9fa", border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1rem" }}>
+                      <div style={{ fontSize: "0.78rem", color: "#5f6368", marginBottom: "0.25rem" }}>{label}</div>
+                      <div style={{ fontSize: "1.15rem", fontWeight: 700, color }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Included count comparison */}
+                <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+                  {[
+                    { run: runALabel, count: s.run_a_included, onlyThis: s.only_a_included, label: "A" },
+                    { run: runBLabel, count: s.run_b_included, onlyThis: s.only_b_included, label: "B" },
+                  ].map(({ run, count, onlyThis, label }) => (
+                    <div key={label} style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "0.5rem", padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
+                      <span style={{ fontWeight: 700 }}>Run {label}</span>
+                      {run && <span style={{ color: "#5f6368", marginLeft: "0.4rem" }}>({MODEL_BY_ID[run.model]?.label ?? run.model})</span>}
+                      <span style={{ marginLeft: "0.75rem" }}><strong>{count}</strong> included</span>
+                      {onlyThis > 0 && <span style={{ marginLeft: "0.5rem", color: "#b06000" }}>({onlyThis} only in this run)</span>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Disagreements table */}
+                {runVsRun.disagreements.length === 0 ? (
+                  <p style={{ color: "#188038", fontWeight: 600 }}>No disagreements — both runs made identical TA decisions on all compared papers.</p>
+                ) : (
+                  <>
+                    <h4 style={{ margin: "0 0 0.75rem" }}>Disagreements ({runVsRun.disagreements.length})</h4>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.83rem" }}>
+                        <thead>
+                          <tr style={{ background: "#f8f9fa", borderBottom: "2px solid #dadce0" }}>
+                            <th style={{ padding: "0.55rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Title</th>
+                            <th style={{ padding: "0.55rem 0.75rem", textAlign: "left", fontWeight: 600, whiteSpace: "nowrap" }}>Run A</th>
+                            <th style={{ padding: "0.55rem 0.75rem", textAlign: "left", fontWeight: 600, whiteSpace: "nowrap" }}>Run B</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {runVsRun.disagreements.map((item) => (
+                            <tr key={item.record_id} style={{ borderBottom: "1px solid #f1f3f4" }}>
+                              <td style={{ padding: "0.55rem 0.75rem", maxWidth: 380 }}>
+                                <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{item.title ?? "(no title)"}</div>
+                                {item.year && <div style={{ fontSize: "0.75rem", color: "#5f6368" }}>{item.year}</div>}
+                              </td>
+                              <td style={{ padding: "0.55rem 0.75rem", verticalAlign: "top" }}>
+                                {decisionBadge(item.run_a_ta)}
+                                {item.run_a_reason_code && <div style={{ fontSize: "0.72rem", color: "#5f6368", marginTop: "0.2rem" }}><code>{item.run_a_reason_code}</code></div>}
+                              </td>
+                              <td style={{ padding: "0.55rem 0.75rem", verticalAlign: "top" }}>
+                                {decisionBadge(item.run_b_ta)}
+                                {item.run_b_reason_code && <div style={{ fontSize: "0.72rem", color: "#5f6368", marginTop: "0.2rem" }}><code>{item.run_b_reason_code}</code></div>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── LLM vs Human ──────────────────────────────────────────────────── */}
+      {mode === "human" && <>
       <p className="muted" style={{ marginBottom: "1.5rem" }}>
         Compare LLM screening decisions with human reviewer decisions. Flag disagreements to the
         consensus queue for senior review.
@@ -1834,6 +2077,7 @@ function ComparePanel({ projectId, runs }: { projectId: string; runs: LlmRunResp
           )}
         </>
       )}
+      </>}
     </section>
   );
 }
@@ -2177,7 +2421,7 @@ function PipelineEditor({
 
 // ── Run History Table ─────────────────────────────────────────────────────────
 
-function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void; onCancel: (runId: string) => void }) {
+function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, onDelete, onFork }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void; onCancel: (runId: string) => void; onDelete: (runId: string) => void; onFork: (run: LlmRunResponse) => void }) {
   if (runs.length === 0) return <p className="muted">No runs yet. Launch your first LLM run above.</p>;
 
   return (
@@ -2191,10 +2435,12 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel }: 
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Status</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Progress</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Include</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Uncertain</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Exclude</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Abstract Only</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>New Concepts</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Cost</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "center", fontWeight: 600 }}></th>
           </tr>
         </thead>
         <tbody>
@@ -2219,14 +2465,14 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel }: 
                   </div>
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
-                  {statusBadge(run.status)}
+                  {statusBadge(run)}
                   {(run.status === "running" || run.status === "queued") && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onCancel(run.id); }}
                       style={{ marginLeft: "0.5rem", fontSize: "0.75rem", padding: "0.1rem 0.5rem", background: "#fce8e6", color: "#c5221f", border: "1px solid #c5221f", borderRadius: "0.25rem", cursor: "pointer", fontWeight: 600 }}
                     >Stop</button>
                   )}
-                  {run.status === "interrupted" && (
+                  {(run.status === "interrupted" || run.status === "cancelled") && !isEffectivelyCompleted(run) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onResume(run.id); }}
                       style={{ marginLeft: "0.5rem", fontSize: "0.75rem", padding: "0.1rem 0.5rem", background: "#fff3e0", color: "#b06000", border: "1px solid #b06000", borderRadius: "0.25rem", cursor: "pointer", fontWeight: 600 }}
@@ -2247,12 +2493,37 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel }: 
                   )}
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#188038", fontWeight: 600 }}>{run.included_count}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: run.uncertain_count > 0 ? "#b06000" : "#9aa0a6", fontWeight: run.uncertain_count > 0 ? 600 : 400 }}>{run.uncertain_count > 0 ? run.uncertain_count : "—"}</td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#c5221f", fontWeight: 600 }}>{run.excluded_count}</td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: run.abstract_only_count > 0 ? "#b06000" : "#9aa0a6", fontWeight: run.abstract_only_count > 0 ? 600 : 400 }}>
                   {run.abstract_only_count > 0 ? run.abstract_only_count : "—"}
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#6366f1", fontWeight: 600 }}>{run.new_concepts_count > 0 ? `+${run.new_concepts_count}` : "—"}</td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.82rem", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}</td>
+                <td style={{ padding: "0.55rem 0.5rem", textAlign: "center", whiteSpace: "nowrap" }}>
+                  {isEffectivelyCompleted(run) && run.processed_records > 0 && (
+                    <button
+                      title="Fork as Sub-Project"
+                      onClick={(e) => { e.stopPropagation(); onFork(run); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#6366f1", padding: "0.2rem", borderRadius: "0.25rem", lineHeight: 1, display: "inline-flex", alignItems: "center", marginRight: "0.2rem" }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#4338ca"; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#6366f1"; }}
+                    >
+                      <GitCompare size={14} />
+                    </button>
+                  )}
+                  {!["running", "queued", "cancelling"].includes(run.status) && (
+                    <button
+                      title="Delete this run"
+                      onClick={(e) => { e.stopPropagation(); onDelete(run.id); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#9aa0a6", padding: "0.2rem", borderRadius: "0.25rem", lineHeight: 1, display: "inline-flex", alignItems: "center" }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#c5221f"; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#9aa0a6"; }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </td>
               </tr>
             );
           })}
@@ -2341,9 +2612,9 @@ export default function LLMScreeningPage() {
   }, [defaultPipelines]);
 
   const { data: estimate, isLoading: estimateLoading } = useQuery({
-    queryKey: ["llm-estimate", projectId, selectedModel, agentMode, mode === "saturation" ? selectedSourceId : null],
+    queryKey: ["llm-estimate", projectId, selectedModel, agentMode, mode, mode === "saturation" ? selectedSourceId : null],
     queryFn: () =>
-      llmScreeningApi.estimate(projectId!, selectedModel, mode === "saturation" && selectedSourceId ? selectedSourceId : undefined, agentMode).then((r) => r.data),
+      llmScreeningApi.estimate(projectId!, selectedModel, mode === "saturation" && selectedSourceId ? selectedSourceId : undefined, agentMode, mode).then((r) => r.data),
     enabled: !!projectId,
     staleTime: 60_000,
   });
@@ -2437,6 +2708,19 @@ export default function LLMScreeningPage() {
       console.error("Cancel failed", e);
     }
   };
+
+  const handleDelete = async (runId: string) => {
+    if (!window.confirm("Delete this run and all its screening results? This cannot be undone.")) return;
+    try {
+      await llmScreeningApi.deleteRun(projectId!, runId);
+      if (selectedRun?.id === runId) setSelectedRun(null);
+      void refetchRuns();
+    } catch (e) {
+      console.error("Delete failed", e);
+    }
+  };
+
+  const [forkRun, setForkRun] = useState<LlmRunResponse | null>(null);
 
   // ── Tab definitions ────────────────────────────────────────────────────────
   const TABS: { id: Tab; label: string }[] = [
@@ -2654,6 +2938,16 @@ export default function LLMScreeningPage() {
                     {agentMode === "multi" && estimate.stages.length > 0 && (
                       <StageCostBreakdown stages={estimate.stages} />
                     )}
+                    {estimate.token_data_source && (
+                      <p style={{ margin: "0.6rem 0 0", fontSize: "0.75rem", color: estimate.token_data_source.startsWith("actual") ? "#188038" : "#9aa0a6" }}>
+                        {estimate.token_data_source.startsWith("actual")
+                          ? `Estimate based on actual token usage from ${estimate.token_data_source.match(/\d+/)?.[0] ?? "past"} screened records in this project.`
+                          : `No past run data — estimate uses default token averages and may be inaccurate. Run a small batch first for a better estimate.`}
+                        {estimate.avg_ta_output_per_record != null && (
+                          <> Avg output: {estimate.avg_ta_output_per_record.toLocaleString()} tokens/record.</>
+                        )}
+                      </p>
+                    )}
                   </>
                 ) : null}
               </div>
@@ -2676,8 +2970,11 @@ export default function LLMScreeningPage() {
                   <RefreshCw size={12} /> Refresh
                 </button>
               </div>
-              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} onCancel={handleCancel} />
+              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} onCancel={handleCancel} onDelete={handleDelete} onFork={setForkRun} />
             </section>
+            {forkRun && projectId && (
+              <SubprojectModal projectId={projectId} run={forkRun} onClose={() => setForkRun(null)} />
+            )}
           </>
         )}
 
@@ -2700,7 +2997,7 @@ export default function LLMScreeningPage() {
                 <select value={selectedRun?.id ?? ""} onChange={(e) => { const r = displayRuns.find((x) => x.id === e.target.value); setSelectedRun(r ?? null); }}
                   style={{ padding: "0.35rem 0.65rem", borderRadius: "0.375rem", border: "1px solid #dadce0", fontSize: "0.85rem", minWidth: 260 }}>
                   <option value="">— select run —</option>
-                  {displayRuns.map((r) => <option key={r.id} value={r.id}>{fmtDate(r.started_at ?? r.created_at)} — {MODEL_BY_ID[r.model]?.label ?? r.model} ({r.status})</option>)}
+                  {displayRuns.map((r) => <option key={r.id} value={r.id}>{fmtDate(r.started_at ?? r.created_at)} — {MODEL_BY_ID[r.model]?.label ?? r.model} ({isEffectivelyCompleted(r) ? "completed" : r.status})</option>)}
                 </select>
               </div>
             )}

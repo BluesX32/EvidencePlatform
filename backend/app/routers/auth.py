@@ -1,25 +1,66 @@
+from __future__ import annotations
+
 import logging
 import os
+import uuid
+from datetime import datetime
+from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Annotated, Optional
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.invite_code import InviteCode
 from app.models.user import User
+from app.repositories.invite_code_repo import InviteCodeRepo
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 
+# ── Admin auth dependency ─────────────────────────────────────────────────────
+
+_optional_bearer = HTTPBearer(auto_error=False)
+
+
+async def _require_admin(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(_optional_bearer)],
+    x_admin_secret: Annotated[Optional[str], Header()] = None,
+) -> Optional[User]:
+    """Allow access when EITHER condition is met:
+
+    1. X-Admin-Secret header matches settings.admin_secret (programmatic / CLI use).
+    2. A valid JWT Bearer token belongs to a user with is_admin=True (frontend use).
+
+    If ADMIN_SECRET env var is not set, path 1 is disabled; only logged-in admins
+    can use these endpoints.
+    """
+    # Path 1: secret header
+    if x_admin_secret:
+        if settings.admin_secret and x_admin_secret == settings.admin_secret:
+            return None  # authenticated via secret — no user object
+        raise HTTPException(status_code=403, detail="Invalid admin secret")
+
+    # Path 2: JWT user with is_admin
+    if credentials:
+        user = await AuthService.verify_token(db, credentials.credentials)
+        if user is not None and user.is_admin:
+            return user
+
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
-    name: str
+    invite_code: Optional[str] = None
 
     @field_validator("password")
     @classmethod
@@ -27,13 +68,6 @@ class RegisterRequest(BaseModel):
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
         return v
-
-    @field_validator("name")
-    @classmethod
-    def name_not_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Name cannot be empty")
-        return v.strip()
 
 
 class LoginRequest(BaseModel):
@@ -82,13 +116,23 @@ class UpdateApiKeysRequest(BaseModel):
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: Annotated[AsyncSession, Depends(get_db)]):
+    # Derive a display name from the email local-part (user can update later via PATCH /auth/me).
+    name = body.email.split("@")[0]
     try:
-        user = await AuthService.register(db, email=body.email, password=body.password, name=body.name)
-    except IntegrityError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
+        user = await AuthService.register(
+            db,
+            email=body.email,
+            password=body.password,
+            name=name,
+            invite_code=body.invite_code,
         )
+    except ValueError as exc:
+        if str(exc) == "invite_required":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An invite code is required to register")
+        # "invalid" — or any other ValueError from acquire()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired invite code")
+    except IntegrityError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
     except Exception:
         logger.exception("Unexpected error during registration for email=%s", body.email)
         raise HTTPException(
@@ -121,6 +165,7 @@ def _user_response(user: User) -> dict:
         "id": str(user.id),
         "email": user.email,
         "name": user.name,
+        "is_admin": user.is_admin,
         "anthropic_key_hint": _api_key_hint(keys.get("anthropic")),
         "openrouter_key_hint": _api_key_hint(keys.get("openrouter")),
         "onedrive_connected": bool(keys.get("onedrive_access") or keys.get("onedrive_refresh")),
@@ -174,7 +219,7 @@ async def update_api_keys(
     return _user_response(current_user)
 
 
-@router.patch("/me/password", status_code=204)
+@router.patch("/me/password", status_code=204, response_model=None)
 async def change_password(
     body: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
@@ -186,6 +231,137 @@ async def change_password(
     current_user.password_hash = AuthService.hash_password(body.new_password)
     db.add(current_user)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Admin — invite code management
+# Protected by X-Admin-Secret header (see _require_admin dependency).
+# ---------------------------------------------------------------------------
+
+class CreateInviteCodeRequest(BaseModel):
+    label: Optional[str] = None
+    max_uses: int = 1
+    expires_at: Optional[datetime] = None
+
+    @field_validator("max_uses")
+    @classmethod
+    def max_uses_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_uses must be at least 1")
+        return v
+
+
+class InviteCodeResponse(BaseModel):
+    id: str
+    code: str
+    label: Optional[str]
+    max_uses: int
+    used_count: int
+    expires_at: Optional[datetime]
+    is_active: bool
+    created_by_user_id: Optional[str]
+    created_at: datetime
+
+
+def _code_response(row: InviteCode) -> InviteCodeResponse:
+    return InviteCodeResponse(
+        id=str(row.id),
+        code=row.code,
+        label=row.label,
+        max_uses=row.max_uses,
+        used_count=row.used_count,
+        expires_at=row.expires_at,
+        is_active=row.is_active,
+        created_by_user_id=str(row.created_by_user_id) if row.created_by_user_id else None,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/admin/invite-codes",
+    response_model=InviteCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_create_invite_code(
+    body: CreateInviteCodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> InviteCodeResponse:
+    """Create a new invite code. Requires X-Admin-Secret header."""
+    row = await InviteCodeRepo.create(
+        db,
+        label=body.label,
+        max_uses=body.max_uses,
+        expires_at=body.expires_at,
+        created_by_user_id=None,
+    )
+    return _code_response(row)
+
+
+@router.get(
+    "/admin/invite-codes",
+    response_model=List[InviteCodeResponse],
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_list_invite_codes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> List[InviteCodeResponse]:
+    """List all invite codes. Requires X-Admin-Secret header."""
+    rows = await InviteCodeRepo.list_all(db)
+    return [_code_response(r) for r in rows]
+
+
+@router.patch(
+    "/admin/invite-codes/{code_id}/deactivate",
+    response_model=InviteCodeResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_deactivate_invite_code(
+    code_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> InviteCodeResponse:
+    """Deactivate an invite code so it can no longer be used."""
+    row = await InviteCodeRepo.set_active(db, code_id, active=False)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Invite code not found")
+    return _code_response(row)
+
+
+@router.patch(
+    "/admin/invite-codes/{code_id}/reactivate",
+    response_model=InviteCodeResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_reactivate_invite_code(
+    code_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> InviteCodeResponse:
+    """Re-activate a previously deactivated invite code."""
+    row = await InviteCodeRepo.set_active(db, code_id, active=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Invite code not found")
+    return _code_response(row)
+
+
+@router.patch(
+    "/admin/users/{user_id}/set-admin",
+    dependencies=[Depends(_require_admin)],
+)
+async def admin_set_user_admin(
+    user_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    is_admin: bool = True,
+) -> dict:
+    """Grant or revoke admin status for a user. Pass ?is_admin=false to demote."""
+    from sqlalchemy import select as sa_select
+    result = await db.execute(sa_select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_admin = is_admin
+    db.add(user)
+    await db.commit()
+    return {"user_id": str(user.id), "email": user.email, "is_admin": user.is_admin}
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +449,7 @@ async def onedrive_exchange(
     return _user_response(current_user)
 
 
-@router.delete("/onedrive/disconnect", status_code=204)
+@router.delete("/onedrive/disconnect", status_code=204, response_model=None)
 async def onedrive_disconnect(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

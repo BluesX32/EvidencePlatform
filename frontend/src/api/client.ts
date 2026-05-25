@@ -46,9 +46,22 @@ export interface UserProfile {
   id: string;
   email: string;
   name: string;
+  is_admin: boolean;
   anthropic_key_hint: string | null;
   openrouter_key_hint: string | null;
   onedrive_connected: boolean;
+}
+
+export interface InviteCode {
+  id: string;
+  code: string;
+  label: string | null;
+  max_uses: number;
+  used_count: number;
+  expires_at: string | null;
+  is_active: boolean;
+  created_by_user_id: string | null;
+  created_at: string;
 }
 
 export interface MissingPdfRecord {
@@ -79,8 +92,8 @@ export interface FtQueueResponse {
 }
 
 export const authApi = {
-  register: (email: string, password: string, name: string) =>
-    api.post<RegisterResponse>("/auth/register", { email, password, name }),
+  register: (email: string, password: string, invite_code?: string) =>
+    api.post<RegisterResponse>("/auth/register", { email, password, invite_code }),
   login: (email: string, password: string) =>
     api.post<TokenResponse>("/auth/login", { email, password }),
   me: () =>
@@ -97,6 +110,21 @@ export const authApi = {
     api.post<UserProfile>("/auth/onedrive/exchange", { code }),
   disconnectOneDrive: () =>
     api.delete("/auth/onedrive/disconnect"),
+};
+
+export const adminApi = {
+  listInviteCodes: () =>
+    api.get<InviteCode[]>("/auth/admin/invite-codes"),
+  createInviteCode: (body: { label?: string; max_uses?: number; expires_at?: string }) =>
+    api.post<InviteCode>("/auth/admin/invite-codes", body),
+  deactivateCode: (id: string) =>
+    api.patch<InviteCode>(`/auth/admin/invite-codes/${id}/deactivate`),
+  reactivateCode: (id: string) =>
+    api.patch<InviteCode>(`/auth/admin/invite-codes/${id}/reactivate`),
+  setUserAdmin: (userId: string, isAdmin: boolean) =>
+    api.patch<{ user_id: string; email: string; is_admin: boolean }>(
+      `/auth/admin/users/${userId}/set-admin?is_admin=${isAdmin}`
+    ),
 };
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -308,6 +336,14 @@ export const projectsApi = {
       inherit_concept_template?: boolean;
     },
   ) => api.post<Project>(`/projects/${parentId}/sub-projects`, body),
+  createSubProjectFromScreening: (
+    parentId: string,
+    body: { name: string; description?: string; decision: "include" | "exclude"; stage?: "TA" | "FT"; reason_code?: string },
+  ) => api.post<Project>(`/projects/${parentId}/sub-projects/from-screening`, body),
+  getHumanExcludedReasonCodes: (projectId: string, stage?: "TA" | "FT") =>
+    api.get<{ total_excluded: number; reason_codes: Array<{ reason_code: string; count: number }>; has_reason_codes: boolean }>(
+      `/projects/${projectId}/screening/excluded-reason-codes${stage ? `?stage=${stage}` : ""}`
+    ),
   listSubProjects: (parentId: string) =>
     api.get<SubProjectSummary[]>(`/projects/${parentId}/sub-projects`),
   deleteProject: (id: string) =>
@@ -1403,6 +1439,10 @@ export interface LlmEstimateResponse {
   model: string;
   cost_breakdown: Record<string, number>;
   stages: EstimateStage[];
+  avg_ta_tokens_per_record?: number;
+  avg_ta_output_per_record?: number;
+  ft_availability_pct?: number;
+  token_data_source?: string;
 }
 
 export interface LlmRunResponse {
@@ -1522,6 +1562,34 @@ export interface LlmComparisonResponse {
   items: LlmComparisonItem[];
 }
 
+export interface RunVsRunStats {
+  n_compared: number;
+  ta_agreement_pct: number | null;
+  kappa_ta: number | null;
+  kappa_ta_label: string;
+  run_a_included: number;
+  run_b_included: number;
+  only_a_included: number;
+  only_b_included: number;
+}
+
+export interface RunVsRunDisagreement {
+  record_id: string;
+  title: string | null;
+  year: number | null;
+  run_a_ta: string | null;
+  run_a_reason: string | null;
+  run_a_reason_code: string | null;
+  run_b_ta: string | null;
+  run_b_reason: string | null;
+  run_b_reason_code: string | null;
+}
+
+export interface RunVsRunResponse {
+  stats: RunVsRunStats;
+  disagreements: RunVsRunDisagreement[];
+}
+
 export interface LlmPromptPreview {
   system_prompt: string;
   user_prompt: string;
@@ -1532,10 +1600,11 @@ export const llmScreeningApi = {
     projectId: string,
     model = "claude-sonnet-4-6",
     sourceId?: string,
-    agentMode: "single" | "multi" = "single"
+    agentMode: "single" | "multi" = "single",
+    mode = "prisma_scr"
   ) =>
     api.get<LlmEstimateResponse>(`/projects/${projectId}/llm-screening/estimate`, {
-      params: { model, agent_mode: agentMode, ...(sourceId ? { source_id: sourceId } : {}) },
+      params: { model, agent_mode: agentMode, mode, ...(sourceId ? { source_id: sourceId } : {}) },
     }),
 
   createRun: (
@@ -1601,6 +1670,11 @@ export const llmScreeningApi = {
       `/projects/${projectId}/llm-screening/runs/${runId}/comparison`
     ),
 
+  compareRuns: (projectId: string, runAId: string, runBId: string) =>
+    api.get<RunVsRunResponse>(`/projects/${projectId}/llm-screening/compare-runs`, {
+      params: { run_a_id: runAId, run_b_id: runBId },
+    }),
+
   sendToConsensus: (
     projectId: string,
     runId: string,
@@ -1646,15 +1720,32 @@ export const llmScreeningApi = {
       {}
     ),
 
+  deleteRun: (projectId: string, runId: string) =>
+    api.delete(`/projects/${projectId}/llm-screening/runs/${runId}`),
+
   createSubproject: (
     projectId: string,
     runId: string,
-    body: { name: string; description?: string; categories: Array<"include" | "uncertain" | "exclude"> }
+    body: {
+      name: string;
+      description?: string;
+      categories: Array<"include" | "uncertain" | "exclude">;
+      reason_code_filter?: string;
+      ta_reason_contains?: string;
+    }
   ) =>
     api.post<{ project_id: string; project_name: string; imported_count: number; corpora_created: number }>(
       `/projects/${projectId}/llm-screening/runs/${runId}/create-subproject`,
       body
     ),
+
+  getExcludedSummary: (projectId: string, runId: string) =>
+    api.get<{
+      total_excluded: number;
+      reason_codes: Array<{ reason_code: string; count: number }>;
+      has_reason_codes: boolean;
+      sample_reasons: string[];
+    }>(`/projects/${projectId}/llm-screening/runs/${runId}/excluded-summary`),
 };
 
 // ── Full-text PDF upload ───────────────────────────────────────────────────────

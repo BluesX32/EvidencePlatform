@@ -1,3 +1,4 @@
+from app.models.invite_code import InviteCode
 from app.models.user import User
 from app.models.project import Project
 from app.models.source import Source
@@ -31,6 +32,7 @@ from app.models.citation_candidate import CitationCandidate
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 
 __all__ = [
+    "InviteCode",
     "User",
     "Project",
     "Source",

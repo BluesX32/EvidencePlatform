@@ -27,13 +27,14 @@ import json
 import logging
 import os
 import random
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import BackgroundTasks
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import SessionLocal
@@ -53,6 +54,7 @@ from app.utils.fulltext_fetcher import get_full_text
 logger = logging.getLogger(__name__)
 
 CONCURRENT_REQUESTS = 8
+CONCURRENT_REQUESTS_FREE = 3  # conservative limit for free-tier OpenRouter models
 
 # ---------------------------------------------------------------------------
 # Pricing table (USD per token) — covers direct Anthropic + OpenRouter models
@@ -144,6 +146,15 @@ _DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Run IDs for which a stop has been requested; checked inside each processing loop.
 _CANCEL_REQUESTS: set[uuid.UUID] = set()
+
+# Raised (and caught per-run) when the provider returns a long-horizon reset time,
+# indicating a daily quota has been exhausted rather than a per-minute burst limit.
+class DailyRateLimitError(RuntimeError):
+    pass
+
+# Maps run_id → human-readable error message for runs that hit a daily quota.
+# Checked after asyncio.gather() to set status=interrupted instead of completed/failed.
+_DAILY_LIMIT_ERRORS: dict[uuid.UUID, str] = {}
 
 # Estimated tokens per record (abstract-only baseline)
 _AVG_INPUT_TOKENS = 1500
@@ -272,6 +283,75 @@ def _detect_provider(model: str) -> str:
     return "openrouter"
 
 
+# Models known to produce high output token counts due to chain-of-thought / thinking.
+# For these, the output token estimate is multiplied by a factor.
+_THINKING_MODELS: frozenset[str] = frozenset({
+    "google/gemini-2.5-pro-preview",
+    "google/gemini-3.1-pro-preview",
+    "openai/o1-mini",
+    "openai/o3-mini",
+    "deepseek/deepseek-r1",
+    "qwen/qwen3-max-thinking",
+})
+_THINKING_OUTPUT_MULTIPLIER = 5  # empirical: thinking models output ~5× a standard model
+
+# Only OpenAI models reliably support forced function calling via tool_choice={"type":"function"}.
+# All other providers (Google, Meta/Llama, Mistral, DeepSeek, Qwen, etc.) should use
+# tool_choice="auto" — the system prompt already instructs the model to call the tool.
+_FORCED_TOOL_MODELS: frozenset[str] = frozenset({
+    m for m in [] if m.startswith("openai/")
+})
+
+
+def _supports_forced_tool(model: str) -> bool:
+    return model.startswith("openai/")
+
+
+async def _get_actual_token_averages(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    model: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return average actual input/output tokens per record from past completed runs.
+
+    Queries LlmScreeningResult joined to LlmScreeningRun.  Falls back to None
+    when fewer than 20 samples exist (not enough data to be reliable).
+    Prefers runs matching the target model; falls back to all models for the project.
+    """
+    from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun  # local to avoid circular
+
+    def _build_q(extra_filter):
+        return (
+            select(
+                func.avg(LlmScreeningResult.input_tokens).label("avg_in"),
+                func.avg(LlmScreeningResult.output_tokens).label("avg_out"),
+                func.count(LlmScreeningResult.id).label("n"),
+            )
+            .join(LlmScreeningRun, LlmScreeningResult.run_id == LlmScreeningRun.id)
+            .where(
+                LlmScreeningRun.project_id == project_id,
+                LlmScreeningRun.status == "completed",
+                LlmScreeningResult.input_tokens.isnot(None),
+                LlmScreeningResult.output_tokens.isnot(None),
+                *extra_filter,
+            )
+        )
+
+    # Try same-model first
+    filters = [LlmScreeningRun.model == model] if model else []
+    row = (await db.execute(_build_q(filters))).first()
+    if row and (row.n or 0) >= 20:
+        return {"avg_input": int(row.avg_in), "avg_output": int(row.avg_out), "sample_size": row.n}
+
+    # Fall back to all models for the project
+    if model:
+        row = (await db.execute(_build_q([]))).first()
+        if row and (row.n or 0) >= 20:
+            return {"avg_input": int(row.avg_in), "avg_output": int(row.avg_out), "sample_size": row.n}
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -285,11 +365,12 @@ async def estimate_run(
     agent_mode: str = "single",
     pipeline: Optional[list] = None,
     include_extraction: bool = True,
+    mode: str = "prisma_scr",
 ) -> dict[str, Any]:
     """Return adaptive cost/time preview for a screening run. No DB side effects.
 
     Uses actual record text lengths to compute accurate per-record token estimates.
-    When agent_mode='single', breaks cost into TA / FT / Extraction stages.
+    When agent_mode='single', breaks cost into stages appropriate for the run mode.
     When agent_mode='multi', maps each enabled agent to its reach fraction.
     """
     # ── Record count (scoped to source if given) ──────────────────────────────
@@ -307,8 +388,10 @@ async def estimate_run(
         )
     total: int = total_result.scalar_one()
 
+    # ── Try to use actual token averages from past completed runs ─────────────
+    actual_avgs = await _get_actual_token_averages(db, project_id, model)
+
     # ── Compute actual average text length from project records ───────────────
-    # Use title + abstract character count as proxy for TA input tokens.
     avg_len_result = await db.execute(
         select(
             func.avg(
@@ -320,14 +403,28 @@ async def estimate_run(
     )
     avg_chars: float = float(avg_len_result.scalar_one_or_none() or 0.0)
 
-    # 4 chars ≈ 1 token; add ~400 tokens overhead for criteria + system prompt
-    if avg_chars > 0:
-        avg_ta_tokens = int(avg_chars / 4) + 400
+    if actual_avgs:
+        # Use real per-record averages — most accurate, captures thinking tokens,
+        # actual criteria length, tool schema overhead, etc.
+        avg_ta_tokens = actual_avgs["avg_input"]
+        avg_ta_output = actual_avgs["avg_output"]
+        token_data_source = f"actual ({actual_avgs['sample_size']} records)"
     else:
-        avg_ta_tokens = _STAGE_AVG_INPUT["ta"]
+        # Fallback: text-length estimate with realistic overhead.
+        # Overhead breakdown: tool schema ~600 tok, system prompt ~50, criteria ~250, framework ~100
+        prompt_overhead = 1000
+        if avg_chars > 0:
+            avg_ta_tokens = int(avg_chars / 4) + prompt_overhead
+        else:
+            avg_ta_tokens = _STAGE_AVG_INPUT["ta"] + prompt_overhead
+        # Output estimate: standard models ~350 tok; thinking models produce chain-of-thought first
+        base_output = 350
+        avg_ta_output = base_output * _THINKING_OUTPUT_MULTIPLIER if model in _THINKING_MODELS else base_output
+        token_data_source = "estimated"
 
     # FT token estimate: TA tokens + ~2500 tokens for full-text body
     avg_ft_tokens = avg_ta_tokens + 2500
+    avg_ft_output = int(avg_ta_output * 1.3)  # FT decisions tend to be slightly more verbose
 
     # ── FT availability: fraction of records likely to have open-access full text ──
     doi_count_result = await db.execute(
@@ -349,8 +446,11 @@ async def estimate_run(
     pipeline_estimate = estimate_pipeline_cost(
         total, agent_mode, effective_pipeline,
         avg_ta_tokens=avg_ta_tokens,
+        avg_ta_output=avg_ta_output,
         effective_ft_tokens=effective_ft_tokens,
+        avg_ft_output=avg_ft_output,
         include_extraction=include_extraction,
+        mode=mode,
     )
 
     # ── Per-model cost comparison (single-agent, same reach fractions) ─────────
@@ -366,11 +466,18 @@ async def estimate_run(
     cost_breakdown: dict[str, float] = {}
     for m in _COMPARISON_MODELS:
         single_pl = [{"id": "main", "role": "single", "model": m, "enabled": True}]
+        # For comparison models, use same input averages but model-appropriate output estimates
+        comp_output = avg_ta_output if actual_avgs else (
+            350 * _THINKING_OUTPUT_MULTIPLIER if m in _THINKING_MODELS else 350
+        )
         est = estimate_pipeline_cost(
             total, "single", single_pl,
             avg_ta_tokens=avg_ta_tokens,
+            avg_ta_output=comp_output,
             effective_ft_tokens=effective_ft_tokens,
+            avg_ft_output=int(comp_output * 1.3),
             include_extraction=include_extraction,
+            mode=mode,
         )
         cost_breakdown[m] = est["estimated_cost_usd"]
 
@@ -382,9 +489,10 @@ async def estimate_run(
         "estimated_minutes":       pipeline_estimate["estimated_minutes"],
         "cost_breakdown":          cost_breakdown,
         "stages":                  pipeline_estimate["stages"],
-        # Expose inputs so the frontend can show how the estimate was computed
         "avg_ta_tokens_per_record": avg_ta_tokens,
-        "ft_availability_pct": round(ft_avail_frac * 100, 1),
+        "avg_ta_output_per_record": avg_ta_output,
+        "ft_availability_pct":     round(ft_avail_frac * 100, 1),
+        "token_data_source":       token_data_source,
     }
 
 
@@ -478,8 +586,11 @@ async def resume_run(
     run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
     if run is None or run.project_id != project_id:
         raise ValueError("Run not found")
-    if run.status != "interrupted":
-        raise ValueError(f"Only interrupted runs can be resumed (current status: {run.status!r})")
+    resumable = {"interrupted", "cancelled"}
+    if run.status == "completed" and (run.total_records or 0) > run.processed_records:
+        resumable.add("completed")  # incomplete completed run — allow retry of failed records
+    if run.status not in resumable:
+        raise ValueError(f"Only interrupted or cancelled runs can be resumed (current status: {run.status!r})")
 
     await db.execute(
         update(LlmScreeningRun)
@@ -545,6 +656,26 @@ async def cancel_run(
     return run
 
 
+async def delete_run(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> None:
+    """Permanently delete an LLM screening run and all its results.
+
+    Blocked for active runs (running/queued/cancelling).  Cancel first.
+    """
+    run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
+    if run is None or run.project_id != project_id:
+        raise ValueError("Run not found")
+    if run.status in ("running", "queued", "cancelling"):
+        raise ValueError(
+            f"Cannot delete an active run (status: {run.status!r}). Stop it first."
+        )
+    await db.delete(run)
+    await db.commit()
+
+
 _CATEGORY_LABELS = {
     "include": "LLM Included",
     "uncertain": "LLM Uncertain",
@@ -560,10 +691,14 @@ async def create_subproject_from_run(
     description: Optional[str],
     categories: list,
     triggered_by: uuid.UUID,
+    reason_code_filter: Optional[str] = None,
+    ta_reason_contains: Optional[str] = None,
 ) -> dict:
     """Fork an LLM run's papers into a new child project.
 
     categories: list of ta_decision values to import, e.g. ["include", "uncertain"].
+    reason_code_filter: if set, only 'exclude' results with this reason_code are included.
+    ta_reason_contains: if set, only results whose ta_reason contains this string (case-insensitive) are included.
     Each category becomes its own Source corpus in the sub-project so humans can
     screen them independently.  All ScreeningDecisions and ExtractionRecords are
     pre-populated so the PRISMA flow is complete from day one.
@@ -571,22 +706,29 @@ async def create_subproject_from_run(
     run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, run_id)
     if run is None or run.project_id != project_id:
         raise ValueError("Run not found")
-    if run.status != "completed":
+    total = run.total_records or 0
+    effectively_completed = (
+        run.status == "completed"
+        or (total > 0 and run.processed_records >= total and run.status in ("cancelled", "interrupted"))
+    )
+    if not effectively_completed:
         raise ValueError("Only completed runs can be exported as a sub-project")
 
-    # Fetch all results for the requested categories in one query
-    all_results = (
-        await db.execute(
-            select(LlmScreeningResult).where(
-                LlmScreeningResult.run_id == run_id,
-                LlmScreeningResult.record_id.isnot(None),
-                LlmScreeningResult.ta_decision.in_(categories),
-            )
-        )
-    ).scalars().all()
+    # Fetch all results for the requested categories
+    stmt = select(LlmScreeningResult).where(
+        LlmScreeningResult.run_id == run_id,
+        LlmScreeningResult.record_id.isnot(None),
+        LlmScreeningResult.ta_decision.in_(categories),
+    )
+    if reason_code_filter:
+        stmt = stmt.where(LlmScreeningResult.reason_code == reason_code_filter)
+    if ta_reason_contains:
+        stmt = stmt.where(LlmScreeningResult.ta_reason.ilike(f"%{ta_reason_contains}%"))
+
+    all_results = (await db.execute(stmt)).scalars().all()
 
     if not all_results:
-        raise ValueError("No records match the selected categories in this run")
+        raise ValueError("No records match the selected categories and filters in this run")
 
     # Group by ta_decision so we create one source per category
     by_category: dict = {cat: [] for cat in categories}
@@ -831,7 +973,16 @@ async def _restore_run_state(
         )
     ).scalars().all()
 
-    processed_ids: set[uuid.UUID] = {r.record_id for r in existing if r.record_id is not None}
+    # Only records with a valid decision are considered done.
+    # Records whose ta_decision is NULL were processed (tool call returned) but
+    # the model didn't invoke the function — typically because max_tokens was
+    # exhausted before the function call (thinking models).  Exclude them so
+    # they are retried on resume.
+    processed_ids: set[uuid.UUID] = {
+        r.record_id
+        for r in existing
+        if r.record_id is not None and r.ta_decision is not None
+    }
     input_tok_total = sum(r.input_tokens or 0 for r in existing)
     output_tok_total = sum(r.output_tokens or 0 for r in existing)
 
@@ -863,6 +1014,24 @@ async def _restore_run_state(
         "actual_cost": input_tok_total * in_price + output_tok_total * out_price,
         "consecutive_no_new": consecutive_no_new,
     }
+
+
+async def _delete_null_result(
+    db: AsyncSession, run_id: uuid.UUID, record_id: uuid.UUID
+) -> None:
+    """Delete any existing result row that has no valid decision for this record.
+
+    Called before inserting a fresh result so that records being retried
+    (after NULL-decision failures from exhausted max_tokens) don't leave
+    duplicate stale rows.
+    """
+    await db.execute(
+        delete(LlmScreeningResult).where(
+            LlmScreeningResult.run_id == run_id,
+            LlmScreeningResult.record_id == record_id,
+            LlmScreeningResult.ta_decision.is_(None),
+        )
+    )
 
 
 async def _do_execute_run(
@@ -954,16 +1123,18 @@ async def _do_execute_run(
     output_tok_total = _state["output_tok_total"]
     actual_cost = _state["actual_cost"]
 
-    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+    _concurrency = CONCURRENT_REQUESTS_FREE if model.endswith(":free") else CONCURRENT_REQUESTS
+    semaphore = asyncio.Semaphore(_concurrency)
+    failed_count = 0
 
     async def _process(record: Record) -> None:
         nonlocal included, excluded, uncertain, new_concepts_total
-        nonlocal input_tok_total, output_tok_total, actual_cost
+        nonlocal input_tok_total, output_tok_total, actual_cost, failed_count
 
-        if run_id in _CANCEL_REQUESTS:
+        if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
             return
         async with semaphore:
-            if run_id in _CANCEL_REQUESTS:
+            if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
                 return
             # Each task gets its own session to avoid concurrent session corruption.
             # Sharing a single AsyncSession across concurrent coroutines causes
@@ -1009,6 +1180,7 @@ async def _do_execute_run(
                     if result is None:
                         return
 
+                    await _delete_null_result(task_db, run_id, record.id)
                     task_db.add(result)
                     await task_db.flush()
 
@@ -1052,7 +1224,11 @@ async def _do_execute_run(
                     )
                     await task_db.commit()
 
+                except DailyRateLimitError as exc:
+                    logger.warning("Daily rate limit for run %s: %s", run_id, exc)
+                    _DAILY_LIMIT_ERRORS[run_id] = str(exc)
                 except Exception:
+                    failed_count += 1
                     logger.exception("Error screening record %s", record.id)
                     # No explicit rollback — async with SessionLocal() close() handles it
 
@@ -1061,12 +1237,33 @@ async def _do_execute_run(
 
     was_cancelled = run_id in _CANCEL_REQUESTS
     _CANCEL_REQUESTS.discard(run_id)
+    daily_limit_msg = _DAILY_LIMIT_ERRORS.pop(run_id, None)
+
+    if daily_limit_msg:
+        final_status = "interrupted"
+        error_msg: Optional[str] = daily_limit_msg
+    elif was_cancelled:
+        final_status = "cancelled"
+        error_msg = None
+    elif failed_count >= 10 or (failed_count > 0 and failed_count > included + excluded + uncertain):
+        final_status = "interrupted"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors). "
+            f"Resume to retry them."
+        )
+    else:
+        final_status = "completed"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors)."
+            if failed_count > 0 else None
+        )
 
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="cancelled" if was_cancelled else "completed",
+            status=final_status,
+            error_message=error_msg,
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,
@@ -1260,6 +1457,7 @@ async def _do_execute_run_saturation(
     actual_cost = _state["actual_cost"]
     consecutive_no_new = _state["consecutive_no_new"]
     stopped_early = False
+    failed_count = 0
 
     for record_id in record_ids:
         if run_id in _CANCEL_REQUESTS:
@@ -1307,11 +1505,17 @@ async def _do_execute_run_saturation(
                     include_extraction=include_extraction,
                     onedrive_token=onedrive_token_sat,
                 )
+        except DailyRateLimitError as exc:
+            logger.warning("Daily rate limit for run %s: %s", run_id, exc)
+            _DAILY_LIMIT_ERRORS[run_id] = str(exc)
+            break
         except Exception:
+            failed_count += 1
             logger.exception("Error screening record %s in saturation run", record_id)
             continue
 
         if result is None:
+            failed_count += 1
             continue
 
         db.add(result)
@@ -1374,12 +1578,33 @@ async def _do_execute_run_saturation(
 
     was_cancelled = run_id in _CANCEL_REQUESTS
     _CANCEL_REQUESTS.discard(run_id)
+    daily_limit_msg = _DAILY_LIMIT_ERRORS.pop(run_id, None)
+
+    if daily_limit_msg:
+        final_status = "interrupted"
+        error_msg: Optional[str] = daily_limit_msg
+    elif was_cancelled:
+        final_status = "cancelled"
+        error_msg = None
+    elif failed_count >= 10 or (failed_count > 0 and failed_count > included + excluded + uncertain):
+        final_status = "interrupted"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors). "
+            f"Resume to retry them."
+        )
+    else:
+        final_status = "completed"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors)."
+            if failed_count > 0 else None
+        )
 
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="cancelled" if was_cancelled else "completed",
+            status=final_status,
+            error_message=error_msg,
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,
@@ -1388,7 +1613,7 @@ async def _do_execute_run_saturation(
             new_concepts_count=new_concepts_total,
             input_tokens=input_tok_total,
             output_tokens=output_tok_total,
-            stopped_at_saturation=stopped_early and not was_cancelled,
+            stopped_at_saturation=stopped_early and not was_cancelled and not daily_limit_msg,
         )
     )
     await db.commit()
@@ -1531,6 +1756,8 @@ async def _screen_one_record(
             openrouter_api_key,
             system_prompt_override=system_prompt,
         )
+    except DailyRateLimitError:
+        raise  # propagate to caller so the run can be set to interrupted
     except Exception:
         logger.exception("LLM call failed for record %s", record.id)
         return None
@@ -1557,13 +1784,18 @@ async def _screen_one_record(
         except Exception:
             logger.exception("LLM extraction failed for record %s", record.id)
 
+    ta_dec = _norm_decision(llm_output.get("ta_decision"))
+    raw_code = llm_output.get("reason_code")
+    reason_code = (raw_code.strip() if isinstance(raw_code, str) and raw_code.strip() else None) if ta_dec == "exclude" else None
+
     return LlmScreeningResult(
         run_id=run_id,
         project_id=project_id,
         record_id=record.id,
         cluster_id=None,
-        ta_decision=_norm_decision(llm_output.get("ta_decision")),
+        ta_decision=ta_dec,
         ta_reason=llm_output.get("ta_reason"),
+        reason_code=reason_code,
         ft_decision=_norm_decision(llm_output.get("ft_decision")),
         ft_reason=llm_output.get("ft_reason"),
         matched_codes=llm_output.get("matched_codes") or [],
@@ -1673,7 +1905,9 @@ async def _do_execute_run_ta_only(
 
     in_price, out_price = _cost_per_token(model)
 
-    # Resume: skip already-processed records and restore accumulators
+    # Resume: skip already-processed records and restore accumulators.
+    # NOTE: _restore_run_state excludes NULL-decision rows from processed_ids,
+    # so records that previously returned no tool call will be retried here.
     _state = await _restore_run_state(db, run_id, in_price, out_price)
     if _state["processed_ids"]:
         logger.info("Resuming ta_only run %s: skipping %d records", run_id, len(_state["processed_ids"]))
@@ -1685,19 +1919,31 @@ async def _do_execute_run_ta_only(
     input_tok_total = _state["input_tok_total"]
     output_tok_total = _state["output_tok_total"]
     actual_cost = _state["actual_cost"]
+    # Sync processed_records to the actual count of valid results so the progress
+    # bar is accurate even when NULL-decision rows are being retried.
+    valid_done = len(_state["processed_ids"])
+    await db.execute(
+        update(LlmScreeningRun)
+        .where(LlmScreeningRun.id == run_id)
+        .values(processed_records=valid_done)
+    )
+    await db.commit()
     # total is the original full count (set before filtering above)
     abstract_only_total = total
 
-    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+    _concurrency = CONCURRENT_REQUESTS_FREE if model.endswith(":free") else CONCURRENT_REQUESTS
+    semaphore = asyncio.Semaphore(_concurrency)
+
+    failed_count = 0
 
     async def _process_ta(record: Record) -> None:
         nonlocal included, excluded, uncertain, new_concepts_total
-        nonlocal input_tok_total, output_tok_total, actual_cost
+        nonlocal input_tok_total, output_tok_total, actual_cost, failed_count
 
-        if run_id in _CANCEL_REQUESTS:
+        if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
             return
         async with semaphore:
-            if run_id in _CANCEL_REQUESTS:
+            if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
                 return
             async with SessionLocal() as task_db:
                 try:
@@ -1726,17 +1972,26 @@ async def _do_execute_run_ta_only(
                             anthropic_api_key, openrouter_api_key,
                             system_prompt_override=system_prompt,
                         )
+                    except DailyRateLimitError as exc:
+                        logger.warning("Daily rate limit for run %s: %s", run_id, exc)
+                        _DAILY_LIMIT_ERRORS[run_id] = str(exc)
+                        return
                     except Exception:
+                        failed_count += 1
                         logger.exception("LLM call failed for record %s (ta_only)", record.id)
                         return
 
+                    _ta_dec_ta = _norm_decision(llm_output.get("ta_decision"))
+                    _raw_rc_ta = llm_output.get("reason_code")
+                    _reason_code_ta = (_raw_rc_ta.strip() if isinstance(_raw_rc_ta, str) and _raw_rc_ta.strip() else None) if _ta_dec_ta == "exclude" else None
                     result = LlmScreeningResult(
                         run_id=run_id,
                         project_id=project_id,
                         record_id=record.id,
                         cluster_id=None,
-                        ta_decision=_norm_decision(llm_output.get("ta_decision")),
+                        ta_decision=_ta_dec_ta,
                         ta_reason=llm_output.get("ta_reason"),
+                        reason_code=_reason_code_ta,
                         ft_decision=None,
                         ft_reason=None,
                         matched_codes=llm_output.get("matched_codes") or [],
@@ -1748,6 +2003,7 @@ async def _do_execute_run_ta_only(
                         extracted_json=None,
                     )
 
+                    await _delete_null_result(task_db, run_id, record.id)
                     task_db.add(result)
                     await task_db.flush()
 
@@ -1782,6 +2038,7 @@ async def _do_execute_run_ta_only(
                     await task_db.commit()
 
                 except Exception:
+                    failed_count += 1
                     logger.exception("Error in ta_only task for record %s", record.id)
                     # No explicit rollback — async with SessionLocal() close() handles it
 
@@ -1790,13 +2047,34 @@ async def _do_execute_run_ta_only(
 
     was_cancelled = run_id in _CANCEL_REQUESTS
     _CANCEL_REQUESTS.discard(run_id)
+    daily_limit_msg = _DAILY_LIMIT_ERRORS.pop(run_id, None)
 
-    final_status = "cancelled" if was_cancelled else "completed"
+    if daily_limit_msg:
+        final_status = "interrupted"
+        error_msg: Optional[str] = daily_limit_msg
+    elif was_cancelled:
+        final_status = "cancelled"
+        error_msg = None
+    elif failed_count >= 10 or (failed_count > 0 and failed_count > included + excluded + uncertain):
+        # Systemic LLM errors — most records could not be screened; mark resumable
+        final_status = "interrupted"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors). "
+            f"Resume to retry them."
+        )
+    else:
+        final_status = "completed"
+        error_msg = (
+            f"{failed_count} records failed to screen (LLM errors)."
+            if failed_count > 0 else None
+        )
+
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
             status=final_status,
+            error_message=error_msg,
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=included,
@@ -1952,13 +2230,18 @@ async def _do_execute_run_ft_only(
     actual_cost = _state["actual_cost"]
     abstract_only_count = _state["abstract_only_count"]
 
-    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
+    _concurrency = CONCURRENT_REQUESTS_FREE if model.endswith(":free") else CONCURRENT_REQUESTS
+    semaphore = asyncio.Semaphore(_concurrency)
 
     async def _process_ft(record_id: uuid.UUID) -> None:
         nonlocal ft_included, ft_excluded, ft_uncertain, new_concepts_total
         nonlocal input_tok_total, output_tok_total, actual_cost, abstract_only_count
 
+        if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
+            return
         async with semaphore:
+            if run_id in _CANCEL_REQUESTS or run_id in _DAILY_LIMIT_ERRORS:
+                return
             async with SessionLocal() as task_db:
                 try:
                     record: Optional[Record] = await task_db.get(Record, record_id)
@@ -2008,6 +2291,10 @@ async def _do_execute_run_ft_only(
                             anthropic_api_key, openrouter_api_key,
                             system_prompt_override=system_prompt,
                         )
+                    except DailyRateLimitError as exc:
+                        logger.warning("Daily rate limit for run %s: %s", run_id, exc)
+                        _DAILY_LIMIT_ERRORS[run_id] = str(exc)
+                        return
                     except Exception:
                         logger.exception("LLM call failed for record %s (ft_only)", record.id)
                         return
@@ -2051,6 +2338,7 @@ async def _do_execute_run_ft_only(
                         extracted_json=extracted_json,
                     )
 
+                    await _delete_null_result(task_db, run_id, record.id)
                     task_db.add(result)
                     await task_db.flush()
 
@@ -2088,6 +2376,9 @@ async def _do_execute_run_ft_only(
                     )
                     await task_db.commit()
 
+                except DailyRateLimitError as exc:
+                    logger.warning("Daily rate limit for run %s: %s", run_id, exc)
+                    _DAILY_LIMIT_ERRORS[run_id] = str(exc)
                 except Exception:
                     logger.exception("Error in ft_only task for record %s", record_id)
                     # No explicit rollback — async with SessionLocal() close() handles it
@@ -2095,11 +2386,23 @@ async def _do_execute_run_ft_only(
     tasks = [_process_ft(rid) for rid in included_record_ids]
     await asyncio.gather(*tasks)
 
+    was_cancelled = run_id in _CANCEL_REQUESTS
+    _CANCEL_REQUESTS.discard(run_id)
+    daily_limit_msg = _DAILY_LIMIT_ERRORS.pop(run_id, None)
+
+    if daily_limit_msg:
+        final_status = "interrupted"
+    elif was_cancelled:
+        final_status = "cancelled"
+    else:
+        final_status = "completed"
+
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
         .values(
-            status="completed",
+            status=final_status,
+            error_message=daily_limit_msg,
             completed_at=datetime.now(tz=timezone.utc),
             actual_cost_usd=Decimal(str(round(actual_cost, 6))),
             included_count=ft_included,
@@ -2293,6 +2596,16 @@ _TOOL_SCHEMA = [
                     "type": "string",
                     "description": "1-2 sentence explanation for TA decision",
                 },
+                "reason_code": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "SHORT exclusion label (2-5 words, snake_case) summarising "
+                        "which exclusion criterion was violated, e.g. "
+                        "'non_healthcare_context', 'no_severity_conceptualization', "
+                        "'review_editorial', 'staging_not_severity'. "
+                        "Required when ta_decision is 'exclude', null otherwise."
+                    ),
+                },
                 "ft_decision": {
                     "type": ["string", "null"],
                     "enum": ["include", "exclude", "uncertain", None],
@@ -2407,6 +2720,14 @@ _TA_TOOL_SCHEMA: list[dict] = [
                     "description": "include=passes TA; exclude=does not meet criteria; uncertain=borderline",
                 },
                 "ta_reason":    {"type": "string", "description": "1-2 sentence justification"},
+                "reason_code":  {
+                    "type": ["string", "null"],
+                    "description": (
+                        "SHORT exclusion label (2-5 words, snake_case) when ta_decision='exclude', "
+                        "e.g. 'non_healthcare_context', 'no_severity_conceptualization', "
+                        "'review_editorial', 'staging_not_severity'. Null otherwise."
+                    ),
+                },
                 "matched_codes": {"type": "array", "items": _CODE_MATCH_ITEMS},
                 "new_concepts":  {"type": "array", "items": _NEW_CONCEPT_ITEMS},
             },
@@ -2789,14 +3110,22 @@ def estimate_pipeline_cost(
     agent_mode: str,
     pipeline: list[dict],
     avg_ta_tokens: Optional[int] = None,
+    avg_ta_output: Optional[int] = None,
     effective_ft_tokens: Optional[int] = None,
+    avg_ft_output: Optional[int] = None,
     include_extraction: bool = True,
+    mode: str = "prisma_scr",
 ) -> dict[str, Any]:
     """Compute stage-by-stage cost estimate for a given pipeline.
 
-    When avg_ta_tokens / effective_ft_tokens are provided (from actual record data),
-    they override the hardcoded _STAGE_AVG_INPUT defaults for more accurate estimates.
+    avg_ta_tokens / avg_ta_output / effective_ft_tokens / avg_ft_output override
+    the hardcoded table defaults when actual run data is available.
     Returns a dict with total cost, per-stage breakdown, and estimated minutes.
+
+    mode controls which stages are included:
+      ta_only / saturation — TA stage only (all records, no FT/extraction)
+      ft_only              — FT stage only (~30% of records)
+      prisma_scr (default) — TA + FT + optional Extraction
     """
     stages: list[dict] = []
     total_cost = 0.0
@@ -2805,8 +3134,10 @@ def estimate_pipeline_cost(
     total_output_toks = 0
 
     # Use caller-supplied token estimates when available; fall back to table defaults
-    ta_input = avg_ta_tokens if avg_ta_tokens is not None else _STAGE_AVG_INPUT["ta"]
-    ft_input = effective_ft_tokens if effective_ft_tokens is not None else _STAGE_AVG_INPUT["ft"]
+    ta_input  = avg_ta_tokens if avg_ta_tokens is not None else _STAGE_AVG_INPUT["ta"]
+    ta_output = avg_ta_output if avg_ta_output is not None else _STAGE_AVG_OUTPUT["ta"]
+    ft_input  = effective_ft_tokens if effective_ft_tokens is not None else _STAGE_AVG_INPUT["ft"]
+    ft_output = avg_ft_output if avg_ft_output is not None else _STAGE_AVG_OUTPUT["ft"]
 
     if agent_mode == "single":
         # Single agent: one model for all stages
@@ -2814,24 +3145,38 @@ def estimate_pipeline_cost(
         in_p, out_p = _cost_per_token(model)
         mins_p = _MINUTES_PER_RECORD.get(model, 0.015)
 
-        # TA pass: all records
-        ta_in  = total_records * ta_input
-        ta_out = total_records * _STAGE_AVG_OUTPUT["ta"]
-        # FT pass: ~30% of records
-        ft_n   = int(total_records * _STAGE_REACH["ft"])
-        ft_in  = ft_n * ft_input
-        ft_out = ft_n * _STAGE_AVG_OUTPUT["ft"]
-        # Extraction: ~15% of records (only if requested)
-        ex_n   = int(total_records * _STAGE_REACH["extract"]) if include_extraction else 0
-        ex_in  = ex_n * _STAGE_AVG_INPUT["extract"]
-        ex_out = ex_n * _STAGE_AVG_OUTPUT["extract"]
+        if mode in ("ta_only", "saturation"):
+            # TA stage only — all records, no FT or extraction
+            ta_in  = total_records * ta_input
+            ta_out = total_records * ta_output
+            stage_rows = [("Screening (TA)", total_records, ta_in, ta_out)]
 
-        stage_rows = [
-            ("Screening (TA)", total_records, ta_in, ta_out),
-            ("Screening (FT)", ft_n, ft_in, ft_out),
-        ]
-        if include_extraction:
-            stage_rows.append(("Extraction", ex_n, ex_in, ex_out))
+        elif mode == "ft_only":
+            # FT stage only — applies to ~30% of records (the TA-included cohort)
+            ft_n   = int(total_records * _STAGE_REACH["ft"])
+            ft_in  = ft_n * ft_input
+            ft_out = ft_n * ft_output
+            stage_rows = [("Screening (FT)", ft_n, ft_in, ft_out)]
+
+        else:  # prisma_scr (default)
+            # TA pass: all records
+            ta_in  = total_records * ta_input
+            ta_out = total_records * ta_output
+            # FT pass: ~30% of records
+            ft_n   = int(total_records * _STAGE_REACH["ft"])
+            ft_in  = ft_n * ft_input
+            ft_out = ft_n * ft_output
+            # Extraction: ~15% of records (only if requested)
+            ex_n   = int(total_records * _STAGE_REACH["extract"]) if include_extraction else 0
+            ex_in  = ex_n * _STAGE_AVG_INPUT["extract"]
+            ex_out = ex_n * _STAGE_AVG_OUTPUT["extract"]
+
+            stage_rows = [
+                ("Screening (TA)", total_records, ta_in, ta_out),
+                ("Screening (FT)", ft_n, ft_in, ft_out),
+            ]
+            if include_extraction:
+                stage_rows.append(("Extraction", ex_n, ex_in, ex_out))
 
         for label, n, i_toks, o_toks in stage_rows:
             cost  = i_toks * in_p + o_toks * out_p
@@ -2854,24 +3199,23 @@ def estimate_pipeline_cost(
             total_output_toks += o_toks
 
     else:  # multi-agent
-        # Map role → (stage_key, input_tokens_per_record)
         role_reach = {"ta_screener": "ta", "ft_screener": "ft", "extractor": "extract", "verifier": "verify"}
-        role_input_override = {"ta_screener": ta_input, "ft_screener": ft_input}
+        role_input_override  = {"ta_screener": ta_input,  "ft_screener": ft_input}
+        role_output_override = {"ta_screener": ta_output, "ft_screener": ft_output}
         for agent in pipeline:
             if not agent.get("enabled", True):
                 continue
             role   = agent.get("role", "single")
-            # Skip extractor stage if extraction not requested
             if role == "extractor" and not include_extraction:
                 continue
             model  = agent.get("model") or _DEFAULT_MODEL
             stage_key = role_reach.get(role, "single")
             reach_frac = _STAGE_REACH.get(stage_key, 1.0)
             n_records  = int(total_records * reach_frac)
-            # Use empirical token override for TA/FT stages when available
-            per_record_input = role_input_override.get(role, _STAGE_AVG_INPUT.get(stage_key, _AVG_INPUT_TOKENS))
+            per_record_input  = role_input_override.get(role, _STAGE_AVG_INPUT.get(stage_key, _AVG_INPUT_TOKENS))
+            per_record_output = role_output_override.get(role, _STAGE_AVG_OUTPUT.get(stage_key, _AVG_OUTPUT_TOKENS))
             i_toks = n_records * per_record_input
-            o_toks = n_records * _STAGE_AVG_OUTPUT.get(stage_key, _AVG_OUTPUT_TOKENS)
+            o_toks = n_records * per_record_output
             in_p, out_p = _cost_per_token(model)
             mins_p      = _MINUTES_PER_RECORD.get(model, 0.015)
             cost        = i_toks * in_p + o_toks * out_p
@@ -2963,7 +3307,7 @@ async def _call_anthropic(
         try:
             response = await client.messages.create(
                 model=model,
-                max_tokens=1024,
+                max_tokens=2048,
                 system=effective_system,
                 tools=effective_tools,  # type: ignore[arg-type]
                 tool_choice={"type": "any"},
@@ -3004,7 +3348,7 @@ async def _call_openrouter(
     OpenRouter docs: https://openrouter.ai/docs
     Set OPENROUTER_API_KEY in the environment, or pass api_key directly.
     """
-    from openai import AsyncOpenAI, RateLimitError  # type: ignore
+    from openai import APIStatusError, AsyncOpenAI, RateLimitError  # type: ignore
 
     resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not resolved_key:
@@ -3041,44 +3385,124 @@ async def _call_openrouter(
     )
 
     last_exc: Optional[Exception] = None
+    rl_retries = 0
+    _RL_MAX_RETRIES = 8
+    _RL_FALLBACK_DELAYS = [16.0, 30.0, 45.0, 60.0, 60.0, 60.0, 60.0, 60.0]
+
     for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
         if delay > 0:
             await asyncio.sleep(delay)
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": effective_system},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=effective_oai_tools,  # type: ignore[arg-type]
-                tool_choice={
-                    "type": "function",
-                    "function": {"name": tool_name},
-                },
-            )
-            result: dict[str, Any] = {}
-            choice = response.choices[0]
-            if choice.message.tool_calls:
-                raw = choice.message.tool_calls[0].function.arguments
-                result = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        # Re-enter after a rate-limit sleep if we exhausted the outer loop
+        while True:
+            try:
+                # Thinking models (Gemini 2.5 Pro, o3-mini, DeepSeek R1) consume
+                # hundreds to thousands of tokens for chain-of-thought before the
+                # actual function call.  1024 is too small — use 8192 so thinking
+                # tokens don't exhaust the budget before the tool response.
+                _max_tokens = 8192 if model in _THINKING_MODELS else 2048
+                # Only OpenAI models reliably support forced tool_choice; all others
+                # (Google, Meta/Llama, Mistral, DeepSeek…) get "auto" instead.
+                _tool_choice: Any = (
+                    {"type": "function", "function": {"name": tool_name}}
+                    if _supports_forced_tool(model)
+                    else "auto"
+                )
+                response = await client.chat.completions.create(
+                    model=model,
+                    max_tokens=_max_tokens,
+                    messages=[
+                        {"role": "system", "content": effective_system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    tools=effective_oai_tools,  # type: ignore[arg-type]
+                    tool_choice=_tool_choice,
+                )
+                if not response.choices:
+                    logger.warning(
+                        "OpenRouter returned empty choices for model=%s. "
+                        "response.error=%s",
+                        model,
+                        getattr(response, "error", None),
+                    )
+                    raise RuntimeError(
+                        f"OpenRouter returned empty choices (model={model}). "
+                        f"Possible provider error or content filter."
+                    )
+                result: dict[str, Any] = {}
+                choice = response.choices[0]
+                if choice.message.tool_calls:
+                    raw = choice.message.tool_calls[0].function.arguments
+                    result = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                else:
+                    # Model returned a text response instead of calling the tool.
+                    # This usually means max_tokens was too low for thinking models
+                    # (thinking tokens consumed the entire budget before the function call)
+                    # or the model ignored tool_choice. Raise so the record is retried.
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    content_preview = (getattr(choice.message, "content", None) or "")[:120]
+                    raise RuntimeError(
+                        f"Model did not call the screening tool "
+                        f"(finish_reason={finish_reason!r}, model={model}). "
+                        f"Response: {content_preview!r}. "
+                        f"Record will be retried on resume."
+                    )
 
-            usage = response.usage
-            result["_input_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
-            result["_output_tokens"] = getattr(usage, "completion_tokens", 0) or 0
-            return result
+                usage = response.usage
+                result["_input_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
+                result["_output_tokens"] = getattr(usage, "completion_tokens", 0) or 0
+                return result
 
-        except RateLimitError as exc:
-            last_exc = exc
-            logger.warning(
-                "OpenRouter rate limit on attempt %d, retrying in %.1fs",
-                attempt + 1,
-                _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)],
-            )
-            continue
-        except Exception:
-            raise
+            except RateLimitError as exc:
+                last_exc = exc
+                rl_retries += 1
+                if rl_retries > _RL_MAX_RETRIES:
+                    raise RuntimeError(
+                        f"OpenRouter rate-limit exceeded after {rl_retries} retries: {exc}"
+                    )
+                # Honor X-RateLimit-Reset if the provider sent it
+                wait = _RL_FALLBACK_DELAYS[min(rl_retries - 1, len(_RL_FALLBACK_DELAYS) - 1)]
+                try:
+                    reset_ms = int(
+                        getattr(exc, "response", None)
+                        and exc.response.headers.get("X-RateLimit-Reset", 0)
+                        or 0
+                    )
+                    if reset_ms:
+                        secs_until_reset = reset_ms / 1000 - time.time()
+                        if secs_until_reset > 300:
+                            # Daily (or long-horizon) quota — don't burn retries
+                            reset_dt = datetime.fromtimestamp(
+                                reset_ms / 1000, tz=timezone.utc
+                            )
+                            raise DailyRateLimitError(
+                                f"Daily rate limit hit. Resets at "
+                                f"{reset_dt.strftime('%Y-%m-%d %H:%M UTC')}. "
+                                f"Resume the run after that time."
+                            )
+                        elif secs_until_reset > 0:
+                            wait = min(secs_until_reset + 1.5, 65.0)
+                except DailyRateLimitError:
+                    raise
+                except Exception:
+                    pass
+                logger.warning(
+                    "OpenRouter rate limit (attempt %d/%d), retrying in %.1fs",
+                    rl_retries, _RL_MAX_RETRIES, wait,
+                )
+                await asyncio.sleep(wait)
+                # Loop back to retry the same outer attempt
+            except APIStatusError as exc:
+                if exc.status_code == 402:
+                    raise DailyRateLimitError(
+                        f"Insufficient OpenRouter credits. "
+                        f"Add credits at https://openrouter.ai/settings/credits, "
+                        f"then resume the run."
+                    ) from exc
+                raise
+            except Exception:
+                raise
+            else:
+                break  # successful — exit inner while
 
     raise RuntimeError(f"OpenRouter rate-limit exceeded after retries: {last_exc}")
 

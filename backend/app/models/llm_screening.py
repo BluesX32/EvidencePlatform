@@ -185,6 +185,8 @@ class LlmScreeningResult(Base):
     extracted_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     # Per-agent outputs for multi-agent runs (migration 027)
     agent_outputs: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Short exclusion label, 2-5 words (migration 039)
+    reason_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

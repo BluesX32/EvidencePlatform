@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     # Request a free key at https://www.semanticscholar.org/product/api
     semantic_scholar_api_key: str = ""
 
+    # Invite-code system.
+    # Set INVITE_REQUIRED=false to allow open registration (e.g. local dev).
+    # Set ADMIN_SECRET to a strong random string; required to call admin endpoints
+    # that create/list invite codes (POST /auth/admin/invite-codes, etc.).
+    invite_required: bool = True
+    admin_secret: str = ""
+
     model_config = {"env_file": "../.env", "env_file_encoding": "utf-8"}
 
     @property

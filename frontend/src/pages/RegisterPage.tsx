@@ -4,9 +4,9 @@ import { authApi, setToken } from "../api/client";
 
 export default function RegisterPage() {
   const navigate = useNavigate();
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -19,13 +19,11 @@ export default function RegisterPage() {
     }
     setLoading(true);
     try {
-      const res = await authApi.register(email, password, name);
+      const res = await authApi.register(email, password, inviteCode.trim() || undefined);
       setToken(res.data.access_token);
       navigate("/projects");
     } catch (err: any) {
       const detail = err.response?.data?.detail;
-      // detail is a string for HTTPException errors;
-      // detail is an array of objects for Pydantic validation errors.
       if (typeof detail === "string") {
         setError(detail);
       } else if (Array.isArray(detail) && detail.length > 0) {
@@ -48,17 +46,6 @@ export default function RegisterPage() {
         <h2>Create your account</h2>
         <form onSubmit={handleSubmit}>
           <div className="field">
-            <label htmlFor="name">Full name</label>
-            <input
-              id="name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              autoFocus
-            />
-          </div>
-          <div className="field">
             <label htmlFor="email">Email</label>
             <input
               id="email"
@@ -66,6 +53,8 @@ export default function RegisterPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoFocus
+              autoComplete="email"
             />
           </div>
           <div className="field">
@@ -76,6 +65,25 @@ export default function RegisterPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="new-password"
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="invite-code">
+              Invite code
+              <span style={{ marginLeft:6, fontSize:11, fontWeight:500, color:"var(--text-muted)" }}>
+                format: EVP-XXXX-XXXX
+              </span>
+            </label>
+            <input
+              id="invite-code"
+              type="text"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+              placeholder="EVP-XXXX-XXXX"
+              spellCheck={false}
+              autoComplete="off"
+              style={{ fontFamily: "monospace", letterSpacing: "0.05em" }}
             />
           </div>
           {error && <p className="error">{error}</p>}
@@ -85,6 +93,9 @@ export default function RegisterPage() {
         </form>
         <p className="auth-link">
           Have an account? <Link to="/login">Sign in</Link>
+        </p>
+        <p className="auth-link" style={{ marginTop: 0 }}>
+          <Link to="/">← Back to home</Link>
         </p>
       </div>
     </div>

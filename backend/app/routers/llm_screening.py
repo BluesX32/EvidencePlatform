@@ -27,9 +27,9 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func as sqlfunc, select
+from sqlalchemy import Integer, case, func as sqlfunc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -46,6 +46,58 @@ from app.repositories.project_repo import ProjectRepo
 from app.services import llm_screening_service as svc
 
 router = APIRouter(tags=["llm_screening"])
+
+
+async def _live_counts(
+    db: AsyncSession, run_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, int]]:
+    """Query actual decision counts from llm_screening_results for the given run IDs.
+
+    Returns a dict keyed by run_id with keys:
+      included, excluded, uncertain, abstract_only, new_concepts
+    Uses a single aggregation query regardless of how many runs are listed.
+    """
+    if not run_ids:
+        return {}
+
+    rows = (
+        await db.execute(
+            select(
+                LlmScreeningResult.run_id,
+                sqlfunc.sum(
+                    case((LlmScreeningResult.ta_decision == "include", 1), else_=0)
+                ).label("included"),
+                sqlfunc.sum(
+                    case((LlmScreeningResult.ta_decision == "exclude", 1), else_=0)
+                ).label("excluded"),
+                sqlfunc.sum(
+                    case((LlmScreeningResult.ta_decision == "uncertain", 1), else_=0)
+                ).label("uncertain"),
+                sqlfunc.sum(
+                    case(
+                        (
+                            (LlmScreeningResult.full_text_source == "abstract_only")
+                            & LlmScreeningResult.ft_decision.is_(None),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("abstract_only"),
+            )
+            .where(LlmScreeningResult.run_id.in_(run_ids))
+            .group_by(LlmScreeningResult.run_id)
+        )
+    ).all()
+
+    result: dict[uuid.UUID, dict[str, int]] = {}
+    for row in rows:
+        result[row.run_id] = {
+            "included":     int(row.included or 0),
+            "excluded":     int(row.excluded or 0),
+            "uncertain":    int(row.uncertain or 0),
+            "abstract_only": int(row.abstract_only or 0),
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +167,10 @@ class EstimateResponse(BaseModel):
     model: str
     cost_breakdown: dict[str, float]
     stages: list[EstimateStage] = []
+    avg_ta_tokens_per_record: Optional[int] = None
+    avg_ta_output_per_record: Optional[int] = None
+    ft_availability_pct: Optional[float] = None
+    token_data_source: Optional[str] = None
 
 
 class LlmRunResponse(BaseModel):
@@ -212,7 +268,12 @@ class SendToConsensusBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
+def _run_to_response(
+    run: LlmScreeningRun,
+    live: Optional[dict[str, int]] = None,
+) -> LlmRunResponse:
+    """Serialize a run row. When `live` is provided (from _live_counts), its
+    decision counts override the potentially-stale denormalized columns."""
     processed = run.processed_records or 0
     total = run.total_records or 0
     progress = (processed / total * 100.0) if total > 0 else 0.0
@@ -223,6 +284,16 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
     def _dt(val: Optional[datetime]) -> Optional[str]:
         return val.isoformat() if val is not None else None
 
+    # Use live result-table counts when available; fall back to denormalized row.
+    included  = live["included"]      if live else (run.included_count  or 0)
+    excluded  = live["excluded"]      if live else (run.excluded_count  or 0)
+    uncertain = live["uncertain"]     if live else (run.uncertain_count or 0)
+    # abstract_only from the results table equals records processed as abstract-only;
+    # for ta_only completed runs that = total records, which is more meaningful.
+    # Use the larger of the two so we don't show 0 for runs completed before live counts.
+    abstract_only_live = live["abstract_only"] if live else 0
+    abstract_only = max(abstract_only_live, run.abstract_only_count or 0)
+
     return LlmRunResponse(
         id=str(run.id),
         project_id=str(run.project_id),
@@ -230,9 +301,9 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
         model=run.model,
         total_records=run.total_records,
         processed_records=processed,
-        included_count=run.included_count or 0,
-        excluded_count=run.excluded_count or 0,
-        uncertain_count=run.uncertain_count or 0,
+        included_count=included,
+        excluded_count=excluded,
+        uncertain_count=uncertain,
         new_concepts_count=run.new_concepts_count or 0,
         input_tokens=run.input_tokens or 0,
         output_tokens=run.output_tokens or 0,
@@ -253,7 +324,7 @@ def _run_to_response(run: LlmScreeningRun) -> LlmRunResponse:
         agent_mode=run.agent_mode or "single",
         agent_pipeline=run.agent_pipeline,
         source_run_id=str(run.source_run_id) if run.source_run_id else None,
-        abstract_only_count=run.abstract_only_count or 0,
+        abstract_only_count=abstract_only,
     )
 
 
@@ -371,6 +442,7 @@ async def estimate(
     model: str = Query(default="claude-sonnet-4-6"),
     source_id: Optional[str] = Query(default=None),
     agent_mode: str = Query(default="single"),
+    mode: str = Query(default="prisma_scr"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> EstimateResponse:
@@ -382,7 +454,7 @@ async def estimate(
             sid = uuid.UUID(source_id)
         except ValueError:
             raise HTTPException(400, "Invalid source_id")
-    data = await svc.estimate_run(db, project.id, model, source_id=sid, agent_mode=agent_mode)
+    data = await svc.estimate_run(db, project.id, model, source_id=sid, agent_mode=agent_mode, mode=mode)
     stages = [
         EstimateStage(
             role=s.get("stage", s.get("role", "")),
@@ -504,7 +576,8 @@ async def list_runs(
             .order_by(LlmScreeningRun.created_at.desc())
         )
     ).scalars().all()
-    return [_run_to_response(r) for r in runs]
+    counts = await _live_counts(db, [r.id for r in runs])
+    return [_run_to_response(r, counts.get(r.id)) for r in runs]
 
 
 @router.get(
@@ -520,7 +593,8 @@ async def get_run(
     """Get a single LLM screening run with progress percentage."""
     project = await _require_project(project_id, db, user)
     run = await _require_run(run_id, project, db)
-    return _run_to_response(run)
+    counts = await _live_counts(db, [run.id])
+    return _run_to_response(run, counts.get(run.id))
 
 
 @router.get(
@@ -960,6 +1034,126 @@ async def compare_with_humans(
 
 
 # ---------------------------------------------------------------------------
+# Compare two LLM runs against each other
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/compare-runs",
+)
+async def compare_runs(
+    project_id: str,
+    run_a_id: str,
+    run_b_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Compare TA decisions between two completed LLM screening runs."""
+    project = await _require_project(project_id, db, user)
+    run_a = await _require_run(run_a_id, project, db)
+    run_b = await _require_run(run_b_id, project, db)
+
+    def _effectively_completed(run: LlmScreeningRun) -> bool:
+        total = run.total_records or 0
+        return run.status == "completed" or (
+            total > 0 and run.processed_records >= total
+            and run.status in ("cancelled", "interrupted")
+        )
+
+    if not _effectively_completed(run_a):
+        raise HTTPException(status_code=400, detail="Run A is not completed")
+    if not _effectively_completed(run_b):
+        raise HTTPException(status_code=400, detail="Run B is not completed")
+
+    # Load results for both runs (record-level only)
+    results_a = (await db.execute(
+        select(LlmScreeningResult)
+        .where(LlmScreeningResult.run_id == run_a.id, LlmScreeningResult.record_id.isnot(None))
+    )).scalars().all()
+
+    results_b = (await db.execute(
+        select(LlmScreeningResult)
+        .where(LlmScreeningResult.run_id == run_b.id, LlmScreeningResult.record_id.isnot(None))
+    )).scalars().all()
+
+    map_a = {r.record_id: r for r in results_a}
+    map_b = {r.record_id: r for r in results_b}
+    common_ids = set(map_a) & set(map_b)
+
+    if not common_ids:
+        empty_stats = {"n_compared": 0, "ta_agreement_pct": None, "kappa_ta": None, "kappa_ta_label": "n/a",
+                       "run_a_included": 0, "run_b_included": 0, "only_a_included": 0, "only_b_included": 0}
+        return {"stats": empty_stats, "disagreements": []}
+
+    # Load titles
+    recs = (await db.execute(select(Record).where(Record.id.in_(list(common_ids))))).scalars().all()
+    title_map = {r.id: (r.title, r.year) for r in recs}
+
+    items = []
+    for rid in common_ids:
+        a = map_a[rid]
+        b = map_b[rid]
+        ta_a = (a.ta_decision or "").lower().strip() or None
+        ta_b = (b.ta_decision or "").lower().strip() or None
+        items.append({
+            "record_id": str(rid),
+            "run_a_ta": ta_a,
+            "run_b_ta": ta_b,
+        })
+
+    # Stats
+    compared = [i for i in items if i["run_a_ta"] and i["run_b_ta"]]
+    n = len(compared)
+    agree = sum(1 for i in compared if i["run_a_ta"] == i["run_b_ta"])
+    ta_pct = round(agree / n * 100, 1) if n else None
+    raw_kappa = _cohen_kappa_3class(compared, "run_a_ta", "run_b_ta")
+    kappa = round(raw_kappa, 3) if raw_kappa is not None else None
+
+    a_inc = sum(1 for r in results_a if r.ta_decision == "include")
+    b_inc = sum(1 for r in results_b if r.ta_decision == "include")
+    only_a = sum(1 for i in compared if i["run_a_ta"] == "include" and i["run_b_ta"] != "include")
+    only_b = sum(1 for i in compared if i["run_b_ta"] == "include" and i["run_a_ta"] != "include")
+
+    # Build disagreement list (only where both have a decision and they differ)
+    disagreements = []
+    for i in compared:
+        if i["run_a_ta"] == i["run_b_ta"]:
+            continue
+        rid_uuid = uuid.UUID(i["record_id"])
+        a = map_a[rid_uuid]
+        b = map_b[rid_uuid]
+        title, year = title_map.get(rid_uuid, (None, None))
+        disagreements.append({
+            "record_id": i["record_id"],
+            "title": title,
+            "year": year,
+            "run_a_ta": i["run_a_ta"],
+            "run_a_reason": a.ta_reason,
+            "run_a_reason_code": a.reason_code,
+            "run_b_ta": i["run_b_ta"],
+            "run_b_reason": b.ta_reason,
+            "run_b_reason_code": b.reason_code,
+        })
+
+    # Sort: A=include B=exclude first (missed by A), then A=exclude B=include
+    disagreements.sort(key=lambda x: (0 if x["run_b_ta"] == "include" else 1, x["title"] or ""))
+
+    return {
+        "stats": {
+            "n_compared": n,
+            "ta_agreement_pct": ta_pct,
+            "kappa_ta": kappa,
+            "kappa_ta_label": _kappa_label(kappa),
+            "run_a_included": a_inc,
+            "run_b_included": b_inc,
+            "only_a_included": only_a,
+            "only_b_included": only_b,
+        },
+        "disagreements": disagreements,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Send disagreements to consensus
 # ---------------------------------------------------------------------------
 
@@ -1118,6 +1312,26 @@ async def cancel_run(
     return _run_to_response(run)
 
 
+@router.delete(
+    "/projects/{project_id}/llm-screening/runs/{run_id}",
+    status_code=204,
+)
+async def delete_run(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Permanently delete a run and all its screening results."""
+    project = await _require_project(project_id, db, user, min_roles=_RUN_ROLES)
+    run = await _require_run(run_id, project, db)
+    try:
+        await svc.delete_run(db=db, project_id=project.id, run_id=run.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return Response(status_code=204)
+
+
 # ---------------------------------------------------------------------------
 # Sub-project export
 # ---------------------------------------------------------------------------
@@ -1130,6 +1344,8 @@ class CreateSubprojectBody(BaseModel):
     name: str
     description: Optional[str] = None
     categories: list = ["include"]  # subset of ["include", "uncertain", "exclude"]
+    reason_code_filter: Optional[str] = None   # only 'exclude' rows with this reason_code
+    ta_reason_contains: Optional[str] = None   # case-insensitive substring of ta_reason
 
 
 @router.post(
@@ -1159,6 +1375,8 @@ async def create_subproject(
             description=body.description,
             categories=body.categories,
             triggered_by=user.id,
+            reason_code_filter=body.reason_code_filter,
+            ta_reason_contains=body.ta_reason_contains,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1240,6 +1458,87 @@ async def get_missing_pdfs(
         }
         for result, record in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Excluded-paper summary — distinct reason_code + text patterns for sub-project forking
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/projects/{project_id}/llm-screening/runs/{run_id}/excluded-summary",
+)
+async def get_excluded_summary(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return a structured summary of why papers were excluded in this run.
+
+    Returns two arrays:
+      - reason_codes: [{reason_code, count}] — for runs that have the reason_code field populated
+      - text_clusters: [{label, count, sample}] — simple keyword clusters from ta_reason text
+        (for older runs without reason_code, or as a fallback)
+    Also returns total_excluded count.
+    """
+    project = await _require_project(project_id, db, user)
+    run = await _require_run(run_id, project, db)
+
+    # Total excluded
+    total_excluded: int = (
+        await db.execute(
+            select(sqlfunc.count())
+            .select_from(LlmScreeningResult)
+            .where(
+                LlmScreeningResult.run_id == run.id,
+                LlmScreeningResult.ta_decision == "exclude",
+            )
+        )
+    ).scalar_one()
+
+    # Distinct reason_codes with counts (populated by new runs)
+    rc_rows = (
+        await db.execute(
+            select(
+                LlmScreeningResult.reason_code,
+                sqlfunc.count().label("cnt"),
+            )
+            .where(
+                LlmScreeningResult.run_id == run.id,
+                LlmScreeningResult.ta_decision == "exclude",
+                LlmScreeningResult.reason_code.isnot(None),
+            )
+            .group_by(LlmScreeningResult.reason_code)
+            .order_by(sqlfunc.count().desc())
+        )
+    ).all()
+    reason_codes = [{"reason_code": r.reason_code, "count": r.cnt} for r in rc_rows]
+
+    # For runs without reason_code: return up to 50 sample ta_reason texts so
+    # the frontend can help users build a search filter manually.
+    sample_reasons: list[str] = []
+    if not reason_codes:
+        rows = (
+            await db.execute(
+                select(LlmScreeningResult.ta_reason)
+                .where(
+                    LlmScreeningResult.run_id == run.id,
+                    LlmScreeningResult.ta_decision == "exclude",
+                    LlmScreeningResult.ta_reason.isnot(None),
+                )
+                .order_by(LlmScreeningResult.created_at)
+                .limit(50)
+            )
+        ).scalars().all()
+        sample_reasons = [r for r in rows if r]
+
+    return {
+        "total_excluded": total_excluded,
+        "reason_codes": reason_codes,
+        "has_reason_codes": len(reason_codes) > 0,
+        "sample_reasons": sample_reasons,
+    }
 
 
 # ---------------------------------------------------------------------------

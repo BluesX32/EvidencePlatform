@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -7,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.user import User
+from app.repositories.invite_code_repo import InviteCodeRepo
 from app.repositories.user_repo import UserRepo
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -40,9 +44,46 @@ class AuthService:
         return await UserRepo.get_by_id(db, user_id)
 
     @staticmethod
-    async def register(db: AsyncSession, email: str, password: str, name: str) -> User:
+    async def register(
+        db: AsyncSession,
+        email: str,
+        password: str,
+        name: str,
+        invite_code: Optional[str] = None,
+    ) -> User:
+        """Create a new user, optionally consuming an invite code.
+
+        When settings.invite_required is True and no invite_code is supplied,
+        raises ValueError("invite_required").
+
+        When an invite_code is supplied it is validated and incremented
+        atomically in the same transaction as the new user row — both changes
+        land together or neither does.
+        """
+        invite_code_id: Optional[uuid.UUID] = None
+
+        if settings.invite_required:
+            if not invite_code:
+                raise ValueError("invite_required")
+            code_row = await InviteCodeRepo.acquire(db, invite_code)
+            invite_code_id = code_row.id
+        elif invite_code:
+            # Invites not required but one was provided — validate and consume it anyway.
+            code_row = await InviteCodeRepo.acquire(db, invite_code)
+            invite_code_id = code_row.id
+
         password_hash = AuthService.hash_password(password)
-        return await UserRepo.create(db, email=email, password_hash=password_hash, name=name)
+        user = User(
+            email=email,
+            password_hash=password_hash,
+            name=name,
+            invite_code_id=invite_code_id,
+        )
+        db.add(user)
+        # Single commit covers both the used_count increment and the new user row.
+        await db.commit()
+        await db.refresh(user)
+        return user
 
     @staticmethod
     async def login(db: AsyncSession, email: str, password: str) -> Optional[User]:

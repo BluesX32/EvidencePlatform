@@ -40,6 +40,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
     return this.props.children;
   }
 }
+import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import ProjectsPage from "./pages/ProjectsPage";
@@ -58,6 +59,8 @@ import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import AppShell from "./components/AppShell";
 import OnboardingTour from "./components/OnboardingTour";
+import AdminPage from "./pages/AdminPage";
+import SettingsPage from "./pages/SettingsPage";
 
 // Lazy-load pages that depend on libraries (react-force-graph / AFRAME) that
 // crash at module-evaluation time when loaded eagerly.
@@ -105,9 +108,11 @@ export default function App() {
             {/* Public */}
             <Route path="/login"    element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
-            <Route path="/"         element={<Navigate to="/projects" replace />} />
+            <Route path="/"         element={<LandingPage />} />
 
             {/* Authenticated — all wrapped in AppShell */}
+            <Route path="/admin"        element={<WithShell><AdminPage /></WithShell>} />
+            <Route path="/settings"     element={<WithShell><SettingsPage /></WithShell>} />
             <Route path="/projects"     element={<WithShell><ProjectsWithTour /></WithShell>} />
             <Route path="/projects/new" element={<WithShell><NewProjectPage /></WithShell>} />
 

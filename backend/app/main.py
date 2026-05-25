@@ -19,10 +19,16 @@ async def lifespan(app: FastAPI):
         await db.execute(
             text("""
                 UPDATE llm_screening_runs
-                SET status = 'interrupted',
-                    error_message = 'Run interrupted by server restart. Click Resume to continue.',
+                SET status = CASE status
+                        WHEN 'cancelling' THEN 'cancelled'
+                        ELSE 'interrupted'
+                    END,
+                    error_message = CASE status
+                        WHEN 'cancelling' THEN NULL
+                        ELSE 'Run interrupted by server restart. Click Resume to continue.'
+                    END,
                     completed_at = :now
-                WHERE status = 'running'
+                WHERE status IN ('running', 'queued', 'cancelling')
             """),
             {"now": datetime.now(tz=timezone.utc)},
         )

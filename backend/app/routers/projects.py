@@ -14,7 +14,7 @@ from app.models.source import Source
 from app.models.user import User
 from app.repositories.import_repo import ImportRepo
 from app.repositories.project_repo import ProjectRepo
-from app.services.sub_project_service import create_sub_project
+from app.services.sub_project_service import create_sub_project, create_sub_project_from_human_screening
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -400,6 +400,84 @@ async def create_sub_project_endpoint(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
+    return ProjectResponse.from_orm(child)
+
+
+@router.get("/{project_id}/screening/excluded-reason-codes")
+async def get_excluded_reason_codes(
+    project_id: uuid.UUID,
+    stage: Optional[str] = None,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+):
+    await _get_project_and_role(db, project_id, current_user.id)
+    from sqlalchemy import func as sqlfunc
+    stmt = (
+        select(ScreeningDecision.reason_code, sqlfunc.count().label("count"))
+        .where(
+            ScreeningDecision.project_id == project_id,
+            ScreeningDecision.decision == "exclude",
+            ScreeningDecision.reason_code.isnot(None),
+            ScreeningDecision.reason_code != "",
+        )
+    )
+    if stage:
+        stmt = stmt.where(ScreeningDecision.stage == stage)
+    stmt = stmt.group_by(ScreeningDecision.reason_code).order_by(sqlfunc.count().desc())
+    rows = (await db.execute(stmt)).all()
+    total_stmt = select(sqlfunc.count()).select_from(ScreeningDecision).where(
+        ScreeningDecision.project_id == project_id,
+        ScreeningDecision.decision == "exclude",
+    )
+    if stage:
+        total_stmt = total_stmt.where(ScreeningDecision.stage == stage)
+    total = (await db.execute(total_stmt)).scalar_one()
+    return {
+        "total_excluded": total,
+        "reason_codes": [{"reason_code": r, "count": c} for r, c in rows],
+        "has_reason_codes": len(rows) > 0,
+    }
+
+
+class CreateSubProjectFromScreeningRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    decision: str  # "include" or "exclude"
+    stage: Optional[str] = None  # "TA", "FT", or null (both)
+    reason_code: Optional[str] = None  # filter excluded by reason_code
+
+
+@router.post(
+    "/{project_id}/sub-projects/from-screening",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_sub_project_from_screening_endpoint(
+    project_id: uuid.UUID,
+    body: CreateSubProjectFromScreeningRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    _, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required to create sub-projects")
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="name is required")
+    try:
+        child = await create_sub_project_from_human_screening(
+            db=db,
+            parent_project_id=project_id,
+            name=body.name.strip(),
+            description=body.description,
+            decision=body.decision,
+            stage=body.stage,
+            reason_code=body.reason_code,
+            creator_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     return ProjectResponse.from_orm(child)
 
 

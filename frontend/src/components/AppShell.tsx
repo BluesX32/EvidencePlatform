@@ -16,8 +16,9 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud,
+  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings,
 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
@@ -340,10 +341,10 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
 
 function SidebarProfile() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const [showPw, setShowPw] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showApiKeys, setShowApiKeys] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -453,7 +454,7 @@ function SidebarProfile() {
           {/* Account actions */}
           <div style={{ padding: "0.3rem 0" }}>
             <div style={sectionLabel}>Account</div>
-            {MI(<KeyRound size={14} />, "Change password", () => { setShowPw(true); })}
+            {MI(<Settings size={14} />, "Account settings", () => { navigate("/settings"); })}
             {MI(<KeyRound size={14} />,
               <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
                 API keys
@@ -502,7 +503,6 @@ function SidebarProfile() {
         <ChevronsUpDown size={13} style={{ color: "#475569", flexShrink: 0 }} />
       </button>
 
-      {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
       {showApiKeys && <ApiKeysModal profile={profile ?? null} onClose={() => setShowApiKeys(false)} onSaved={(updated) => qc.setQueryData(["auth-me"], updated)} />}
     </div>
@@ -532,6 +532,48 @@ const sectionLabel: React.CSSProperties = {
   fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.08em",
   textTransform: "uppercase", color: "#475569", padding: "0.2rem 0.9rem 0.15rem",
 };
+
+// ── Global nav (non-project sidebar) ─────────────────────────────────────
+
+function GlobalNav({ onNavigate }: { onNavigate: () => void }) {
+  const location = useLocation();
+  const { data: profile } = useQuery({
+    queryKey: ["auth-me"],
+    queryFn: () => authApi.me().then(r => r.data),
+    staleTime: 5 * 60_000,
+  });
+
+  return (
+    <nav className="sidebar-nav" style={{ paddingTop: ".75rem" }}>
+      <Link
+        to="/projects"
+        className={`sidebar-link${location.pathname === "/projects" ? " active" : ""}`}
+        onClick={onNavigate}
+      >
+        <span className="sidebar-icon"><FolderOpen size={15} /></span>
+        <span className="sidebar-label">Projects</span>
+      </Link>
+      <Link
+        to="/settings"
+        className={`sidebar-link${location.pathname.startsWith("/settings") ? " active" : ""}`}
+        onClick={onNavigate}
+      >
+        <span className="sidebar-icon"><Settings size={15} /></span>
+        <span className="sidebar-label">Settings</span>
+      </Link>
+      {profile?.is_admin && (
+        <Link
+          to="/admin"
+          className={`sidebar-link${location.pathname.startsWith("/admin") ? " active" : ""}`}
+          onClick={onNavigate}
+        >
+          <span className="sidebar-icon"><ShieldCheck size={15} /></span>
+          <span className="sidebar-label">Admin</span>
+        </Link>
+      )}
+    </nav>
+  );
+}
 
 // ── Component ─────────────────────────────────────────────────────────────
 
@@ -695,16 +737,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </nav>
           </>
         ) : (
-          <nav className="sidebar-nav" style={{ paddingTop: ".75rem" }}>
-            <Link
-              to="/projects"
-              className={`sidebar-link${location.pathname === "/projects" ? " active" : ""}`}
-              onClick={() => { if (isMobile) setMobileOpen(false); }}
-            >
-              <span className="sidebar-icon"><FolderOpen size={15} /></span>
-              <span className="sidebar-label">Projects</span>
-            </Link>
-          </nav>
+          <GlobalNav onNavigate={() => { if (isMobile) setMobileOpen(false); }} />
         )}
 
         {/* Profile card — always at bottom */}
