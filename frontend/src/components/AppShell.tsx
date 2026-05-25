@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings,
+  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
@@ -34,6 +34,7 @@ const PROJECT_NAV = [
   { path: "/citations",         icon: SearchCode,      label: "Citation Search" },
   { path: "/labels",            icon: Tag,             label: "Labels"          },
   { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts"        },
+  { path: "/thematic",          icon: Hash,            label: "Thematic"        },
   { path: "/ontology",          icon: Network,         label: "Ontology"        },
   { path: "/llm-screening",     icon: Bot,             label: "LLM Screening"   },
   { path: "/team",              icon: Users,           label: "Team"            },

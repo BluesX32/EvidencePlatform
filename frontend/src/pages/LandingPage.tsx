@@ -557,7 +557,7 @@ export default function LandingPage() {
             <span style={{
               marginLeft: 8, fontSize: 10.5, fontWeight: 600, color: "#4f46e5",
               background: "#eef2ff", padding: "1px 7px", borderRadius: 99,
-            }}>open source</span>
+            }}>research</span>
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -633,7 +633,7 @@ export default function LandingPage() {
         }}>
           Import from any database, deduplicate with 5-tier matching, screen with AI assistance,
           extract structured evidence, build concept ontologies, and auto-generate publication-ready PRISMA —
-          all in one open-source, fully auditable platform.
+          all in one fully auditable platform.
         </p>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center", position: "relative" }}>
@@ -882,8 +882,8 @@ export default function LandingPage() {
                 color: "#d97706",
               },
               {
-                icon: "🧩", title: "Modular & open",
-                desc: "Any component can be inspected, replaced, or disabled independently. Open-source, MIT-licensed, designed to be forked.",
+                icon: "🧩", title: "Modular & auditable",
+                desc: "Any component can be inspected, replaced, or disabled independently. Designed for transparency and reproducibility.",
                 color: "#ec4899",
               },
             ].map(p => (
@@ -925,7 +925,7 @@ export default function LandingPage() {
             fontSize: 12.5, fontWeight: 600, color: "#a5b4fc",
             marginBottom: "1.5rem",
           }}>
-            Free · Open source · Built at Johns Hopkins
+            Free · christelle.xiong.32@gmail.com
           </div>
           <h2 style={{
             fontSize: "clamp(2rem, 4.5vw, 3.2rem)",
@@ -980,14 +980,12 @@ export default function LandingPage() {
           <span style={{ color: "#94a3b8", fontWeight: 600, letterSpacing: "-0.2px" }}>EvidencePlatform</span>
         </div>
         <div style={{ display: "flex", gap: "1.5rem", color: "#475569" }}>
-          <span>Open-source</span>
-          <span>·</span>
           <span>Evidence synthesis infrastructure</span>
           <span>·</span>
-          <span>Built at JHU</span>
+          <span>christelle.xiong.32@gmail.com</span>
         </div>
         <div style={{ color: "#334155", fontSize: 12 }}>
-          MIT License · No warranty expressed or implied
+          No warranty expressed or implied
         </div>
       </footer>
 
