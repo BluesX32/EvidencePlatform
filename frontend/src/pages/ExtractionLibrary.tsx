@@ -951,6 +951,65 @@ function ConceptNoveltyChart({
 }
 
 // ---------------------------------------------------------------------------
+// CSV export
+// ---------------------------------------------------------------------------
+
+function csvCell(v: unknown): string {
+  const s = Array.isArray(v) ? v.join(" | ") : String(v ?? "");
+  // Wrap in quotes if the value contains commas, quotes, or newlines
+  if (s.includes('"') || s.includes(",") || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function downloadCsv(
+  items: ExtractionLibraryItem[],
+  templateRows: ExtractionTemplateRow[],
+  filename = "extractions.csv",
+) {
+  const headers = [
+    "Title", "Authors", "Year", "DOI", "Sources",
+    ...templateRows.map((r) => `${r.domain} — ${r.item}`),
+    "Levels", "Dimensions", "Notes",
+    "Framework Updated", "Framework Note",
+    "Extracted Date",
+  ];
+
+  const rows = items.map((item) => {
+    const tbl = item.extracted_json.table ?? {};
+    return [
+      item.title ?? "",
+      (item.authors ?? []).join("; "),
+      item.year ?? "",
+      item.doi ?? "",
+      (item.source_names ?? []).join("; "),
+      ...templateRows.map((r) => {
+        const v = tbl[r.id];
+        return Array.isArray(v) ? v.join(" | ") : (v ?? "");
+      }),
+      (item.extracted_json.levels ?? []).join("; "),
+      (item.extracted_json.dimensions ?? []).join("; "),
+      item.extracted_json.free_note ?? "",
+      item.extracted_json.framework_updated ? "Yes" : "No",
+      item.extracted_json.framework_update_note ?? "",
+      item.created_at
+        ? new Date(item.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+        : "",
+    ].map(csvCell);
+  });
+
+  const csv = [headers.map(csvCell), ...rows].map((r) => r.join(",")).join("\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" }); // BOM for Excel
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -1070,6 +1129,15 @@ export default function ExtractionLibrary() {
               style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}
             >
               {showChart ? "Hide Chart" : "Show Chart"}
+            </button>
+            <button
+              className="btn-secondary"
+              disabled={visible.length === 0}
+              onClick={() => downloadCsv(visible, templateRows, `extractions-${projectId}.csv`)}
+              title="Download all visible rows as a spreadsheet"
+              style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}
+            >
+              ↓ Download CSV
             </button>
             <Link
               to={`/projects/${projectId}/citations`}
