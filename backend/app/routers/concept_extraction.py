@@ -229,12 +229,12 @@ async def get_taxonomy_aggregate(
     fields = concept_template.get("fields", [])
     field_map: Dict[str, Dict] = {f["id"]: f for f in fields}
 
-    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
-    # Load concept extractions: non-owners see only their own; owners see all
+    # Taxonomy aggregates ALL reviewers' concept extractions — it is a collective
+    # synthesis step, not isolated per reviewer.  Individual extraction FORMS
+    # are still private (see /item and / list endpoints).
     stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
-    if role not in ADMIN_ROLE:
-        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
     result = await db.execute(stmt)
     extractions = result.scalars().all()
 

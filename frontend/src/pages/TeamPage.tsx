@@ -32,34 +32,42 @@ const ROLE_COLORS: Record<string, string> = {
   observer: "#6b7280",
 };
 
-// Results-visibility presets (data_stage field in permissions).
-// Controls what stage of results this reviewer can access — independent from
-// which nav modules are visible to them.
+// Stage presets — each stage defines both the data-visibility level (data_stage)
+// and the default set of nav modules available, following the data flow:
+//   Import → Overlap → Screening → Extraction → Analysis (Thematic/Ontology/Consensus)
+//
+// Per-reviewer isolated: screening decisions, extractions, concept forms, code assignments.
+// Shared / aggregated: records, overlap, concept taxonomy, themes/codes, ontology.
 const STAGE_PRESETS = [
   {
     label: "Import only",
     value: "import" as string | null,
-    description: "Can see imported records and dedup results only",
+    description: "Shared records and dedup results only",
+    sections: ["overview", "import", "records"],
   },
   {
     label: "Up to Overlap",
     value: "overlap" as string | null,
-    description: "Can also see cross-source overlap results",
+    description: "Can also see cross-source overlap clusters",
+    sections: ["overview", "import", "records", "overlap"],
   },
   {
     label: "Up to Screening",
     value: "screening" as string | null,
-    description: "Can independently screen papers (own decisions only)",
+    description: "Can independently screen papers — own decisions only",
+    sections: ["overview", "import", "records", "overlap", "screening", "prisma", "labels", "saturation"],
   },
   {
     label: "Up to Extraction",
     value: "extraction" as string | null,
-    description: "Can extract data from assigned papers (results isolated per reviewer)",
+    description: "Can extract and build concept taxonomy — own extraction forms, shared taxonomy",
+    sections: ["overview", "import", "records", "overlap", "screening", "prisma", "labels", "saturation", "extractions", "citations", "concepts"],
   },
   {
     label: "Full access",
     value: null as string | null,
-    description: "Can see all data including analysis outputs and team stats",
+    description: "Full analysis access: thematic, ontology, consensus, team",
+    sections: null, // all sections
   },
 ];
 
@@ -189,12 +197,12 @@ function PermissionsModal({
 
         <div style={{ padding: "1rem 1.25rem" }}>
 
-          {/* ── Results visibility (presets) ───────────────────────────────── */}
+          {/* ── Stage presets ─────────────────────────────────────────────── */}
           <p style={{ margin: "0 0 0.25rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
-            Results visibility
+            Access stage
           </p>
           <p style={{ margin: "0 0 0.6rem", fontSize: "0.78rem", color: "#475569" }}>
-            What stage of results this reviewer can access.
+            Sets what data this reviewer can access and which modules are shown by default.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {STAGE_PRESETS.map((preset) => {
@@ -203,7 +211,14 @@ function PermissionsModal({
                 <button
                   key={preset.label}
                   type="button"
-                  onClick={() => setDataStage(preset.value)}
+                  onClick={() => {
+                    setDataStage(preset.value);
+                    setSelectedSections(
+                      preset.sections
+                        ? new Set(preset.sections)
+                        : new Set(SECTIONS.map(s => s.key))
+                    );
+                  }}
                   style={{
                     display: "flex", alignItems: "flex-start", gap: 10,
                     padding: "0.5rem 0.75rem", borderRadius: 7, textAlign: "left", cursor: "pointer",
@@ -228,13 +243,13 @@ function PermissionsModal({
             })}
           </div>
 
-          {/* ── Module availability (checkboxes) ───────────────────────────── */}
+          {/* ── Fine-tune modules (checkboxes) ────────────────────────────── */}
           <div style={DIVIDER}>
             <p style={{ margin: "0 0 0.25rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
-              Module availability
+              Fine-tune modules
             </p>
             <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", color: "#475569" }}>
-              Which sections appear in this member's sidebar navigation.
+              Adjust which specific sections appear in the sidebar (optional override).
             </p>
           </div>
 
