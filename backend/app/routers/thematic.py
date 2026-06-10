@@ -33,7 +33,7 @@ from app.models.extraction_record import ExtractionRecord
 from app.models.project import Project
 from app.models.thematic_history import ThematicHistory
 from app.models.user import User
-from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE, ADMIN_ROLE
 
 router = APIRouter(tags=["thematic"])
 
@@ -45,11 +45,12 @@ async def _require_project(
     project_id: str,
     db: AsyncSession,
     user: User,
-) -> Project:
+) -> tuple:
+    """Return (project, role). Raises 403/404 if access denied."""
     pid = uuid.UUID(project_id)
-    await require_project_role(db, pid, user.id, allowed=REVIEWER_ROLE)
+    role = await require_project_role(db, pid, user.id, allowed=REVIEWER_ROLE)
     row = await db.get(Project, pid)
-    return row
+    return row, role
 
 
 # ── Pydantic schemas ───────────────────────────────────────────────────────────
@@ -142,7 +143,9 @@ async def _evidence_counts(
     db: AsyncSession,
     project_id: uuid.UUID,
     code_ids: list[uuid.UUID],
+    reviewer_id: Optional[uuid.UUID] = None,
 ) -> dict[uuid.UUID, int]:
+    """Count code assignments, optionally scoped to a single reviewer."""
     if not code_ids:
         return {}
     stmt = (
@@ -153,6 +156,10 @@ async def _evidence_counts(
         )
         .group_by(CodeExtraction.code_id)
     )
+    if reviewer_id is not None:
+        stmt = stmt.join(
+            ExtractionRecord, ExtractionRecord.id == CodeExtraction.extraction_id
+        ).where(ExtractionRecord.reviewer_id == reviewer_id)
     rows = (await db.execute(stmt)).all()
     return {r.code_id: r.cnt for r in rows}
 
@@ -166,7 +173,7 @@ async def get_thematic_map(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ThematicMap:
-    await _require_project(project_id, db, user)
+    _, role = await _require_project(project_id, db, user)
     pid = uuid.UUID(project_id)
 
     themes = (
@@ -185,7 +192,8 @@ async def get_thematic_map(
         )
     ).scalars().all()
 
-    counts = await _evidence_counts(db, pid, [c.id for c in codes])
+    reviewer_filter = None if role in ADMIN_ROLE else user.id
+    counts = await _evidence_counts(db, pid, [c.id for c in codes], reviewer_id=reviewer_filter)
     theme_map = {t.id: t for t in themes}
     theme_codes: dict[uuid.UUID, list[ThemeCode]] = {t.id: [] for t in themes}
     ungrouped: list[ThemeCode] = []
@@ -500,6 +508,7 @@ LEFT JOIN LATERAL (
 ) cr ON er.cluster_id IS NOT NULL
 WHERE ce.code_id = :code_id
   AND ce.project_id = :project_id
+  AND (CAST(:reviewer_id AS UUID) IS NULL OR er.reviewer_id = CAST(:reviewer_id AS UUID))
 ORDER BY ce.assigned_at DESC
 """)
 
@@ -514,11 +523,12 @@ async def get_code_evidence(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[CodeEvidence]:
-    await _require_project(project_id, db, user)
+    _, role = await _require_project(project_id, db, user)
+    reviewer_filter = None if role in ADMIN_ROLE else user.id
     rows = (
         await db.execute(
             _EVIDENCE_SQL,
-            {"code_id": uuid.UUID(code_id), "project_id": uuid.UUID(project_id)},
+            {"code_id": uuid.UUID(code_id), "project_id": uuid.UUID(project_id), "reviewer_id": reviewer_filter},
         )
     ).all()
     return [
@@ -548,7 +558,7 @@ async def assign_code(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    await _require_project(project_id, db, user)
+    _, role = await _require_project(project_id, db, user)
     pid = uuid.UUID(project_id)
 
     code = await db.get(OntologyNode, uuid.UUID(body.code_id))
@@ -558,6 +568,8 @@ async def assign_code(
     ext = await db.get(ExtractionRecord, uuid.UUID(body.extraction_id))
     if not ext or str(ext.project_id) != project_id:
         raise HTTPException(404, "Extraction not found")
+    if role not in ADMIN_ROLE and ext.reviewer_id != user.id:
+        raise HTTPException(403, "Cannot assign code to another reviewer's extraction")
 
     assignment = CodeExtraction(
         project_id=pid,
@@ -580,10 +592,14 @@ async def remove_assignment(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    await _require_project(project_id, db, user)
+    _, role = await _require_project(project_id, db, user)
     row = await db.get(CodeExtraction, uuid.UUID(assignment_id))
     if not row or str(row.project_id) != project_id:
         raise HTTPException(404, "Assignment not found")
+    if role not in ADMIN_ROLE:
+        ext = await db.get(ExtractionRecord, row.extraction_id)
+        if ext and ext.reviewer_id != user.id:
+            raise HTTPException(403, "Cannot remove another reviewer's code assignment")
     await db.delete(row)
     await db.commit()
     return {}

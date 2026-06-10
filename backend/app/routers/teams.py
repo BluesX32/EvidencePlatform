@@ -77,8 +77,10 @@ class UpdateRoleRequest(BaseModel):
 
 
 class UpdatePermissionsRequest(BaseModel):
-    # null resets to "all visible"; non-null must contain allowed_sections list
+    # null = all sections visible
     allowed_sections: Optional[List[str]] = None
+    # null = full data access; one of: "import","overlap","screening","extraction"
+    data_stage: Optional[str] = None
 
 
 class RecordFilterRequest(BaseModel):
@@ -295,22 +297,22 @@ async def update_member_permissions(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Set which nav sections are visible for a member (admin/owner only).
+    """Set section visibility and data-access stage for a member (admin/owner only).
 
-    Send allowed_sections=null to restore full access.
-    Send allowed_sections=[...] to restrict to those sections.
+    allowed_sections=null means all sections visible.
+    data_stage=null means full data access.
+    Merges into existing permissions so record_ids is preserved.
     """
     project = await _require_admin(project_id, current_user, db)
 
     if target_user_id == project.created_by:
         raise HTTPException(status_code=409, detail="Cannot restrict the project owner's access")
 
-    permissions = (
-        {"allowed_sections": body.allowed_sections}
-        if body.allowed_sections is not None
-        else None
+    member = await TeamRepo.update_member_permissions(
+        db, project_id, target_user_id,
+        allowed_sections=body.allowed_sections,
+        data_stage=body.data_stage,
     )
-    member = await TeamRepo.update_member_permissions(db, project_id, target_user_id, permissions)
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
     await db.commit()

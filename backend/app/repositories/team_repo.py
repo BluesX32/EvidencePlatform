@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,12 +94,29 @@ class TeamRepo:
         db: AsyncSession,
         project_id: uuid.UUID,
         user_id: uuid.UUID,
-        permissions: Optional[dict],
+        allowed_sections: Optional[List[str]] = None,
+        data_stage: Optional[str] = None,
     ) -> Optional[ProjectMember]:
+        """Merge allowed_sections + data_stage into permissions, preserving record_ids."""
+        member = await TeamRepo.get_member(db, project_id, user_id)
+        if member is None:
+            return None
+        current = dict(member.permissions) if member.permissions else {}
+        # allowed_sections=null means "show all" → remove the key
+        if allowed_sections is None:
+            current.pop("allowed_sections", None)
+        else:
+            current["allowed_sections"] = allowed_sections
+        # data_stage=null means "full data access" → remove the key
+        if data_stage is None:
+            current.pop("data_stage", None)
+        else:
+            current["data_stage"] = data_stage
+        new_perms = current if current else None
         await db.execute(
             update(ProjectMember)
             .where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
-            .values(permissions=permissions)
+            .values(permissions=new_perms)
         )
         await db.flush()
         return await TeamRepo.get_member(db, project_id, user_id)

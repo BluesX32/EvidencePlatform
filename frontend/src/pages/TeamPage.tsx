@@ -32,34 +32,36 @@ const ROLE_COLORS: Record<string, string> = {
   observer: "#6b7280",
 };
 
-// Sequential stage presets — each stage unlocks all previous stages' sections too
+// Results-visibility presets (data_stage field in permissions).
+// Controls what stage of results this reviewer can access — independent from
+// which nav modules are visible to them.
 const STAGE_PRESETS = [
   {
     label: "Import only",
-    description: "Can see the project overview and record list",
-    sections: ["overview", "import", "records"],
+    value: "import" as string | null,
+    description: "Can see imported records and dedup results only",
   },
   {
     label: "Up to Overlap",
-    description: "Can see deduplication and overlap results",
-    sections: ["overview", "import", "records", "overlap"],
+    value: "overlap" as string | null,
+    description: "Can also see cross-source overlap results",
   },
   {
     label: "Up to Screening",
-    description: "Can independently screen papers",
-    sections: ["overview", "import", "records", "overlap", "screening", "saturation"],
+    value: "screening" as string | null,
+    description: "Can independently screen papers (own decisions only)",
   },
   {
     label: "Up to Extraction",
+    value: "extraction" as string | null,
     description: "Can extract data from assigned papers (results isolated per reviewer)",
-    sections: ["overview", "import", "records", "overlap", "screening", "saturation", "extractions", "labels", "prisma"],
   },
   {
     label: "Full access",
-    description: "Can see all sections including analysis and team management",
-    sections: null, // null = all
+    value: null as string | null,
+    description: "Can see all data including analysis outputs and team stats",
   },
-] as const;
+];
 
 // Must match the `section` keys in AppShell PROJECT_NAV
 const SECTIONS = [
@@ -124,25 +126,32 @@ function PermissionsModal({
 }) {
   const qc = useQueryClient();
 
-  // null permissions = all sections visible
-  const initial: Set<string> = member.permissions?.allowed_sections
-    ? new Set(member.permissions.allowed_sections)
-    : new Set(SECTIONS.map(s => s.key));
+  // ── Two independent states ──────────────────────────────────────────────────
+  // 1. Results visibility — which stage of data this reviewer can access
+  const [dataStage, setDataStage] = useState<string | null>(
+    member.permissions?.data_stage ?? null
+  );
 
-  const [selected, setSelected] = useState<Set<string>>(initial);
-  const allSelected = selected.size === SECTIONS.length;
+  // 2. Module availability — which nav sections appear in their sidebar
+  const [selectedSections, setSelectedSections] = useState<Set<string>>(
+    member.permissions?.allowed_sections
+      ? new Set(member.permissions.allowed_sections)
+      : new Set(SECTIONS.map(s => s.key))
+  );
+
+  const allSectionsSelected = selectedSections.size === SECTIONS.length;
 
   const mut = useMutation({
-    mutationFn: (sections: string[] | null) =>
-      teamApi.updateMemberPermissions(projectId, member.user_id, sections),
+    mutationFn: ({ sections, stage }: { sections: string[] | null; stage: string | null }) =>
+      teamApi.updateMemberPermissions(projectId, member.user_id, sections, stage),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["team-members", projectId] });
       onClose();
     },
   });
 
-  function toggle(key: string) {
-    setSelected(prev => {
+  function toggleSection(key: string) {
+    setSelectedSections(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -151,10 +160,15 @@ function PermissionsModal({
   }
 
   function save() {
-    // If all sections selected → reset to null (full access)
-    const sections = allSelected ? null : [...selected];
-    mut.mutate(sections);
+    const sections = allSectionsSelected ? null : [...selectedSections];
+    mut.mutate({ sections, stage: dataStage });
   }
+
+  const DIVIDER: React.CSSProperties = {
+    margin: "1rem 0 0.75rem",
+    borderTop: "1px solid var(--border)",
+    paddingTop: "1rem",
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -174,19 +188,22 @@ function PermissionsModal({
         </div>
 
         <div style={{ padding: "1rem 1.25rem" }}>
-          {/* ── Stage presets ─────────────────────────────────────────────── */}
-          <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
-            Quick presets
+
+          {/* ── Results visibility (presets) ───────────────────────────────── */}
+          <p style={{ margin: "0 0 0.25rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
+            Results visibility
           </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: "1rem" }}>
+          <p style={{ margin: "0 0 0.6rem", fontSize: "0.78rem", color: "#475569" }}>
+            What stage of results this reviewer can access.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {STAGE_PRESETS.map((preset) => {
-              const presetSet = preset.sections ? new Set(preset.sections) : new Set(SECTIONS.map(s => s.key));
-              const isActive = presetSet.size === selected.size && [...presetSet].every(k => selected.has(k));
+              const isActive = dataStage === preset.value;
               return (
                 <button
                   key={preset.label}
                   type="button"
-                  onClick={() => setSelected(presetSet)}
+                  onClick={() => setDataStage(preset.value)}
                   style={{
                     display: "flex", alignItems: "flex-start", gap: 10,
                     padding: "0.5rem 0.75rem", borderRadius: 7, textAlign: "left", cursor: "pointer",
@@ -194,30 +211,40 @@ function PermissionsModal({
                     background: isActive ? "#eff6ff" : "var(--surface)",
                   }}
                 >
-                  <div style={{ width: 12, height: 12, borderRadius: "50%", flexShrink: 0, marginTop: 2, background: isActive ? "var(--brand)" : "#d1d5db" }} />
+                  <div style={{
+                    width: 12, height: 12, borderRadius: "50%", flexShrink: 0, marginTop: 2,
+                    background: isActive ? "var(--brand)" : "#d1d5db",
+                  }} />
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: "0.82rem", color: isActive ? "#3730a3" : "var(--text)" }}>{preset.label}</div>
-                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 1 }}>{preset.description}</div>
+                    <div style={{ fontWeight: 600, fontSize: "0.82rem", color: isActive ? "#3730a3" : "var(--text)" }}>
+                      {preset.label}
+                    </div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 1 }}>
+                      {preset.description}
+                    </div>
                   </div>
                 </button>
               );
             })}
           </div>
 
-          <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
-            Fine-tune
-          </p>
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", color: "#475569" }}>
-            Uncheck sections to hide them from this member's sidebar navigation.
-          </p>
+          {/* ── Module availability (checkboxes) ───────────────────────────── */}
+          <div style={DIVIDER}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
+              Module availability
+            </p>
+            <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", color: "#475569" }}>
+              Which sections appear in this member's sidebar navigation.
+            </p>
+          </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem 1.5rem", marginBottom: "1rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem 1.5rem", marginBottom: "0.75rem" }}>
             {SECTIONS.map(s => (
               <label key={s.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.85rem", cursor: "pointer" }}>
                 <input
                   type="checkbox"
-                  checked={selected.has(s.key)}
-                  onChange={() => toggle(s.key)}
+                  checked={selectedSections.has(s.key)}
+                  onChange={() => toggleSection(s.key)}
                   style={{ width: 14, height: 14, accentColor: "var(--brand)" }}
                 />
                 {s.label}
@@ -225,17 +252,19 @@ function PermissionsModal({
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.82rem", cursor: "pointer", color: "#475569" }}>
-              <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={() => setSelected(allSelected ? new Set() : new Set(SECTIONS.map(s => s.key)))}
-                style={{ width: 14, height: 14, accentColor: "var(--brand)" }}
-              />
-              Select all
-            </label>
-          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.82rem", cursor: "pointer", color: "#475569" }}>
+            <input
+              type="checkbox"
+              checked={allSectionsSelected}
+              onChange={() =>
+                setSelectedSections(
+                  allSectionsSelected ? new Set() : new Set(SECTIONS.map(s => s.key))
+                )
+              }
+              style={{ width: 14, height: 14, accentColor: "var(--brand)" }}
+            />
+            Select all
+          </label>
 
           {mut.isError && (
             <p style={{ color: "#dc2626", fontSize: "0.8rem", margin: "0.5rem 0 0" }}>
@@ -248,7 +277,7 @@ function PermissionsModal({
           <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button
             className="btn-primary btn-sm"
-            disabled={mut.isPending || selected.size === 0}
+            disabled={mut.isPending || selectedSections.size === 0}
             onClick={save}
           >
             {mut.isPending ? "Saving…" : "Save"}

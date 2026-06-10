@@ -953,12 +953,20 @@ export interface ExtractionRecord {
   created_at: string;
 }
 
-export interface ExtractionLibraryItem extends ExtractionRecord {
+export interface ExtractionLibraryItem {
+  id: string | null;              // null when paper not yet extracted
+  project_id: string;
+  record_id: string | null;
+  cluster_id: string | null;
+  extracted_json: ExtractionJson | null;  // null when not yet extracted
+  reviewer_id: string | null;
+  created_at: string | null;
   title: string | null;
   authors: string[];
   year: number | null;
   doi: string | null;
   source_names: string[];
+  extracted: boolean;             // false = included but not yet extracted
 }
 
 export const extractionLibraryApi = {
@@ -1820,6 +1828,7 @@ export const fulltextApi = {
 export interface MemberPermissions {
   allowed_sections?: string[] | null;
   record_ids?: string[] | null;
+  data_stage?: string | null;
 }
 
 export interface TeamMember {
@@ -1888,9 +1897,15 @@ export const teamApi = {
   updateMemberRole: (projectId: string, userId: string, role: string) =>
     api.patch(`/projects/${projectId}/team/members/${userId}`, { role }),
 
-  updateMemberPermissions: (projectId: string, userId: string, allowedSections: string[] | null) =>
+  updateMemberPermissions: (
+    projectId: string,
+    userId: string,
+    allowedSections: string[] | null,
+    dataStage: string | null,
+  ) =>
     api.patch(`/projects/${projectId}/team/members/${userId}/permissions`, {
       allowed_sections: allowedSections,
+      data_stage: dataStage,
     }),
 
   updateMemberRecordFilter: (projectId: string, userId: string, recordIds: string[] | null) =>

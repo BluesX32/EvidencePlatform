@@ -180,20 +180,22 @@ function EditPanel({
     cluster_id: item.cluster_id ?? null,
   };
 
+  const ej = item.extracted_json;
+
   // Template table state
   const [editTable, setEditTable] = useState<Record<string, string | string[]>>(
-    item.extracted_json.table ?? {}
+    ej?.table ?? {}
   );
 
   // Legacy metadata
-  const [editLevels, setEditLevels] = useState<string[]>(item.extracted_json.levels ?? []);
-  const [editDims, setEditDims] = useState<string[]>(item.extracted_json.dimensions ?? []);
-  const [editNote, setEditNote] = useState<string>(item.extracted_json.free_note ?? "");
+  const [editLevels, setEditLevels] = useState<string[]>(ej?.levels ?? []);
+  const [editDims, setEditDims] = useState<string[]>(ej?.dimensions ?? []);
+  const [editNote, setEditNote] = useState<string>(ej?.free_note ?? "");
   const [editFrameworkUpdated, setEditFrameworkUpdated] = useState<boolean>(
-    item.extracted_json.framework_updated ?? false
+    ej?.framework_updated ?? false
   );
   const [editFrameworkNote, setEditFrameworkNote] = useState<string>(
-    item.extracted_json.framework_update_note ?? ""
+    ej?.framework_update_note ?? ""
   );
 
   // Only true when a field was changed by the user (not on initial mount)
@@ -250,7 +252,7 @@ function EditPanel({
   // ── Auto-save ───────────────────────────────────────────────────────────
 
   const buildJson = (): ExtractionJson => ({
-    ...item.extracted_json,
+    ...(item.extracted_json ?? {}),
     table: editTable,
     levels: editLevels,
     dimensions: editDims,
@@ -978,7 +980,8 @@ function downloadCsv(
   ];
 
   const rows = items.map((item) => {
-    const tbl = item.extracted_json.table ?? {};
+    const ej = item.extracted_json;
+    const tbl = ej?.table ?? {};
     return [
       item.title ?? "",
       (item.authors ?? []).join("; "),
@@ -989,11 +992,11 @@ function downloadCsv(
         const v = tbl[r.id];
         return Array.isArray(v) ? v.join(" | ") : (v ?? "");
       }),
-      (item.extracted_json.levels ?? []).join("; "),
-      (item.extracted_json.dimensions ?? []).join("; "),
-      item.extracted_json.free_note ?? "",
-      item.extracted_json.framework_updated ? "Yes" : "No",
-      item.extracted_json.framework_update_note ?? "",
+      (ej?.levels ?? []).join("; "),
+      (ej?.dimensions ?? []).join("; "),
+      ej?.free_note ?? "",
+      ej?.framework_updated ? "Yes" : "No",
+      ej?.framework_update_note ?? "",
       item.created_at
         ? new Date(item.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
         : "",
@@ -1048,14 +1051,21 @@ export default function ExtractionLibrary() {
     enabled: !!projectId,
   });
 
-  // Sync server data into orderedItems, preserving any custom drag order
+  // Sync server data into orderedItems, preserving any custom drag order.
+  // Use record_id ?? cluster_id as the stable key — item.id is null for
+  // unextracted papers, so using id alone would collapse all unextracted
+  // rows to the same map slot and corrupt the list on every refetch.
   useEffect(() => {
     if (items.length === 0) { setOrderedItems([]); return; }
     setOrderedItems((prev) => {
-      const itemMap = new Map(items.map((i) => [i.id, i]));
-      const prevIds = new Set(prev.map((i) => i.id));
-      const newItems = items.filter((i) => !prevIds.has(i.id));
-      const updated = prev.map((p) => itemMap.get(p.id)).filter(Boolean) as ExtractionLibraryItem[];
+      const stableKey = (i: ExtractionLibraryItem) =>
+        i.record_id ?? i.cluster_id ?? i.id ?? "";
+      const itemMap = new Map(items.map((i) => [stableKey(i), i]));
+      const prevKeys = new Set(prev.map((i) => stableKey(i)));
+      const newItems = items.filter((i) => !prevKeys.has(stableKey(i)));
+      const updated = prev
+        .map((p) => itemMap.get(stableKey(p)))
+        .filter(Boolean) as ExtractionLibraryItem[];
       return [...updated, ...newItems];
     });
   }, [items]);
@@ -1243,16 +1253,17 @@ export default function ExtractionLibrary() {
             </div>
 
             {visible.map((item, rowIdx) => {
-              const isExpanded = expandedId === item.id;
+              const itemKey = item.id ?? item.record_id ?? item.cluster_id ?? String(rowIdx);
+              const isExpanded = expandedId === itemKey;
               const isDragTarget = dragOverIdx === rowIdx;
-              const hasNote = !!(item.extracted_json.free_note ?? "").trim();
+              const hasNote = !!(item.extracted_json?.free_note ?? "").trim();
               const dateStr = item.created_at
                 ? new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-                : "—";
+                : null;
 
               return (
                 <div
-                  key={item.id}
+                  key={itemKey}
                   draggable
                   onDragStart={(e) => handleDragStart(e, rowIdx)}
                   onDragOver={(e) => handleDragOver(e, rowIdx)}
@@ -1266,7 +1277,7 @@ export default function ExtractionLibrary() {
                 >
                   {/* Main row */}
                   <div
-                    onClick={() => setExpandedId((prev) => (prev === item.id ? null : item.id))}
+                    onClick={() => setExpandedId((prev) => (prev === itemKey ? null : itemKey))}
                     style={{
                       display: "grid", gridTemplateColumns: COLS,
                       gap: "0.5rem", padding: "0.65rem 1rem",
@@ -1321,7 +1332,7 @@ export default function ExtractionLibrary() {
                     {/* Table fill indicator */}
                     {templateRows.length > 0 && (
                       <div style={{ paddingTop: "0.1rem" }}>
-                        <TablePreview table={item.extracted_json.table ?? {}} rows={templateRows} />
+                        <TablePreview table={item.extracted_json?.table ?? {}} rows={templateRows} />
                       </div>
                     )}
 
@@ -1335,9 +1346,12 @@ export default function ExtractionLibrary() {
                       </div>
                     )}
 
-                    {/* Extracted timestamp */}
-                    <div style={{ fontSize: "0.78rem", color: "#6b7280", paddingTop: "0.1rem" }}>
-                      {dateStr}
+                    {/* Extracted timestamp / not-started badge */}
+                    <div style={{ fontSize: "0.78rem", paddingTop: "0.1rem" }}>
+                      {item.extracted
+                        ? <span style={{ color: "#6b7280" }}>{dateStr}</span>
+                        : <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "1px 6px", fontSize: "0.72rem", fontWeight: 600 }}>Not started</span>
+                      }
                     </div>
 
                     {/* Notes indicator */}

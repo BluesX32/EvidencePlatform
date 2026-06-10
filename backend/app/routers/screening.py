@@ -320,13 +320,22 @@ async def list_decisions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Return screening decisions.
+
+    Owners/admins see all reviewers' decisions.
+    Reviewers see only their own decisions — blinded from other reviewers' work.
+    """
     await _require_project(project_id, current_user, db)
 
     q = select(ScreeningDecision).where(ScreeningDecision.project_id == project_id)
     if stage:
         q = q.where(ScreeningDecision.stage == stage)
-    q = q.order_by(ScreeningDecision.created_at)
 
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    if role not in ("owner", "admin"):
+        q = q.where(ScreeningDecision.reviewer_id == current_user.id)
+
+    q = q.order_by(ScreeningDecision.created_at)
     rows = await db.execute(q)
     decisions = rows.scalars().all()
     return [_decision_out(d) for d in decisions]

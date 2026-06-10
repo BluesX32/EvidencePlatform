@@ -3,13 +3,21 @@
 GET /projects/{project_id}/extractions          → ExtractionLibraryItem[]
 GET /projects/{project_id}/extractions/{id}     → ExtractionLibraryItem
 
-These endpoints join extraction_records with article metadata (title, authors, year,
-doi, source_names) so the frontend can render the library without extra round-trips.
+For owners/admins: returns all included papers with each reviewer's extraction
+(or all reviewers when no ?reviewer_id= is supplied).  An optional
+?reviewer_id= UUID param scopes to one reviewer's work.
+
+For reviewers/observers: always scoped to their own extractions; papers they
+have been assigned (via permissions.record_ids) that they haven't extracted yet
+still appear so they know what work remains.
+
+Papers included at TA+FT but not yet extracted appear with extracted_json=null
+and extracted=false.  Already-extracted papers have extracted=true.
 """
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -19,6 +27,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, ANY_ROLE, ADMIN_ROLE
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.repositories.team_repo import TeamRepo
 
 router = APIRouter(prefix="/projects/{project_id}/extractions", tags=["extractions"])
 
@@ -26,9 +35,11 @@ router = APIRouter(prefix="/projects/{project_id}/extractions", tags=["extractio
 # SQL
 # ---------------------------------------------------------------------------
 
+# Drive from included_items so unextracted papers still appear.
+# extraction_records is LEFT-JOINed, filtered to the requested reviewer.
+# Papers not yet extracted have er.* columns = NULL → extracted=false.
 _LIST_SQL = text("""
 WITH cluster_reps AS (
-    -- Pick the first member record for each cluster (representative title/authors/etc)
     SELECT DISTINCT ON (ocm.cluster_id)
         ocm.cluster_id,
         r.id  AS rep_record_id,
@@ -42,7 +53,6 @@ WITH cluster_reps AS (
     ORDER BY ocm.cluster_id, ocm.id
 ),
 included_items AS (
-    -- Items included at both TA and FT stages
     SELECT record_id, cluster_id
     FROM screening_decisions
     WHERE project_id = :project_id
@@ -57,8 +67,8 @@ included_items AS (
 )
 SELECT
     er.id,
-    er.record_id,
-    er.cluster_id,
+    COALESCE(er.record_id,  ii.record_id)  AS record_id,
+    COALESCE(er.cluster_id, ii.cluster_id) AS cluster_id,
     er.extracted_json,
     er.reviewer_id,
     er.created_at,
@@ -67,23 +77,26 @@ SELECT
     COALESCE(r.year,    cr.year)    AS year,
     COALESCE(r.doi,     cr.doi)     AS doi,
     array_remove(array_agg(DISTINCT s.name), NULL) AS source_names
-FROM extraction_records er
-JOIN included_items ii
-  ON (er.record_id  IS NOT NULL AND ii.record_id  = er.record_id  AND ii.cluster_id  IS NULL)
-  OR (er.cluster_id IS NOT NULL AND ii.cluster_id = er.cluster_id AND ii.record_id   IS NULL)
-LEFT JOIN records r        ON r.id  = er.record_id
-LEFT JOIN cluster_reps cr  ON cr.cluster_id = er.cluster_id
+FROM included_items ii
+LEFT JOIN extraction_records er
+    ON (
+        (ii.record_id  IS NOT NULL AND er.record_id  = ii.record_id  AND er.cluster_id  IS NULL)
+     OR (ii.cluster_id IS NOT NULL AND er.cluster_id = ii.cluster_id AND er.record_id   IS NULL)
+    )
+    AND er.project_id = :project_id
+    AND (CAST(:reviewer_id AS UUID) IS NULL OR er.reviewer_id = CAST(:reviewer_id AS UUID))
+LEFT JOIN records r        ON r.id  = COALESCE(er.record_id, ii.record_id)
+LEFT JOIN cluster_reps cr  ON cr.cluster_id = COALESCE(er.cluster_id, ii.cluster_id)
 LEFT JOIN record_sources rs2
-       ON rs2.record_id = COALESCE(er.record_id, cr.rep_record_id)
+       ON rs2.record_id = COALESCE(er.record_id, cr.rep_record_id, ii.record_id)
 LEFT JOIN sources s        ON s.id  = rs2.source_id
-WHERE er.project_id = :project_id
-  AND (:reviewer_id IS NULL OR er.reviewer_id = :reviewer_id)
 GROUP BY
     er.id, er.record_id, er.cluster_id, er.extracted_json,
     er.reviewer_id, er.created_at,
+    ii.record_id, ii.cluster_id,
     r.title, r.authors, r.year, r.doi,
     cr.title, cr.authors, cr.year, cr.doi
-ORDER BY er.created_at ASC
+ORDER BY er.created_at ASC NULLS LAST, COALESCE(r.title, cr.title) ASC NULLS LAST
 """)
 
 _SINGLE_SQL = text("""
@@ -128,7 +141,7 @@ SELECT
 FROM extraction_records er
 JOIN included_items ii
   ON (er.record_id  IS NOT NULL AND ii.record_id  = er.record_id  AND ii.cluster_id  IS NULL)
-  OR (er.cluster_id IS NOT NULL AND ii.cluster_id = er.cluster_id AND ii.record_id   IS NULL)
+  OR (er.cluster_id IS NOT NULL AND ii.cluster_id = er.cluster_id AND er.record_id   IS NULL)
 LEFT JOIN records r        ON r.id  = er.record_id
 LEFT JOIN cluster_reps cr  ON cr.cluster_id = er.cluster_id
 LEFT JOIN record_sources rs2
@@ -148,19 +161,10 @@ GROUP BY
 # ---------------------------------------------------------------------------
 
 
-async def _require_project(
-    project_id: uuid.UUID,
-    current_user: User,
-    db: AsyncSession,
-):
-    await require_project_role(db, project_id, current_user.id, allowed=ANY_ROLE)
-    project = await ProjectRepo.get_by_id(db, project_id)
-    return project
-
-
 def _row_to_dict(row: Any, project_id: uuid.UUID) -> Dict[str, Any]:
+    extracted = row.extracted_json is not None
     return {
-        "id":             str(row.id),
+        "id":             str(row.id) if row.id else None,
         "project_id":     str(project_id),
         "record_id":      str(row.record_id) if row.record_id else None,
         "cluster_id":     str(row.cluster_id) if row.cluster_id else None,
@@ -172,6 +176,7 @@ def _row_to_dict(row: Any, project_id: uuid.UUID) -> Dict[str, Any]:
         "year":           row.year,
         "doi":            row.doi,
         "source_names":   list(row.source_names) if row.source_names else [],
+        "extracted":      extracted,
     }
 
 
@@ -187,24 +192,39 @@ async def list_extractions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return extraction records for a project enriched with article metadata.
+    """Return included papers enriched with extraction data.
 
-    Owners and admins see all reviewers' extractions (filter with ?reviewer_id=).
-    Reviewers and observers see only their own extractions.
+    Owners/admins see all papers (optionally filtered to one reviewer via
+    ?reviewer_id=).  Reviewers see only their own extractions and only their
+    assigned papers (permissions.record_ids).
     """
     role = await require_project_role(db, project_id, current_user.id, allowed=ANY_ROLE)
-    effective_reviewer_id: Optional[uuid.UUID]
+
     if role in ADMIN_ROLE:
-        # owner/admin: use the query param; None means "all reviewers"
-        effective_reviewer_id = reviewer_id
+        effective_reviewer_id: Optional[uuid.UUID] = reviewer_id
+        allowed_record_ids: Optional[set] = None
     else:
-        # reviewer/observer: always scoped to self, ignore any param
         effective_reviewer_id = current_user.id
+        member = await TeamRepo.get_member(db, project_id, current_user.id)
+        allowed_record_ids = None
+        if member and member.permissions:
+            raw_ids = member.permissions.get("record_ids")
+            if raw_ids:
+                allowed_record_ids = {uuid.UUID(r) for r in raw_ids}
+
     result = await db.execute(
         _LIST_SQL,
         {"project_id": project_id, "reviewer_id": effective_reviewer_id},
     )
-    return [_row_to_dict(r, project_id) for r in result.mappings().all()]
+    rows = [_row_to_dict(r, project_id) for r in result.mappings().all()]
+
+    if allowed_record_ids is not None:
+        rows = [
+            r for r in rows
+            if r["record_id"] and uuid.UUID(r["record_id"]) in allowed_record_ids
+        ]
+
+    return rows
 
 
 @router.get("/{extraction_id}")
@@ -215,7 +235,7 @@ async def get_extraction(
     db: AsyncSession = Depends(get_db),
 ):
     """Return a single extraction record enriched with article metadata."""
-    await _require_project(project_id, current_user, db)
+    await require_project_role(db, project_id, current_user.id, allowed=ANY_ROLE)
     result = await db.execute(
         _SINGLE_SQL,
         {"project_id": project_id, "extraction_id": extraction_id},
