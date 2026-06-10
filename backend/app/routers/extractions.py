@@ -53,17 +53,17 @@ WITH cluster_reps AS (
     ORDER BY ocm.cluster_id, ocm.id
 ),
 included_items AS (
-    SELECT record_id, cluster_id
-    FROM screening_decisions
-    WHERE project_id = :project_id
-      AND stage = 'TA'
-      AND decision = 'include'
-    INTERSECT
-    SELECT record_id, cluster_id
+    -- FT=include is the definitive inclusion gate (covers sequential + mixed mode)
+    SELECT DISTINCT record_id, cluster_id
     FROM screening_decisions
     WHERE project_id = :project_id
       AND stage = 'FT'
       AND decision = 'include'
+    UNION
+    -- Backward compat: papers already extracted before strict two-stage screening
+    SELECT DISTINCT record_id, cluster_id
+    FROM extraction_records
+    WHERE project_id = :project_id
 )
 SELECT
     er.id,
@@ -114,17 +114,15 @@ WITH cluster_reps AS (
     ORDER BY ocm.cluster_id, ocm.id
 ),
 included_items AS (
-    SELECT record_id, cluster_id
-    FROM screening_decisions
-    WHERE project_id = :project_id
-      AND stage = 'TA'
-      AND decision = 'include'
-    INTERSECT
-    SELECT record_id, cluster_id
+    SELECT DISTINCT record_id, cluster_id
     FROM screening_decisions
     WHERE project_id = :project_id
       AND stage = 'FT'
       AND decision = 'include'
+    UNION
+    SELECT DISTINCT record_id, cluster_id
+    FROM extraction_records
+    WHERE project_id = :project_id
 )
 SELECT
     er.id,
