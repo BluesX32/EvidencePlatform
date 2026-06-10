@@ -723,6 +723,16 @@ export default function ProjectPage() {
     },
   });
 
+  async function toggleSharedWithTeam(subProjectId: string, currentShared: boolean) {
+    try {
+      await projectsApi.setSharedWithTeam(subProjectId, !currentShared);
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+      setToast({ message: currentShared ? "Sub-project unshared." : "Sub-project shared with team.", type: "success" });
+    } catch {
+      setToast({ message: "Failed to update sharing.", type: "error" });
+    }
+  }
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   function addCriterion(type: "inclusion" | "exclusion") {
@@ -2197,7 +2207,16 @@ export default function ProjectPage() {
                 <tbody>
                   {project.sub_projects.map((sp) => (
                     <tr key={sp.id}>
-                      <td>{sp.name}</td>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          {sp.name}
+                          {sp.shared_with_team && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 99, background: "#e0e7ff", color: "#4338ca", letterSpacing: "0.03em" }}>
+                              SHARED
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td>{sp.record_count.toLocaleString()}</td>
                       <td style={{ fontFamily: "monospace" }}>{sp.seed ?? "—"}</td>
                       <td>{sp.n_per_corpus ?? "—"}</td>
@@ -2207,14 +2226,24 @@ export default function ProjectPage() {
                           Open →
                         </Link>
                         {(project.my_role === "owner" || project.my_role === "admin") && (
-                          <button
-                            className="btn-ghost btn-sm"
-                            title="Delete sub-project"
-                            onClick={() => setConfirmDeleteSubProject({ id: sp.id, name: sp.name })}
-                            style={{ color: "#dc2626", padding: "3px 6px" }}
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          <>
+                            <button
+                              className="btn-ghost btn-sm"
+                              title={sp.shared_with_team ? "Unshare from team" : "Share with team"}
+                              onClick={() => toggleSharedWithTeam(sp.id, sp.shared_with_team)}
+                              style={{ color: sp.shared_with_team ? "#4338ca" : "var(--text-muted)", padding: "3px 6px" }}
+                            >
+                              <Users size={14} />
+                            </button>
+                            <button
+                              className="btn-ghost btn-sm"
+                              title="Delete sub-project"
+                              onClick={() => setConfirmDeleteSubProject({ id: sp.id, name: sp.name })}
+                              style={{ color: "#dc2626", padding: "3px 6px" }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
                         )}
                       </td>
                     </tr>

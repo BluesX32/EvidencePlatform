@@ -19,26 +19,26 @@ import {
   Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { projectsApi, authApi, clearToken, type UserProfile } from "../api/client";
+import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 
 const PROJECT_NAV = [
-  { path: "",                   icon: LayoutDashboard, label: "Overview"        },
-  { path: "/import",            icon: Upload,          label: "Import"          },
-  { path: "/records",           icon: BookOpen,        label: "Records"         },
-  { path: "/overlap",           icon: GitMerge,        label: "Overlap"         },
-  { path: "/screen",            icon: CheckSquare,     label: "Screening"       },
-  { path: "/extractions",       icon: FlaskConical,    label: "Extractions"     },
-  { path: "/prisma",            icon: BarChart2,       label: "PRISMA"          },
-  { path: "/citations",         icon: SearchCode,      label: "Citation Search" },
-  { path: "/labels",            icon: Tag,             label: "Labels"          },
-  { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts"        },
-  { path: "/thematic",          icon: Hash,            label: "Thematic"        },
-  { path: "/ontology",          icon: Network,         label: "Ontology"        },
-  { path: "/llm-screening",     icon: Bot,             label: "LLM Screening"   },
-  { path: "/team",              icon: Users,           label: "Team"            },
-  { path: "/consensus",         icon: Scale,           label: "Consensus"       },
+  { path: "",                   icon: LayoutDashboard, label: "Overview",        section: "overview"      },
+  { path: "/import",            icon: Upload,          label: "Import",          section: "import"        },
+  { path: "/records",           icon: BookOpen,        label: "Records",         section: "records"       },
+  { path: "/overlap",           icon: GitMerge,        label: "Overlap",         section: "overlap"       },
+  { path: "/screen",            icon: CheckSquare,     label: "Screening",       section: "screening"     },
+  { path: "/extractions",       icon: FlaskConical,    label: "Extractions",     section: "extractions"   },
+  { path: "/prisma",            icon: BarChart2,       label: "PRISMA",          section: "prisma"        },
+  { path: "/citations",         icon: SearchCode,      label: "Citation Search", section: "citations"     },
+  { path: "/labels",            icon: Tag,             label: "Labels",          section: "labels"        },
+  { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts",        section: "concepts"      },
+  { path: "/thematic",          icon: Hash,            label: "Thematic",        section: "thematic"      },
+  { path: "/ontology",          icon: Network,         label: "Ontology",        section: "ontology"      },
+  { path: "/llm-screening",     icon: Bot,             label: "LLM Screening",   section: "llm_screening" },
+  { path: "/team",              icon: Users,           label: "Team",            section: "team"          },
+  { path: "/consensus",         icon: Scale,           label: "Consensus",       section: "consensus"     },
 ];
 
 const NAV_PATHS = PROJECT_NAV.map(n => n.path);
@@ -589,6 +589,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
   });
 
+  const { data: myRole } = useQuery({
+    queryKey: ["team-me", projectId],
+    queryFn: () => teamApi.getMyRole(projectId!).then(r => r.data),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+
+  // Sections the current user may see; null = all allowed (owners always get all)
+  const allowedSections: Set<string> | null = (() => {
+    if (!myRole || myRole.is_owner) return null;
+    const perms = myRole.permissions;
+    if (!perms || !perms.allowed_sections) return null;
+    return new Set(perms.allowed_sections);
+  })();
+
   // Responsive sidebar state
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== "undefined" && window.innerWidth < 1024
@@ -602,7 +617,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const orderedNav = navOrder
     .map(p => PROJECT_NAV.find(n => n.path === p))
-    .filter((n): n is (typeof PROJECT_NAV)[number] => !!n);
+    .filter((n): n is (typeof PROJECT_NAV)[number] => !!n)
+    .filter(n => !allowedSections || allowedSections.has(n.section));
 
   function navDragStart(_e: React.DragEvent, idx: number) {
     setDragIdx(idx);

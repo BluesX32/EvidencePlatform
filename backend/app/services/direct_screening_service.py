@@ -23,7 +23,7 @@ import random as _random
 import uuid
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import bindparam, delete, func, or_, select, text
+from sqlalchemy import ARRAY, bindparam, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -353,13 +353,16 @@ async def get_project_sources_with_stats(
 
 _NEXT_ITEM_SQL = text("""
 WITH
-  -- Records whose source is in scope (all records if source_id is NULL)
+  -- Records whose source is in scope (all records if source_id is NULL).
+  -- When allowed_record_ids is non-NULL, only those records are considered
+  -- (used by the per-member record-level access filter).
   records_in_scope AS (
     SELECT DISTINCT r.id AS record_id, r.created_at
     FROM records r
     JOIN record_sources rs ON rs.record_id = r.id
     WHERE r.project_id = :project_id
       AND (:source_id IS NULL OR rs.source_id = :source_id)
+      AND (:allowed_record_ids IS NULL OR r.id = ANY(:allowed_record_ids))
   ),
   -- Records that belong to a cross-source cluster (used to identify standalones)
   clustered_records AS (
@@ -522,13 +525,14 @@ LIMIT 1
 
 _NEXT_ITEM_SQL_MIXED = text("""
 WITH
-  -- Records whose source is in scope
+  -- Records whose source is in scope (filtered by allowed_record_ids when set)
   records_in_scope AS (
     SELECT DISTINCT r.id AS record_id, r.created_at
     FROM records r
     JOIN record_sources rs ON rs.record_id = r.id
     WHERE r.project_id = :project_id
       AND (:source_id IS NULL OR rs.source_id = :source_id)
+      AND (:allowed_record_ids IS NULL OR r.id = ANY(:allowed_record_ids))
   ),
   clustered_records AS (
     SELECT DISTINCT rs.record_id
@@ -825,6 +829,7 @@ _EXTRACT_DONE_SQL_RAND = _rand(_EXTRACT_DONE_SQL)
 # ---------------------------------------------------------------------------
 
 _UUID_TYPE = PGUUID(as_uuid=True)
+_ARRAY_UUID_TYPE = ARRAY(PGUUID(as_uuid=True))
 
 # Typed browse statements (reviewer_id may be NULL → need explicit UUID type)
 _TA_INCLUDED_STMT = _TA_INCLUDED_SQL.bindparams(
@@ -875,34 +880,40 @@ _COUNT_SQL_MIXED = text(
 )
 
 _SEQ_STMT = _NEXT_ITEM_SQL.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 _MIXED_STMT = _NEXT_ITEM_SQL_MIXED.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 _SEQ_RAND_STMT = _NEXT_ITEM_SQL_RAND.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 _MIXED_RAND_STMT = _NEXT_ITEM_SQL_MIXED_RAND.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 _COUNT_SEQ_STMT = _COUNT_SQL_SEQ.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 _COUNT_MIXED_STMT = _COUNT_SQL_MIXED.bindparams(
-    bindparam("project_id",  type_=_UUID_TYPE),
-    bindparam("source_id",   type_=_UUID_TYPE),
-    bindparam("reviewer_id", type_=_UUID_TYPE),
+    bindparam("project_id",          type_=_UUID_TYPE),
+    bindparam("source_id",           type_=_UUID_TYPE),
+    bindparam("reviewer_id",         type_=_UUID_TYPE),
+    bindparam("allowed_record_ids",  type_=_ARRAY_UUID_TYPE),
 )
 
 _TA_DEC_SQL = text("""
@@ -1150,6 +1161,7 @@ async def get_next_item(
     bucket: Optional[str] = None,
     randomize: bool = False,
     seed: Optional[int] = None,
+    allowed_record_ids: Optional[List[uuid.UUID]] = None,
 ) -> Dict[str, Any]:
     """
     Return the next available item for screening/review/extraction.
@@ -1195,10 +1207,21 @@ async def get_next_item(
         # Advance past already-decided items starting at queue.position
         slots = queue.slots
         pos = queue.position
+        _allowed_set = set(allowed_record_ids) if allowed_record_ids is not None else None
         while pos < len(slots):
             slot = slots[pos]
             slot_record_id = uuid.UUID(slot["id"]) if slot["type"] == "record" else None
             slot_cluster_id = uuid.UUID(slot["id"]) if slot["type"] == "cluster" else None
+
+            # Skip slots outside the reviewer's assigned record set
+            if _allowed_set is not None:
+                if slot_record_id is not None and slot_record_id not in _allowed_set:
+                    pos += 1
+                    continue
+                if slot_cluster_id is not None:
+                    # Clusters are not in the per-record assignment — skip them
+                    pos += 1
+                    continue
 
             # Skip slots whose entity no longer exists (e.g. cluster deleted after
             # overlap re-run, or record deleted after import rollback).
@@ -1378,6 +1401,7 @@ async def get_next_item(
         "project_id": project_id,
         "source_id": source_uuid,
         "reviewer_id": reviewer_id,  # uuid.UUID | None
+        "allowed_record_ids": allowed_record_ids,  # List[uuid.UUID] | None
     }
 
     try:

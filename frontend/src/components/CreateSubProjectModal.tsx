@@ -36,6 +36,7 @@ export default function CreateSubProjectModal({
   const [inheritCriteria, setInheritCriteria] = useState(false);
   const [inheritExtraction, setInheritExtraction] = useState(false);
   const [inheritConcept, setInheritConcept] = useState(false);
+  const [sharedWithTeam, setSharedWithTeam] = useState(false);
 
   // ── Human screening path (included / excluded) ────────────────────────────
   const [screeningStage, setScreeningStage] = useState<"TA" | "FT" | "both">("both");
@@ -101,6 +102,7 @@ export default function CreateSubProjectModal({
         inherit_criteria: inheritCriteria,
         inherit_extraction_template: inheritExtraction,
         inherit_concept_template: inheritConcept,
+        shared_with_team: sharedWithTeam,
       });
     },
     onSuccess: () => {
@@ -124,6 +126,7 @@ export default function CreateSubProjectModal({
         decision,
         stage,
         reason_code: topChoice === "excluded" && selectedReasonCode ? selectedReasonCode : undefined,
+        shared_with_team: sharedWithTeam,
       });
       queryClient.invalidateQueries({ queryKey: ["project", parentProjectId] });
       navigate(`/projects/${res.data.id}`);
@@ -331,6 +334,17 @@ export default function CreateSubProjectModal({
                   placeholder="Purpose of this sub-project" />
               </div>
             </>
+          )}
+
+          {/* ── Share with team toggle ────────────────────────────────── */}
+          {topChoice && (
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "0.6rem 0.85rem", borderRadius: 8, border: `1.5px solid ${sharedWithTeam ? "#818cf8" : "var(--border)"}`, background: sharedWithTeam ? "#eff6ff" : "var(--surface)", cursor: "pointer" }}>
+              <input type="checkbox" checked={sharedWithTeam} onChange={(e) => setSharedWithTeam(e.target.checked)} style={{ marginTop: 2, accentColor: "#4f46e5", flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: sharedWithTeam ? "#3730a3" : "var(--text)" }}>Share with team</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>All members of the parent project can see and use this sub-project.</div>
+              </div>
+            </label>
           )}
 
           {error && (

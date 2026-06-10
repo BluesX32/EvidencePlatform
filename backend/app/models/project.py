@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,3 +30,5 @@ class Project(Base):
     extraction_template: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     concept_template: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     llm_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # When True, all team members of the parent project can access this sub-project.
+    shared_with_team: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")

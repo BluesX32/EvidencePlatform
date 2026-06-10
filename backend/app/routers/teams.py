@@ -2,19 +2,20 @@
 
 All endpoints are scoped under /projects/{project_id}/team.
 
-GET  /members             — list team members (any member or owner)
-POST /invite              — invite by email (admin/owner)
-GET  /invitations         — list pending invitations (admin/owner)
-DELETE /invitations/{inv_id} — revoke invitation (admin/owner)
-PATCH /members/{user_id}  — change member role (admin/owner)
-DELETE /members/{user_id} — remove member (admin/owner, or self-removal)
-POST /accept              — accept an invitation (any authenticated user)
-GET  /me                  — return current user's role in this project
+GET  /members                          — list team members (any member or owner)
+POST /invite                           — add by email; direct if account exists, invitation if not (admin/owner)
+GET  /invitations                      — list pending invitations (admin/owner)
+DELETE /invitations/{inv_id}           — revoke invitation (admin/owner)
+PATCH /members/{user_id}               — change member role (admin/owner)
+PATCH /members/{user_id}/permissions   — update which nav sections are visible (admin/owner)
+DELETE /members/{user_id}              — remove member (admin/owner, or self-removal)
+POST /accept                           — accept an invitation (any authenticated user)
+GET  /me                               — return current user's role + permissions in this project
 """
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -43,12 +44,10 @@ async def _require_admin(
     current_user: User,
     db: AsyncSession,
 ):
-    """Caller must be owner OR an active admin member."""
+    """Caller must be owner or admin (includes shared sub-project inheritance)."""
     project = await _get_project_or_404(db, project_id)
-    if project.created_by == current_user.id:
-        return project
-    member = await TeamRepo.get_member(db, project_id, current_user.id)
-    if member is None or member.role != "admin":
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    if role not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return project
 
@@ -58,12 +57,10 @@ async def _require_any_access(
     current_user: User,
     db: AsyncSession,
 ):
-    """Caller must be owner OR any active member."""
+    """Caller must be owner or any active member (includes shared sub-project inheritance)."""
     project = await _get_project_or_404(db, project_id)
-    if project.created_by == current_user.id:
-        return project
-    member = await TeamRepo.get_member(db, project_id, current_user.id)
-    if member is None:
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    if role is None:
         raise HTTPException(status_code=403, detail="Not a project member")
     return project
 
@@ -77,6 +74,16 @@ class InviteRequest(BaseModel):
 
 class UpdateRoleRequest(BaseModel):
     role: str
+
+
+class UpdatePermissionsRequest(BaseModel):
+    # null resets to "all visible"; non-null must contain allowed_sections list
+    allowed_sections: Optional[List[str]] = None
+
+
+class RecordFilterRequest(BaseModel):
+    # null removes the filter; non-null restricts screening to these record UUIDs
+    record_ids: Optional[List[str]] = None
 
 
 class AcceptInviteRequest(BaseModel):
@@ -94,11 +101,16 @@ async def get_my_role(
     """Return current user's role in this project."""
     project = await _get_project_or_404(db, project_id)
     if project.created_by == current_user.id:
-        return {"role": "owner", "is_owner": True, "user_id": str(current_user.id)}
+        return {"role": "owner", "is_owner": True, "user_id": str(current_user.id), "permissions": None}
     member = await TeamRepo.get_member(db, project_id, current_user.id)
     if member is None:
         raise HTTPException(status_code=403, detail="Not a project member")
-    return {"role": member.role, "is_owner": False, "user_id": str(current_user.id)}
+    return {
+        "role": member.role,
+        "is_owner": False,
+        "user_id": str(current_user.id),
+        "permissions": member.permissions,
+    }
 
 
 @router.get("/members")
@@ -132,28 +144,53 @@ async def invite_member(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Create a pending invitation. Returns the token to share with the invitee."""
+    """Add a user to the project.
+
+    If the email belongs to an existing account the user is added directly
+    (status=active, no token required).  If there is no account yet a pending
+    invitation token is created that the recipient can accept after registering.
+    """
     await _require_admin(project_id, current_user, db)
 
     if body.role not in ROLES:
         raise HTTPException(status_code=422, detail=f"role must be one of {ROLES}")
 
-    # Check for existing active member with same email
-    invitee = await UserRepo.get_by_email(db, body.email.lower().strip())
+    email = body.email.lower().strip()
+    invitee = await UserRepo.get_by_email(db, email)
+
     if invitee:
+        # User already has an account — add directly
         existing = await TeamRepo.get_member(db, project_id, invitee.id)
         if existing:
             raise HTTPException(status_code=409, detail="User is already a member")
+        member = await TeamRepo.add_member(
+            db,
+            project_id=project_id,
+            user_id=invitee.id,
+            role=body.role,
+            invited_by=current_user.id,
+        )
+        await db.commit()
+        return {
+            "added_directly": True,
+            "user_id": str(member.user_id),
+            "email": email,
+            "name": invitee.name,
+            "role": member.role,
+            "status": "active",
+        }
 
+    # No account — create a pending invitation
     invitation = await TeamRepo.create_invitation(
         db,
         project_id=project_id,
-        email=body.email,
+        email=email,
         role=body.role,
         invited_by=current_user.id,
     )
     await db.commit()
     return {
+        "added_directly": False,
         "id": str(invitation.id),
         "email": invitation.email,
         "role": invitation.role,
@@ -248,6 +285,64 @@ async def update_member_role(
         raise HTTPException(status_code=404, detail="Member not found")
     await db.commit()
     return {"user_id": str(member.user_id), "role": member.role}
+
+
+@router.patch("/members/{target_user_id}/permissions")
+async def update_member_permissions(
+    project_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    body: UpdatePermissionsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Set which nav sections are visible for a member (admin/owner only).
+
+    Send allowed_sections=null to restore full access.
+    Send allowed_sections=[...] to restrict to those sections.
+    """
+    project = await _require_admin(project_id, current_user, db)
+
+    if target_user_id == project.created_by:
+        raise HTTPException(status_code=409, detail="Cannot restrict the project owner's access")
+
+    permissions = (
+        {"allowed_sections": body.allowed_sections}
+        if body.allowed_sections is not None
+        else None
+    )
+    member = await TeamRepo.update_member_permissions(db, project_id, target_user_id, permissions)
+    if member is None:
+        raise HTTPException(status_code=404, detail="Member not found")
+    await db.commit()
+    return {"user_id": str(member.user_id), "permissions": member.permissions}
+
+
+@router.patch("/members/{target_user_id}/record-filter")
+async def update_member_record_filter(
+    project_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    body: RecordFilterRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Restrict which records a member sees in screening.
+
+    Send record_ids=null to clear the filter (full access to all records).
+    Send record_ids=[...] to limit the member's screening queue to those records.
+    Does NOT affect other permission fields (allowed_sections is preserved).
+    """
+    project = await _require_admin(project_id, current_user, db)
+
+    if target_user_id == project.created_by:
+        raise HTTPException(status_code=409, detail="Cannot restrict the project owner's record access")
+
+    member = await TeamRepo.update_member_record_filter(
+        db, project_id, target_user_id, body.record_ids
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Member not found")
+    await db.commit()
+    return {"user_id": str(member.user_id), "permissions": member.permissions}
 
 
 @router.delete("/members/{target_user_id}", status_code=204)

@@ -11,12 +11,12 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_role, ANY_ROLE
+from app.dependencies import get_current_user, require_project_role, ANY_ROLE, ADMIN_ROLE
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 
@@ -77,6 +77,7 @@ LEFT JOIN record_sources rs2
        ON rs2.record_id = COALESCE(er.record_id, cr.rep_record_id)
 LEFT JOIN sources s        ON s.id  = rs2.source_id
 WHERE er.project_id = :project_id
+  AND (:reviewer_id IS NULL OR er.reviewer_id = :reviewer_id)
 GROUP BY
     er.id, er.record_id, er.cluster_id, er.extracted_json,
     er.reviewer_id, er.created_at,
@@ -182,12 +183,27 @@ def _row_to_dict(row: Any, project_id: uuid.UUID) -> Dict[str, Any]:
 @router.get("")
 async def list_extractions(
     project_id: uuid.UUID,
+    reviewer_id: Optional[uuid.UUID] = Query(None, description="Filter by reviewer (owner/admin only)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return all extraction records for a project, enriched with article metadata."""
-    await _require_project(project_id, current_user, db)
-    result = await db.execute(_LIST_SQL, {"project_id": project_id})
+    """Return extraction records for a project enriched with article metadata.
+
+    Owners and admins see all reviewers' extractions (filter with ?reviewer_id=).
+    Reviewers and observers see only their own extractions.
+    """
+    role = await require_project_role(db, project_id, current_user.id, allowed=ANY_ROLE)
+    effective_reviewer_id: Optional[uuid.UUID]
+    if role in ADMIN_ROLE:
+        # owner/admin: use the query param; None means "all reviewers"
+        effective_reviewer_id = reviewer_id
+    else:
+        # reviewer/observer: always scoped to self, ignore any param
+        effective_reviewer_id = current_user.id
+    result = await db.execute(
+        _LIST_SQL,
+        {"project_id": project_id, "reviewer_id": effective_reviewer_id},
+    )
     return [_row_to_dict(r, project_id) for r in result.mappings().all()]
 
 

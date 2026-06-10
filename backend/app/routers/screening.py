@@ -62,16 +62,15 @@ async def _require_project(
     """Allow owner, admin, and reviewer roles to use screening endpoints.
 
     Observers are read-only (viewing records) and cannot screen.
+    Shared sub-projects inherit access from the parent project via user_role().
     """
     project = await ProjectRepo.get_by_id(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.created_by == current_user.id:
-        return project
-    member = await TeamRepo.get_member(db, project_id, current_user.id)
-    if member is None:
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    if role is None:
         raise HTTPException(status_code=403, detail="Not a project member")
-    if member.role == "observer":
+    if role == "observer":
         raise HTTPException(status_code=403, detail="Observers cannot screen items")
     return project
 
@@ -194,6 +193,17 @@ async def next_item(
         project_id, source_id, mode, strategy, bucket, current_user.id,
     )
 
+    # Resolve this reviewer's assigned record filter (if any)
+    allowed_record_ids: Optional[List[uuid.UUID]] = None
+    member = await TeamRepo.get_member(db, project_id, current_user.id)
+    if member and member.permissions:
+        raw_ids = member.permissions.get("record_ids")
+        if raw_ids:
+            try:
+                allowed_record_ids = [uuid.UUID(r) for r in raw_ids]
+            except (ValueError, TypeError):
+                logger.warning("screening /next: invalid record_ids in member permissions, ignoring")
+
     try:
         result = await get_next_item(
             db,
@@ -204,6 +214,7 @@ async def next_item(
             bucket=bucket,
             randomize=randomize,
             seed=seed,
+            allowed_record_ids=allowed_record_ids,
         )
         await db.commit()
         logger.info(
@@ -360,11 +371,19 @@ async def list_extractions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Return the current reviewer's own extractions for a record/cluster.
+
+    Always scoped to current_user — the workspace uses this to pre-fill the
+    extraction form with the reviewer's own prior work, never another's.
+    """
     await _require_project(project_id, current_user, db)
 
     stmt = (
         select(ExtractionRecord)
-        .where(ExtractionRecord.project_id == project_id)
+        .where(
+            ExtractionRecord.project_id == project_id,
+            ExtractionRecord.reviewer_id == current_user.id,
+        )
     )
     if record_id is not None:
         stmt = stmt.where(ExtractionRecord.record_id == record_id)

@@ -275,6 +275,7 @@ export interface SubProjectSummary {
   record_count: number;
   seed: number | null;
   n_per_corpus: number | null;
+  shared_with_team: boolean;
 }
 
 export interface SampleInfo {
@@ -295,12 +296,14 @@ export interface ProjectDetail extends Project {
   parent_project_id: string | null;
   sample_info: SampleInfo | null;
   sub_projects: SubProjectSummary[];
+  shared_with_team: boolean;
 }
 
 export interface ProjectListItem extends Project {
   record_count: number;
   my_role: "owner" | "admin" | "reviewer" | "observer";
   parent_project_id: string | null;
+  shared_with_team: boolean;
 }
 
 export interface PrismaStats {
@@ -334,12 +337,15 @@ export const projectsApi = {
       inherit_criteria?: boolean;
       inherit_extraction_template?: boolean;
       inherit_concept_template?: boolean;
+      shared_with_team?: boolean;
     },
   ) => api.post<Project>(`/projects/${parentId}/sub-projects`, body),
   createSubProjectFromScreening: (
     parentId: string,
-    body: { name: string; description?: string; decision: "include" | "exclude"; stage?: "TA" | "FT"; reason_code?: string },
+    body: { name: string; description?: string; decision: "include" | "exclude"; stage?: "TA" | "FT"; reason_code?: string; shared_with_team?: boolean },
   ) => api.post<Project>(`/projects/${parentId}/sub-projects/from-screening`, body),
+  setSharedWithTeam: (id: string, shared: boolean) =>
+    api.patch(`/projects/${id}/shared-with-team`, { shared_with_team: shared }),
   getHumanExcludedReasonCodes: (projectId: string, stage?: "TA" | "FT") =>
     api.get<{ total_excluded: number; reason_codes: Array<{ reason_code: string; count: number }>; has_reason_codes: boolean }>(
       `/projects/${projectId}/screening/excluded-reason-codes${stage ? `?stage=${stage}` : ""}`
@@ -956,8 +962,10 @@ export interface ExtractionLibraryItem extends ExtractionRecord {
 }
 
 export const extractionLibraryApi = {
-  list: (projectId: string) =>
-    api.get<ExtractionLibraryItem[]>(`/projects/${projectId}/extractions`),
+  list: (projectId: string, reviewerId?: string | null) =>
+    api.get<ExtractionLibraryItem[]>(`/projects/${projectId}/extractions`, {
+      params: reviewerId ? { reviewer_id: reviewerId } : undefined,
+    }),
   get: (projectId: string, extractionId: string) =>
     api.get<ExtractionLibraryItem>(`/projects/${projectId}/extractions/${extractionId}`),
 };
@@ -1809,6 +1817,11 @@ export const fulltextApi = {
 
 // ── Team collaboration ────────────────────────────────────────────────────────
 
+export interface MemberPermissions {
+  allowed_sections?: string[] | null;
+  record_ids?: string[] | null;
+}
+
 export interface TeamMember {
   user_id: string;
   email: string;
@@ -1816,6 +1829,7 @@ export interface TeamMember {
   role: "owner" | "admin" | "reviewer" | "observer";
   joined_at: string;
   is_owner: boolean;
+  permissions: MemberPermissions | null;
 }
 
 export interface ProjectInvitation {
@@ -1828,10 +1842,25 @@ export interface ProjectInvitation {
   accepted_at: string | null;
 }
 
+export interface InviteResult {
+  added_directly: boolean;
+  // present when added_directly=true
+  user_id?: string;
+  name?: string;
+  // present when added_directly=false
+  id?: string;
+  token?: string;
+  status?: string;
+  created_at?: string;
+  email: string;
+  role: string;
+}
+
 export interface MyRole {
   role: "owner" | "admin" | "reviewer" | "observer";
   is_owner: boolean;
   user_id: string;
+  permissions: MemberPermissions | null;
 }
 
 export const teamApi = {
@@ -1842,7 +1871,7 @@ export const teamApi = {
     api.get<TeamMember[]>(`/projects/${projectId}/team/members`),
 
   invite: (projectId: string, email: string, role: string) =>
-    api.post<ProjectInvitation>(`/projects/${projectId}/team/invite`, { email, role }),
+    api.post<InviteResult>(`/projects/${projectId}/team/invite`, { email, role }),
 
   listInvitations: (projectId: string) =>
     api.get<ProjectInvitation[]>(`/projects/${projectId}/team/invitations`),
@@ -1858,6 +1887,16 @@ export const teamApi = {
 
   updateMemberRole: (projectId: string, userId: string, role: string) =>
     api.patch(`/projects/${projectId}/team/members/${userId}`, { role }),
+
+  updateMemberPermissions: (projectId: string, userId: string, allowedSections: string[] | null) =>
+    api.patch(`/projects/${projectId}/team/members/${userId}/permissions`, {
+      allowed_sections: allowedSections,
+    }),
+
+  updateMemberRecordFilter: (projectId: string, userId: string, recordIds: string[] | null) =>
+    api.patch(`/projects/${projectId}/team/members/${userId}/record-filter`, {
+      record_ids: recordIds,
+    }),
 
   removeMember: (projectId: string, userId: string) =>
     api.delete(`/projects/${projectId}/team/members/${userId}`),

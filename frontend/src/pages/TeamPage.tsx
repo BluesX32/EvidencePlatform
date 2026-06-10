@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
 import {
@@ -10,9 +10,13 @@ import {
   ArrowLeft,
   BarChart2,
   Shield,
+  X,
+  BookMarked,
 } from "lucide-react";
-import { teamApi, consensusApi } from "../api/client";
-import type { TeamMember, ProjectInvitation, ReviewerStats } from "../api/client";
+import { teamApi, consensusApi, extractionLibraryApi } from "../api/client";
+import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, ExtractionLibraryItem } from "../api/client";
+
+// ── Constants ────────────────────────────────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = {
   owner: "Owner",
@@ -28,18 +32,66 @@ const ROLE_COLORS: Record<string, string> = {
   observer: "#6b7280",
 };
 
+// Sequential stage presets — each stage unlocks all previous stages' sections too
+const STAGE_PRESETS = [
+  {
+    label: "Import only",
+    description: "Can see the project overview and record list",
+    sections: ["overview", "import", "records"],
+  },
+  {
+    label: "Up to Overlap",
+    description: "Can see deduplication and overlap results",
+    sections: ["overview", "import", "records", "overlap"],
+  },
+  {
+    label: "Up to Screening",
+    description: "Can independently screen papers",
+    sections: ["overview", "import", "records", "overlap", "screening", "saturation"],
+  },
+  {
+    label: "Up to Extraction",
+    description: "Can extract data from assigned papers (results isolated per reviewer)",
+    sections: ["overview", "import", "records", "overlap", "screening", "saturation", "extractions", "labels", "prisma"],
+  },
+  {
+    label: "Full access",
+    description: "Can see all sections including analysis and team management",
+    sections: null, // null = all
+  },
+] as const;
+
+// Must match the `section` keys in AppShell PROJECT_NAV
+const SECTIONS = [
+  { key: "overview",     label: "Overview"        },
+  { key: "import",       label: "Import"          },
+  { key: "records",      label: "Records"         },
+  { key: "overlap",      label: "Overlap"         },
+  { key: "screening",    label: "Screening"       },
+  { key: "extractions",  label: "Extractions"     },
+  { key: "prisma",       label: "PRISMA"          },
+  { key: "citations",    label: "Citation Search" },
+  { key: "labels",       label: "Labels"          },
+  { key: "concepts",     label: "Concepts"        },
+  { key: "thematic",     label: "Thematic"        },
+  { key: "ontology",     label: "Ontology"        },
+  { key: "llm_screening",label: "LLM Screening"   },
+  { key: "team",         label: "Team"            },
+  { key: "consensus",    label: "Consensus"       },
+];
+
+// ── Small components ─────────────────────────────────────────────────────────
+
 function RoleBadge({ role }: { role: string }) {
   return (
-    <span
-      style={{
-        background: ROLE_COLORS[role] || "#6b7280",
-        color: "#fff",
-        borderRadius: 4,
-        padding: "2px 8px",
-        fontSize: 12,
-        fontWeight: 600,
-      }}
-    >
+    <span style={{
+      background: ROLE_COLORS[role] || "#6b7280",
+      color: "#fff",
+      borderRadius: 4,
+      padding: "2px 8px",
+      fontSize: 12,
+      fontWeight: 600,
+    }}>
       {ROLE_LABELS[role] || role}
     </span>
   );
@@ -59,6 +111,342 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// ── Permissions modal ────────────────────────────────────────────────────────
+
+function PermissionsModal({
+  member,
+  projectId,
+  onClose,
+}: {
+  member: TeamMember;
+  projectId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+
+  // null permissions = all sections visible
+  const initial: Set<string> = member.permissions?.allowed_sections
+    ? new Set(member.permissions.allowed_sections)
+    : new Set(SECTIONS.map(s => s.key));
+
+  const [selected, setSelected] = useState<Set<string>>(initial);
+  const allSelected = selected.size === SECTIONS.length;
+
+  const mut = useMutation({
+    mutationFn: (sections: string[] | null) =>
+      teamApi.updateMemberPermissions(projectId, member.user_id, sections),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["team-members", projectId] });
+      onClose();
+    },
+  });
+
+  function toggle(key: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function save() {
+    // If all sections selected → reset to null (full access)
+    const sections = allSelected ? null : [...selected];
+    mut.mutate(sections);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 480 }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Shield size={16} color="var(--brand)" />
+            <h3 style={{ margin: 0, fontSize: "1rem" }}>
+              Section access — {member.name || member.email}
+            </h3>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={14} /></button>
+        </div>
+
+        <div style={{ padding: "1rem 1.25rem" }}>
+          {/* ── Stage presets ─────────────────────────────────────────────── */}
+          <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
+            Quick presets
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: "1rem" }}>
+            {STAGE_PRESETS.map((preset) => {
+              const presetSet = preset.sections ? new Set(preset.sections) : new Set(SECTIONS.map(s => s.key));
+              const isActive = presetSet.size === selected.size && [...presetSet].every(k => selected.has(k));
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => setSelected(presetSet)}
+                  style={{
+                    display: "flex", alignItems: "flex-start", gap: 10,
+                    padding: "0.5rem 0.75rem", borderRadius: 7, textAlign: "left", cursor: "pointer",
+                    border: `1.5px solid ${isActive ? "var(--brand)" : "var(--border)"}`,
+                    background: isActive ? "#eff6ff" : "var(--surface)",
+                  }}
+                >
+                  <div style={{ width: 12, height: 12, borderRadius: "50%", flexShrink: 0, marginTop: 2, background: isActive ? "var(--brand)" : "#d1d5db" }} />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "0.82rem", color: isActive ? "#3730a3" : "var(--text)" }}>{preset.label}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 1 }}>{preset.description}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
+            Fine-tune
+          </p>
+          <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", color: "#475569" }}>
+            Uncheck sections to hide them from this member's sidebar navigation.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem 1.5rem", marginBottom: "1rem" }}>
+            {SECTIONS.map(s => (
+              <label key={s.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.85rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={selected.has(s.key)}
+                  onChange={() => toggle(s.key)}
+                  style={{ width: 14, height: 14, accentColor: "var(--brand)" }}
+                />
+                {s.label}
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.82rem", cursor: "pointer", color: "#475569" }}>
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={() => setSelected(allSelected ? new Set() : new Set(SECTIONS.map(s => s.key)))}
+                style={{ width: 14, height: 14, accentColor: "var(--brand)" }}
+              />
+              Select all
+            </label>
+          </div>
+
+          {mut.isError && (
+            <p style={{ color: "#dc2626", fontSize: "0.8rem", margin: "0.5rem 0 0" }}>
+              {(mut.error as any)?.response?.data?.detail || "Failed to save permissions"}
+            </p>
+          )}
+        </div>
+
+        <div style={{ borderTop: "1px solid var(--border)", padding: "0.75rem 1.25rem", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button
+            className="btn-primary btn-sm"
+            disabled={mut.isPending || selected.size === 0}
+            onClick={save}
+          >
+            {mut.isPending ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Assign papers modal ──────────────────────────────────────────────────────
+
+function AssignPapersModal({
+  member,
+  projectId,
+  onClose,
+}: {
+  member: TeamMember;
+  projectId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [search, setSearch] = useState("");
+
+  const { data: papers = [], isLoading } = useQuery({
+    queryKey: ["extractions", projectId],
+    queryFn: () => extractionLibraryApi.list(projectId).then(r => r.data),
+    staleTime: 30_000,
+  });
+
+  // Deduplicate by record_id (multiple reviewers may have extracted the same paper)
+  const uniquePapers = useMemo(() => {
+    const seen = new Set<string>();
+    return papers.filter(p => {
+      const key = p.record_id ?? p.cluster_id ?? p.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [papers]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return uniquePapers;
+    const q = search.toLowerCase();
+    return uniquePapers.filter(p =>
+      (p.title ?? "").toLowerCase().includes(q) ||
+      (p.authors ?? []).join(" ").toLowerCase().includes(q) ||
+      String(p.year ?? "").includes(q)
+    );
+  }, [uniquePapers, search]);
+
+  // Initial selection: currently assigned record_ids
+  const currentIds = useMemo<Set<string>>(() => {
+    const ids = member.permissions?.record_ids;
+    return ids ? new Set(ids) : new Set();
+  }, [member.permissions]);
+
+  const [selected, setSelected] = useState<Set<string>>(currentIds);
+
+  function getPaperId(p: ExtractionLibraryItem) {
+    return p.record_id ?? p.cluster_id ?? p.id;
+  }
+
+  function toggle(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAll() { setSelected(new Set(filtered.map(getPaperId))); }
+  function clearAll()  { setSelected(new Set()); }
+
+  const mut = useMutation({
+    mutationFn: (ids: string[] | null) =>
+      teamApi.updateMemberRecordFilter(projectId, member.user_id, ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["team-members", projectId] });
+      onClose();
+    },
+  });
+
+  function save() {
+    // Empty selection → clear filter (full access to all records)
+    mut.mutate(selected.size === 0 ? null : [...selected]);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 620, maxHeight: "80vh", display: "flex", flexDirection: "column" }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <BookMarked size={16} color="var(--brand)" />
+            <h3 style={{ margin: 0, fontSize: "1rem" }}>
+              Assign papers — {member.name || member.email}
+            </h3>
+          </div>
+          <button className="modal-close" onClick={onClose}><X size={14} /></button>
+        </div>
+
+        <div style={{ padding: "0.75rem 1.25rem", borderBottom: "1px solid var(--border)" }}>
+          <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "#475569" }}>
+            Select the papers this reviewer can access in their screening queue.
+            Leave empty to give full access to all records.
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Filter by title, author, year…"
+              style={{ flex: 1, padding: "5px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}
+            />
+            <button className="btn-ghost btn-sm" onClick={selectAll}>All</button>
+            <button className="btn-ghost btn-sm" onClick={clearAll}>None</button>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+            {selected.size} of {uniquePapers.length} selected
+            {selected.size === 0 && " (full access — no filter)"}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 1.25rem" }}>
+          {isLoading ? (
+            <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
+              {uniquePapers.length === 0
+                ? "No extracted papers yet. Extract papers first, then assign them here."
+                : "No papers match your search."}
+            </div>
+          ) : (
+            filtered.map(p => {
+              const id = getPaperId(p);
+              const checked = selected.has(id);
+              return (
+                <label
+                  key={id}
+                  style={{
+                    display: "flex", alignItems: "flex-start", gap: 10,
+                    padding: "8px 4px", cursor: "pointer", borderRadius: 4,
+                    background: checked ? "#eef2ff" : "transparent",
+                    borderBottom: "1px solid #f1f5f9",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(id)}
+                    style={{ width: 14, height: 14, marginTop: 2, accentColor: "var(--brand)", flexShrink: 0 }}
+                  />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#1e293b" }}>
+                      {p.title ?? "(untitled)"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                      {[
+                        p.authors?.slice(0, 3).join(", "),
+                        p.year,
+                        p.source_names?.join(" · "),
+                      ].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                </label>
+              );
+            })
+          )}
+        </div>
+
+        {mut.isError && (
+          <div style={{ padding: "0.5rem 1.25rem", color: "#dc2626", fontSize: "0.8rem" }}>
+            {(mut.error as any)?.response?.data?.detail || "Failed to save assignment"}
+          </div>
+        )}
+
+        <div style={{ borderTop: "1px solid var(--border)", padding: "0.75rem 1.25rem", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button
+            className="btn-primary btn-sm"
+            disabled={mut.isPending}
+            onClick={save}
+          >
+            {mut.isPending ? "Saving…" : "Save assignment"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
+
 export default function TeamPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const qc = useQueryClient();
@@ -66,43 +454,50 @@ export default function TeamPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("reviewer");
   const [showInviteForm, setShowInviteForm] = useState(false);
+  const [inviteResult, setInviteResult] = useState<InviteResult | null>(null);
   const [acceptToken, setAcceptToken] = useState("");
   const [statsTab, setStatsTab] = useState<"team" | "reliability">("team");
   const [reliabilityStage, setReliabilityStage] = useState<"" | "TA" | "FT">("");
+  const [permsMember, setPermsMember] = useState<TeamMember | null>(null);
+  const [assignMember, setAssignMember] = useState<TeamMember | null>(null);
 
   const { data: myRole } = useQuery({
     queryKey: ["team-me", projectId],
-    queryFn: () => teamApi.getMyRole(projectId!).then((r) => r.data),
+    queryFn: () => teamApi.getMyRole(projectId!).then(r => r.data),
   });
 
   const { data: members = [], isLoading: membersLoading } = useQuery({
     queryKey: ["team-members", projectId],
-    queryFn: () => teamApi.listMembers(projectId!).then((r) => r.data),
+    queryFn: () => teamApi.listMembers(projectId!).then(r => r.data),
   });
 
   const { data: invitations = [] } = useQuery({
     queryKey: ["team-invitations", projectId],
-    queryFn: () => teamApi.listInvitations(projectId!).then((r) => r.data),
+    queryFn: () => teamApi.listInvitations(projectId!).then(r => r.data),
     enabled: myRole?.role === "owner" || myRole?.role === "admin",
   });
 
   const { data: teamStats = [] } = useQuery({
     queryKey: ["consensus-stats", projectId],
-    queryFn: () => consensusApi.getTeamStats(projectId!).then((r) => r.data),
+    queryFn: () => consensusApi.getTeamStats(projectId!).then(r => r.data),
   });
 
   const { data: reliability } = useQuery({
     queryKey: ["consensus-reliability", projectId, reliabilityStage],
     queryFn: () =>
-      consensusApi.getReliability(projectId!, reliabilityStage || undefined).then((r) => r.data),
+      consensusApi.getReliability(projectId!, reliabilityStage || undefined).then(r => r.data),
   });
 
   const inviteMut = useMutation({
     mutationFn: () => teamApi.invite(projectId!, inviteEmail, inviteRole),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["team-invitations", projectId] });
+    onSuccess: (res) => {
+      setInviteResult(res.data);
       setInviteEmail("");
-      setShowInviteForm(false);
+      if (res.data.added_directly) {
+        qc.invalidateQueries({ queryKey: ["team-members", projectId] });
+      } else {
+        qc.invalidateQueries({ queryKey: ["team-invitations", projectId] });
+      }
     },
   });
 
@@ -141,6 +536,11 @@ export default function TeamPage() {
     return "#dc2626";
   };
 
+  function resetInviteForm() {
+    setInviteResult(null);
+    setShowInviteForm(false);
+  }
+
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "2rem 1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
@@ -152,7 +552,7 @@ export default function TeamPage() {
         {myRole && <RoleBadge role={myRole.role} />}
       </div>
 
-      {/* ── Members table ────────────────────────────────────────────── */}
+      {/* ── Members table ──────────────────────────────────────────────── */}
       <section style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 24, overflow: "hidden" }}>
         <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
@@ -162,51 +562,106 @@ export default function TeamPage() {
             <button
               className="btn-primary"
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", fontSize: 13 }}
-              onClick={() => setShowInviteForm((v) => !v)}
+              onClick={() => { setShowInviteForm(v => !v); setInviteResult(null); }}
             >
-              <UserPlus size={14} /> Invite
+              <UserPlus size={14} /> Add member
             </button>
           )}
         </div>
 
+        {/* ── Invite form ── */}
         {showInviteForm && (
           <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", background: "#f8f9fb" }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            {inviteResult ? (
+              // Result feedback
+              inviteResult.added_directly ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Check size={16} color="#059669" />
+                  <span style={{ fontSize: 13, color: "#166534" }}>
+                    <strong>{inviteResult.name || inviteResult.email}</strong> added as{" "}
+                    <strong>{inviteResult.role}</strong>.
+                  </span>
+                  <button
+                    className="btn-ghost btn-sm"
+                    style={{ marginLeft: "auto" }}
+                    onClick={resetInviteForm}
+                  >
+                    Done
+                  </button>
+                  <button
+                    className="btn-secondary btn-sm"
+                    onClick={() => setInviteResult(null)}
+                  >
+                    Add another
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <Check size={16} color="#059669" />
+                    <span style={{ fontSize: 13, color: "#166534" }}>
+                      Invitation created for <strong>{inviteResult.email}</strong> — no account found yet.
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-muted)" }}>Share this link:</span>
+                    <code style={{ background: "#e2e8f0", padding: "2px 8px", borderRadius: 4, fontSize: 11 }}>
+                      {`${window.location.origin}/accept-invite?token=${inviteResult.token}`}
+                    </code>
+                    <CopyButton text={`${window.location.origin}/accept-invite?token=${inviteResult.token}`} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button className="btn-ghost btn-sm" onClick={resetInviteForm}>Done</button>
+                    <button className="btn-secondary btn-sm" onClick={() => setInviteResult(null)}>Add another</button>
+                  </div>
+                </div>
+              )
+            ) : (
+              // Invite form inputs
               <div>
-                <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>Email</label>
-                <input
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="colleague@institution.edu"
-                  style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 240 }}
-                />
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>Email</label>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={e => setInviteEmail(e.target.value)}
+                      placeholder="colleague@institution.edu"
+                      style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, width: 240 }}
+                      onKeyDown={e => e.key === "Enter" && inviteEmail && inviteMut.mutate()}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>Role</label>
+                    <select
+                      value={inviteRole}
+                      onChange={e => setInviteRole(e.target.value)}
+                      style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="reviewer">Reviewer</option>
+                      <option value="observer">Observer</option>
+                    </select>
+                  </div>
+                  <button
+                    className="btn-primary"
+                    disabled={!inviteEmail || inviteMut.isPending}
+                    onClick={() => inviteMut.mutate()}
+                    style={{ padding: "6px 14px", fontSize: 13 }}
+                  >
+                    {inviteMut.isPending ? "Adding…" : "Add"}
+                  </button>
+                  <button className="btn-ghost btn-sm" onClick={resetInviteForm}>Cancel</button>
+                </div>
+                <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "6px 0 0" }}>
+                  If the email has an account, they'll be added immediately. Otherwise an invite link is created.
+                </p>
+                {inviteMut.isError && (
+                  <p style={{ color: "#dc2626", fontSize: 12, marginTop: 6 }}>
+                    {(inviteMut.error as any)?.response?.data?.detail || "Failed to add member"}
+                  </p>
+                )}
               </div>
-              <div>
-                <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>Role</label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value)}
-                  style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}
-                >
-                  <option value="admin">Admin</option>
-                  <option value="reviewer">Reviewer</option>
-                  <option value="observer">Observer</option>
-                </select>
-              </div>
-              <button
-                className="btn-primary"
-                disabled={!inviteEmail || inviteMut.isPending}
-                onClick={() => inviteMut.mutate()}
-                style={{ padding: "6px 14px", fontSize: 13 }}
-              >
-                {inviteMut.isPending ? "Sending…" : "Create invite link"}
-              </button>
-            </div>
-            {inviteMut.isError && (
-              <p style={{ color: "#dc2626", fontSize: 12, marginTop: 8 }}>
-                {(inviteMut.error as any)?.response?.data?.detail || "Failed to create invitation"}
-              </p>
             )}
           </div>
         )}
@@ -217,50 +672,107 @@ export default function TeamPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#f8f9fb" }}>
-                {["Name", "Email", "Role", ""].map((h) => (
+                {["Name", "Email", "Role", "Access", "Papers", ""].map(h => (
                   <th key={h} style={{ padding: "8px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {members.map((m: TeamMember) => (
-                <tr key={m.user_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "10px 16px", fontSize: 14, fontWeight: 500 }}>{m.name}</td>
-                  <td style={{ padding: "10px 16px", fontSize: 13, color: "var(--text-muted)" }}>{m.email}</td>
-                  <td style={{ padding: "10px 16px" }}>
-                    {isAdmin && !m.is_owner ? (
-                      <select
-                        value={m.role}
-                        onChange={(e) => roleMut.mutate({ userId: m.user_id, role: e.target.value })}
-                        style={{ border: "1px solid var(--border)", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
-                      >
-                        <option value="admin">Admin</option>
-                        <option value="reviewer">Reviewer</option>
-                        <option value="observer">Observer</option>
-                      </select>
-                    ) : (
-                      <RoleBadge role={m.role} />
-                    )}
-                  </td>
-                  <td style={{ padding: "10px 16px", textAlign: "right" }}>
-                    {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
-                      <button
-                        onClick={() => removeMut.mutate(m.user_id)}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", padding: 4 }}
-                        title="Remove member"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {members.map((m: TeamMember) => {
+                const restricted = !m.is_owner && m.permissions?.allowed_sections != null;
+                return (
+                  <tr key={m.user_id} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "10px 16px", fontSize: 14, fontWeight: 500 }}>{m.name}</td>
+                    <td style={{ padding: "10px 16px", fontSize: 13, color: "var(--text-muted)" }}>{m.email}</td>
+                    <td style={{ padding: "10px 16px" }}>
+                      {isAdmin && !m.is_owner ? (
+                        <select
+                          value={m.role}
+                          onChange={e => roleMut.mutate({ userId: m.user_id, role: e.target.value })}
+                          style={{ border: "1px solid var(--border)", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                        >
+                          <option value="admin">Admin</option>
+                          <option value="reviewer">Reviewer</option>
+                          <option value="observer">Observer</option>
+                        </select>
+                      ) : (
+                        <RoleBadge role={m.role} />
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 16px" }}>
+                      {m.is_owner ? (
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Full access</span>
+                      ) : isAdmin ? (
+                        <button
+                          onClick={() => setPermsMember(m)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                            background: restricted ? "#fef3c7" : "#f3f4f6",
+                            border: `1px solid ${restricted ? "#fbbf24" : "var(--border)"}`,
+                            borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer",
+                            color: restricted ? "#92400e" : "var(--text-muted)",
+                          }}
+                          title="Edit section access"
+                        >
+                          <Shield size={11} />
+                          {restricted
+                            ? `${m.permissions!.allowed_sections!.length} sections`
+                            : "Full access"}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                          {restricted ? `${m.permissions!.allowed_sections!.length} sections` : "Full access"}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 16px" }}>
+                      {m.is_owner ? (
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>—</span>
+                      ) : isAdmin ? (
+                        <button
+                          onClick={() => setAssignMember(m)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                            background: m.permissions?.record_ids ? "#eff6ff" : "#f3f4f6",
+                            border: `1px solid ${m.permissions?.record_ids ? "#93c5fd" : "var(--border)"}`,
+                            borderRadius: 4, padding: "3px 8px", fontSize: 11, cursor: "pointer",
+                            color: m.permissions?.record_ids ? "#1d4ed8" : "var(--text-muted)",
+                          }}
+                          title="Assign specific papers"
+                        >
+                          <BookMarked size={11} />
+                          {m.permissions?.record_ids
+                            ? `${m.permissions.record_ids.length} paper${m.permissions.record_ids.length !== 1 ? "s" : ""}`
+                            : "All papers"}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                          {m.permissions?.record_ids
+                            ? `${m.permissions.record_ids.length} assigned`
+                            : "All papers"}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 16px", textAlign: "right" }}>
+                      {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
+                        <button
+                          onClick={() => removeMut.mutate(m.user_id)}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", padding: 4 }}
+                          title="Remove member"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
       </section>
 
-      {/* ── Pending invitations ──────────────────────────────────────── */}
+      {/* ── Pending invitations ──────────────────────────────────────────── */}
       {isAdmin && invitations.length > 0 && (
         <section style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 24 }}>
           <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", fontWeight: 600, fontSize: 14 }}>
@@ -269,7 +781,7 @@ export default function TeamPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#f8f9fb" }}>
-                {["Email", "Role", "Status", "Invite Link", ""].map((h) => (
+                {["Email", "Role", "Status", "Invite Link", ""].map(h => (
                   <th key={h} style={{ padding: "8px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
                 ))}
               </tr>
@@ -313,13 +825,13 @@ export default function TeamPage() {
         </section>
       )}
 
-      {/* ── Accept invite panel ──────────────────────────────────────── */}
+      {/* ── Accept invite panel ──────────────────────────────────────────── */}
       <section style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 24, padding: "16px 18px" }}>
         <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Accept an Invitation</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             value={acceptToken}
-            onChange={(e) => setAcceptToken(e.target.value)}
+            onChange={e => setAcceptToken(e.target.value)}
             placeholder="Paste invite token"
             style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13, flex: 1, maxWidth: 360 }}
           />
@@ -344,28 +856,25 @@ export default function TeamPage() {
         )}
       </section>
 
-      {/* ── Stats & Reliability tabs ─────────────────────────────────── */}
+      {/* ── Stats & Reliability tabs ─────────────────────────────────────── */}
       <section style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}>
         <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
           {[
             { key: "team", label: "Screening Progress", icon: <BarChart2 size={14} /> },
             { key: "reliability", label: "Inter-rater Reliability", icon: <Shield size={14} /> },
-          ].map((tab) => (
+          ].map(tab => (
             <button
               key={tab.key}
               onClick={() => setStatsTab(tab.key as any)}
               style={{
-                padding: "12px 20px",
-                border: "none",
+                padding: "12px 20px", border: "none",
                 borderBottom: statsTab === tab.key ? "2px solid var(--brand)" : "2px solid transparent",
                 background: "none",
                 color: statsTab === tab.key ? "var(--brand)" : "var(--text-muted)",
                 cursor: "pointer",
                 fontWeight: statsTab === tab.key ? 600 : 400,
                 fontSize: 13,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
+                display: "flex", alignItems: "center", gap: 6,
               }}
             >
               {tab.icon} {tab.label}
@@ -374,7 +883,7 @@ export default function TeamPage() {
         </div>
 
         {statsTab === "team" && (
-          <div style={{ padding: 0 }}>
+          <div>
             {teamStats.length === 0 ? (
               <div style={{ padding: 24, color: "var(--text-muted)", textAlign: "center" }}>
                 No screening activity yet.
@@ -383,7 +892,7 @@ export default function TeamPage() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "#f8f9fb" }}>
-                    {["Reviewer", "TA Screened", "TA Included", "TA Excluded", "FT Screened", "FT Included", "FT Excluded", "Extractions"].map((h) => (
+                    {["Reviewer", "TA Screened", "TA Included", "TA Excluded", "FT Screened", "FT Included", "FT Excluded", "Extractions"].map(h => (
                       <th key={h} style={{ padding: "8px 14px", textAlign: h === "Reviewer" ? "left" : "center", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
                     ))}
                   </tr>
@@ -411,18 +920,15 @@ export default function TeamPage() {
           <div style={{ padding: "16px 18px" }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
               <label style={{ fontSize: 13, color: "var(--text-muted)" }}>Stage:</label>
-              {(["", "TA", "FT"] as const).map((s) => (
+              {(["", "TA", "FT"] as const).map(s => (
                 <button
                   key={s}
                   onClick={() => setReliabilityStage(s)}
                   style={{
-                    padding: "4px 12px",
-                    borderRadius: 16,
-                    border: "1px solid var(--border)",
+                    padding: "4px 12px", borderRadius: 16, border: "1px solid var(--border)",
                     background: reliabilityStage === s ? "var(--brand)" : "none",
                     color: reliabilityStage === s ? "#fff" : "var(--text)",
-                    fontSize: 12,
-                    cursor: "pointer",
+                    fontSize: 12, cursor: "pointer",
                   }}
                 >
                   {s || "All"}
@@ -446,7 +952,7 @@ export default function TeamPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ background: "#f8f9fb" }}>
-                      {["Reviewer A", "Reviewer B", "Items Both Screened", "Agreement", "Cohen's κ", "Interpretation"].map((h) => (
+                      {["Reviewer A", "Reviewer B", "Items Both Screened", "Agreement", "Cohen's κ", "Interpretation"].map(h => (
                         <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
                       ))}
                     </tr>
@@ -478,6 +984,24 @@ export default function TeamPage() {
           </div>
         )}
       </section>
+
+      {/* ── Permissions modal ────────────────────────────────────────────── */}
+      {permsMember && (
+        <PermissionsModal
+          member={permsMember}
+          projectId={projectId!}
+          onClose={() => setPermsMember(null)}
+        />
+      )}
+
+      {/* ── Assign papers modal ──────────────────────────────────────────── */}
+      {assignMember && (
+        <AssignPapersModal
+          member={assignMember}
+          projectId={projectId!}
+          onClose={() => setAssignMember(null)}
+        />
+      )}
     </div>
   );
 }

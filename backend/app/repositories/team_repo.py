@@ -51,6 +51,7 @@ class TeamRepo:
                 "name": name,
                 "role": member.role,
                 "joined_at": member.created_at.isoformat(),
+                "permissions": member.permissions,
             })
         return result
 
@@ -61,6 +62,7 @@ class TeamRepo:
         user_id: uuid.UUID,
         role: str,
         invited_by: Optional[uuid.UUID] = None,
+        permissions: Optional[dict] = None,
     ) -> ProjectMember:
         member = ProjectMember(
             project_id=project_id,
@@ -68,6 +70,7 @@ class TeamRepo:
             role=role,
             status="active",
             invited_by=invited_by,
+            permissions=permissions,
         )
         db.add(member)
         await db.flush()
@@ -82,6 +85,50 @@ class TeamRepo:
             update(ProjectMember)
             .where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
             .values(role=new_role)
+        )
+        await db.flush()
+        return await TeamRepo.get_member(db, project_id, user_id)
+
+    @staticmethod
+    async def update_member_permissions(
+        db: AsyncSession,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        permissions: Optional[dict],
+    ) -> Optional[ProjectMember]:
+        await db.execute(
+            update(ProjectMember)
+            .where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
+            .values(permissions=permissions)
+        )
+        await db.flush()
+        return await TeamRepo.get_member(db, project_id, user_id)
+
+    @staticmethod
+    async def update_member_record_filter(
+        db: AsyncSession,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        record_ids: Optional[List[str]],
+    ) -> Optional[ProjectMember]:
+        """Set (or clear) the list of record UUIDs this member can access in screening.
+
+        Merges into the existing permissions JSONB so allowed_sections is preserved.
+        record_ids=None removes the filter (full access to all records).
+        """
+        member = await TeamRepo.get_member(db, project_id, user_id)
+        if member is None:
+            return None
+        current = dict(member.permissions) if member.permissions else {}
+        if record_ids is None:
+            current.pop("record_ids", None)
+        else:
+            current["record_ids"] = record_ids
+        new_perms = current if current else None
+        await db.execute(
+            update(ProjectMember)
+            .where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
+            .values(permissions=new_perms)
         )
         await db.flush()
         return await TeamRepo.get_member(db, project_id, user_id)

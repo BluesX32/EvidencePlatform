@@ -70,6 +70,7 @@ class ProjectListItem(BaseModel):
     record_count: int
     my_role: str
     parent_project_id: Optional[str] = None
+    shared_with_team: bool = False
 
 
 class CriterionItem(BaseModel):
@@ -91,6 +92,7 @@ class SubProjectSummary(BaseModel):
     record_count: int
     seed: Optional[int] = None
     n_per_corpus: Optional[int] = None
+    shared_with_team: bool = False
 
 
 class SampleInfo(BaseModel):
@@ -116,6 +118,7 @@ class ProjectDetail(BaseModel):
     parent_project_id: Optional[str] = None
     sample_info: Optional[SampleInfo] = None
     sub_projects: List[SubProjectSummary] = []
+    shared_with_team: bool = False
 
 
 class UpdateExtractionTemplateRequest(BaseModel):
@@ -162,6 +165,7 @@ async def list_projects(
             record_count=count,
             my_role=role,
             parent_project_id=str(p.parent_project_id) if p.parent_project_id else None,
+            shared_with_team=p.shared_with_team,
         ))
     return result
 
@@ -205,6 +209,7 @@ async def get_project(
             record_count=sp_count,
             seed=sp_sample.seed if sp_sample else None,
             n_per_corpus=sp_sample.n_per_corpus if sp_sample else None,
+            shared_with_team=sp.shared_with_team,
         ))
 
     raw = project.criteria or {"inclusion": [], "exclusion": [], "levels": []}
@@ -225,6 +230,7 @@ async def get_project(
         parent_project_id=str(project.parent_project_id) if project.parent_project_id else None,
         sample_info=sample_info,
         sub_projects=sub_project_items,
+        shared_with_team=project.shared_with_team,
     )
 
 
@@ -357,6 +363,7 @@ class CreateSubProjectRequest(BaseModel):
     inherit_criteria: bool = False
     inherit_extraction_template: bool = False
     inherit_concept_template: bool = False
+    shared_with_team: bool = False
 
 
 @router.post(
@@ -394,6 +401,7 @@ async def create_sub_project_endpoint(
             inherit_criteria=body.inherit_criteria,
             inherit_extraction_template=body.inherit_extraction_template,
             inherit_concept_template=body.inherit_concept_template,
+            shared_with_team=body.shared_with_team,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -445,6 +453,7 @@ class CreateSubProjectFromScreeningRequest(BaseModel):
     decision: str  # "include" or "exclude"
     stage: Optional[str] = None  # "TA", "FT", or null (both)
     reason_code: Optional[str] = None  # filter excluded by reason_code
+    shared_with_team: bool = False
 
 
 @router.post(
@@ -473,6 +482,7 @@ async def create_sub_project_from_screening_endpoint(
             stage=body.stage,
             reason_code=body.reason_code,
             creator_id=current_user.id,
+            shared_with_team=body.shared_with_team,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -496,6 +506,26 @@ async def delete_project(
     await db.commit()
 
 
+class SharedWithTeamRequest(BaseModel):
+    shared_with_team: bool
+
+
+@router.patch("/{project_id}/shared-with-team", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
+async def set_shared_with_team(
+    project_id: uuid.UUID,
+    body: SharedWithTeamRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    project, role = await _get_project_and_role(db, project_id, current_user.id)
+    if role not in _WRITE_ROLES:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if project.parent_project_id is None:
+        raise HTTPException(status_code=400, detail="Only sub-projects can be shared with team")
+    project.shared_with_team = body.shared_with_team
+    await db.commit()
+
+
 @router.get("/{project_id}/sub-projects", response_model=List[SubProjectSummary])
 async def list_sub_projects_endpoint(
     project_id: uuid.UUID,
@@ -516,6 +546,7 @@ async def list_sub_projects_endpoint(
             record_count=sp_count,
             seed=sp_sample.seed if sp_sample else None,
             n_per_corpus=sp_sample.n_per_corpus if sp_sample else None,
+            shared_with_team=sp.shared_with_team,
         ))
     return result
 

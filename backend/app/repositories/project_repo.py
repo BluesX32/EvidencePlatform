@@ -30,6 +30,9 @@ class ProjectRepo:
 
         Returns 'owner' for the project creator, the member role for active members,
         or None if the user has no access.
+
+        For shared sub-projects (shared_with_team=True), falls back to the user's
+        role on the parent project so team members inherit access automatically.
         """
         project = await ProjectRepo.get_by_id(db, project_id)
         if project is None:
@@ -43,19 +46,38 @@ class ProjectRepo:
                 ProjectMember.status == "active",
             )
         )
-        return row.scalar_one_or_none()
+        role = row.scalar_one_or_none()
+        if role is not None:
+            return role
+        # Shared sub-project: inherit access from the parent project
+        if project.shared_with_team and project.parent_project_id:
+            return await ProjectRepo.user_role(db, project.parent_project_id, user_id)
+        return None
 
     @staticmethod
     async def list_by_user(db: AsyncSession, user_id: uuid.UUID) -> list[Project]:
-        """Return all projects accessible to user_id (owned or active member)."""
+        """Return all projects accessible to user_id (owned, active member, or shared sub-project)."""
         owned = select(Project.id).where(Project.created_by == user_id)
         member_of = select(ProjectMember.project_id).where(
             ProjectMember.user_id == user_id,
             ProjectMember.status == "active",
         )
+        # Sub-projects shared with the team are visible to any member (or owner) of
+        # the parent project, even without direct membership in the sub-project.
+        parent_accessible = or_(
+            Project.id.in_(owned),
+            Project.id.in_(member_of),
+        )
+        shared_sub = select(Project.id).where(
+            Project.shared_with_team.is_(True),
+            Project.parent_project_id.isnot(None),
+            Project.parent_project_id.in_(
+                select(Project.id).where(parent_accessible)
+            ),
+        )
         result = await db.execute(
             select(Project)
-            .where(or_(Project.id.in_(owned), Project.id.in_(member_of)))
+            .where(or_(Project.id.in_(owned), Project.id.in_(member_of), Project.id.in_(shared_sub)))
             .order_by(Project.created_at.desc())
         )
         return list(result.scalars().all())

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi } from "../api/client";
+import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi, teamApi } from "../api/client";
 import type {
   ExtractionLibraryItem,
   ExtractionJson,
@@ -9,6 +9,7 @@ import type {
   ScreeningNextItem,
   ConceptTemplate,
   ConceptExtractionRecord,
+  TeamMember,
 } from "../api/client";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
@@ -1022,10 +1023,28 @@ export default function ExtractionLibrary() {
   const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [selectedReviewerId, setSelectedReviewerId] = useState<string | null>(null);
+
+  // Fetch project (for role check + template)
+  const { data: project } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId!).then((r) => r.data),
+    enabled: !!projectId,
+  });
+
+  const isOwnerOrAdmin = project?.my_role === "owner" || project?.my_role === "admin";
+
+  // Fetch team members so owner/admin can filter by reviewer
+  const { data: members = [] } = useQuery<TeamMember[]>({
+    queryKey: ["team-members", projectId],
+    queryFn: () => teamApi.getMembers(projectId!).then((r) => r.data),
+    enabled: !!projectId && isOwnerOrAdmin,
+  });
 
   const { data: items = [], isLoading } = useQuery({
-    queryKey: ["extractions-library", projectId],
-    queryFn: () => extractionLibraryApi.list(projectId!).then((r) => r.data),
+    queryKey: ["extractions-library", projectId, selectedReviewerId],
+    queryFn: () =>
+      extractionLibraryApi.list(projectId!, selectedReviewerId ?? undefined).then((r) => r.data),
     enabled: !!projectId,
   });
 
@@ -1063,12 +1082,6 @@ export default function ExtractionLibrary() {
     setDragOverIdx(null);
   }, []);
 
-  // Fetch template rows so EditPanel can render the table
-  const { data: project } = useQuery({
-    queryKey: ["project", projectId],
-    queryFn: () => projectsApi.get(projectId!).then((r) => r.data),
-    enabled: !!projectId,
-  });
   const templateRows: ExtractionTemplateRow[] = project?.extraction_template?.rows ?? [];
   const conceptTemplate: ConceptTemplate | null = project?.concept_template ?? null;
 
@@ -1122,7 +1135,23 @@ export default function ExtractionLibrary() {
               {visible.length !== orderedItems.length && ` · ${visible.length} shown`}
             </span>
           )}
-          <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+          <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            {isOwnerOrAdmin && members.length > 0 && (
+              <select
+                value={selectedReviewerId ?? ""}
+                onChange={(e) => setSelectedReviewerId(e.target.value || null)}
+                className="input"
+                style={{ fontSize: "0.82rem", padding: "4px 8px", height: 32 }}
+                title="Filter by reviewer"
+              >
+                <option value="">All reviewers</option>
+                {members.map((m) => (
+                  <option key={m.user_id} value={m.user_id}>
+                    {m.name || m.email}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               className="btn-secondary"
               onClick={() => setShowChart((v) => !v)}

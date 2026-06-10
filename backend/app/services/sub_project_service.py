@@ -54,6 +54,7 @@ async def create_sub_project(
     inherit_criteria: bool = False,
     inherit_extraction_template: bool = False,
     inherit_concept_template: bool = False,
+    shared_with_team: bool = False,
 ) -> Project:
     """
     Sample n_per_corpus records from selected sources in parent_project_id and
@@ -126,6 +127,7 @@ async def create_sub_project(
         criteria=parent.criteria if inherit_criteria else {"inclusion": [], "exclusion": [], "levels": []},
         extraction_template=parent.extraction_template if inherit_extraction_template else None,
         concept_template=parent.concept_template if inherit_concept_template else None,
+        shared_with_team=shared_with_team,
     )
     db.add(child)
     await db.commit()
@@ -201,6 +203,7 @@ async def create_sub_project_from_human_screening(
     stage: Optional[str],
     creator_id: uuid.UUID,
     reason_code: Optional[str] = None,
+    shared_with_team: bool = False,
 ) -> Project:
     """
     Create a child project from human screening decisions.
@@ -262,6 +265,7 @@ async def create_sub_project_from_human_screening(
         criteria=parent.criteria,
         extraction_template=parent.extraction_template,
         concept_template=parent.concept_template,
+        shared_with_team=shared_with_team,
     )
     db.add(child)
     await db.commit()
