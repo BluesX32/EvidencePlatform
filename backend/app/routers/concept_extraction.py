@@ -188,7 +188,7 @@ async def get_item_concept_extraction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
     if not record_id and not cluster_id:
         raise HTTPException(400, "Provide record_id or cluster_id")
@@ -198,6 +198,10 @@ async def get_item_concept_extraction(
         stmt = stmt.where(ConceptExtraction.record_id == uuid.UUID(record_id))
     else:
         stmt = stmt.where(ConceptExtraction.cluster_id == uuid.UUID(cluster_id))
+
+    # Non-owners see only their own extraction (form pre-fill is per-reviewer)
+    if role not in ADMIN_ROLE:
+        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
 
     result = await db.execute(stmt)
     rows = result.scalars().all()
@@ -215,9 +219,8 @@ async def get_taxonomy_aggregate(
     """
     Returns all concept extraction values grouped by field_type (entity/relation/metadata).
     Uses the project's concept_template to resolve field labels and types.
+    Non-owners see only their own extractions; owners/admins see all reviewers combined.
     """
-    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
-
     project = await ProjectRepo.get_by_id(db, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -226,8 +229,12 @@ async def get_taxonomy_aggregate(
     fields = concept_template.get("fields", [])
     field_map: Dict[str, Dict] = {f["id"]: f for f in fields}
 
-    # Load all concept extractions for this project
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+
+    # Load concept extractions: non-owners see only their own; owners see all
     stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
+    if role not in ADMIN_ROLE:
+        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
     result = await db.execute(stmt)
     extractions = result.scalars().all()
 
