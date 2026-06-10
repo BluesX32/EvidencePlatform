@@ -59,7 +59,6 @@ import PrismaPage from "./pages/PrismaPage";
 import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import AppShell from "./components/AppShell";
-import OnboardingTour from "./components/OnboardingTour";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
 
@@ -87,19 +86,6 @@ function WithShell({ children }: { children: ReactNode }) {
   );
 }
 
-/** Projects page includes the onboarding tour on first visit. */
-function ProjectsWithTour() {
-  const [showTour, setShowTour] = useState(
-    () => !localStorage.getItem("ep_tour_done")
-  );
-  return (
-    <>
-      <ProjectsPage />
-      {showTour && <OnboardingTour onDone={() => setShowTour(false)} />}
-    </>
-  );
-}
-
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -114,7 +100,7 @@ export default function App() {
             {/* Authenticated — all wrapped in AppShell */}
             <Route path="/admin"        element={<WithShell><AdminPage /></WithShell>} />
             <Route path="/settings"     element={<WithShell><SettingsPage /></WithShell>} />
-            <Route path="/projects"     element={<WithShell><ProjectsWithTour /></WithShell>} />
+            <Route path="/projects"     element={<WithShell><ProjectsPage /></WithShell>} />
             <Route path="/projects/new" element={<WithShell><NewProjectPage /></WithShell>} />
 
             {/* Project-scoped routes */}

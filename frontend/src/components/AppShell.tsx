@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
+import OnboardingTour from "./OnboardingTour";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 
@@ -395,7 +396,10 @@ function SidebarProfile() {
   function handleTutorial() {
     setOpen(false);
     localStorage.removeItem("ep_tour_done");
-    window.location.href = "/projects";
+    // Reload the current page so the tour mounts with the correct sidebar visible.
+    // (If the user is inside a project, the project nav items will be in the DOM
+    //  and spotlight effects will work.)
+    window.location.reload();
   }
 
   const MI = (icon: React.ReactNode, label: React.ReactNode, onClick: () => void, color?: string) => (
@@ -582,6 +586,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { id: projectId } = useParams<{ id?: string }>();
   const location = useLocation();
 
+  // Onboarding tour — shown on first visit (or after "Tutorial" in profile menu)
+  const [showTour, setShowTour] = useState(() => !localStorage.getItem("ep_tour_done"));
+
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId!).then(r => r.data),
@@ -714,7 +721,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="sidebar-divider" />
 
             <nav className="sidebar-nav">
-              {orderedNav.map(({ path, icon: Icon, label }, idx) => {
+              {orderedNav.map(({ path, icon: Icon, label, section }, idx) => {
                 const basePath = `/projects/${projectId}${path}`;
                 let fullPath = basePath;
                 if (path === "/screen" && projectId) {
@@ -741,6 +748,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                       to={fullPath}
                       className={`sidebar-link${isActive ? " active" : ""}`}
                       onClick={() => { if (isMobile) setMobileOpen(false); }}
+                      data-tour={section}
                     >
                       <span className="drag-grip sidebar-label">
                         <GripVertical size={11} />
@@ -791,6 +799,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <main className="shell-main" style={{ marginLeft: mainMarginLeft }}>
         {children}
       </main>
+
+      {/* ── Onboarding tour overlay ──────────────────────────────────────── */}
+      {showTour && <OnboardingTour onDone={() => setShowTour(false)} />}
     </div>
   );
 }
