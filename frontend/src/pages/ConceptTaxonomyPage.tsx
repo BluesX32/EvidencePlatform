@@ -98,9 +98,13 @@ function buildViewEntries(
 
   const result: ViewEntry[] = [];
 
-  // Nodes (with merged counts)
+  // Nodes (with merged counts) — only include nodes that have at least one
+  // concept extraction from the current user (enforces the zipper model: a
+  // reviewer sees only their own extracted concepts; curated nodes with no
+  // matching extractions are invisible to them).
   for (const node of tabNodes) {
     const agg = nodeCountMap.get(node.id) ?? { count: 0, record_ids: [] };
+    if (agg.count === 0) continue;
     const fieldInfo = tabData.find(e => valueToNode.get(e.value.toLowerCase())?.id === node.id);
     result.push({
       key: `node:${node.id}`,
@@ -762,10 +766,14 @@ export default function ConceptTaxonomyPage() {
       {/* ── Tabs ────────────────────────────────────────────────────── */}
       <div style={{ display: "flex", borderBottom: "2px solid var(--border)", marginBottom: "1.25rem" }}>
         {(["entity", "relation", "metadata"] as ConceptFieldType[]).map(tab => {
-          const count = aggregate?.[tab]?.length ?? 0;
+          const tabAgg = aggregate?.[tab] ?? [];
+          const count = tabAgg.length;
           const active = activeTab === tab;
           const color = TAB_COLORS[tab];
-          const nodeCount = nodes.filter(n => n.field_type === tab).length;
+          // Only count curated nodes that have at least one extraction from the
+          // current user (mirrors the buildViewEntries filter above).
+          const curatedEntries = buildViewEntries(tabAgg, nodes, tab);
+          const nodeCount = curatedEntries.filter(e => e.node !== null).length;
           return (
             <button
               key={tab}
