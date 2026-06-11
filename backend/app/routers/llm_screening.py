@@ -133,6 +133,7 @@ async def _require_run(
     run_id: str,
     project: Project,
     db: AsyncSession,
+    reviewer_only: Optional[uuid.UUID] = None,
 ) -> LlmScreeningRun:
     try:
         rid = uuid.UUID(run_id)
@@ -141,7 +142,22 @@ async def _require_run(
     run: Optional[LlmScreeningRun] = await db.get(LlmScreeningRun, rid)
     if run is None or run.project_id != project.id:
         raise HTTPException(404, "Run not found")
+    if reviewer_only is not None and run.triggered_by != reviewer_only:
+        raise HTTPException(404, "Run not found")
     return run
+
+
+async def _reviewer_filter(project_id: str, user: User, db: AsyncSession) -> Optional[uuid.UUID]:
+    """Return user.id if user is a reviewer (not owner/admin), else None.
+
+    Reviewers can't create runs, so scoping by triggered_by returns nothing for them.
+    """
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        return None
+    role = await ProjectRepo.user_role(db, pid, user.id)
+    return user.id if role not in _RUN_ROLES else None
 
 
 # ---------------------------------------------------------------------------
@@ -567,15 +583,19 @@ async def list_runs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[LlmRunResponse]:
-    """List all LLM screening runs for a project, newest first."""
+    """List LLM screening runs for a project, newest first.
+
+    Reviewers only see runs they triggered (blank for them since only admins can create runs).
+    """
     project = await _require_project(project_id, db, user)
-    runs = (
-        await db.execute(
-            select(LlmScreeningRun)
-            .where(LlmScreeningRun.project_id == project.id)
-            .order_by(LlmScreeningRun.created_at.desc())
-        )
-    ).scalars().all()
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+
+    stmt = select(LlmScreeningRun).where(LlmScreeningRun.project_id == project.id)
+    if reviewer_id is not None:
+        stmt = stmt.where(LlmScreeningRun.triggered_by == reviewer_id)
+    stmt = stmt.order_by(LlmScreeningRun.created_at.desc())
+
+    runs = (await db.execute(stmt)).scalars().all()
     counts = await _live_counts(db, [r.id for r in runs])
     return [_run_to_response(r, counts.get(r.id)) for r in runs]
 
@@ -592,7 +612,8 @@ async def get_run(
 ) -> LlmRunResponse:
     """Get a single LLM screening run with progress percentage."""
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
     counts = await _live_counts(db, [run.id])
     return _run_to_response(run, counts.get(run.id))
 
@@ -612,7 +633,8 @@ async def list_results(
 ) -> dict:
     """Return paginated LLM screening results for a run."""
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     stmt = select(LlmScreeningResult).where(LlmScreeningResult.run_id == run.id)
     if ta_decision:
@@ -660,6 +682,9 @@ async def review_result(
 ) -> LlmResultResponse:
     """Mark an LLM screening result as reviewed."""
     project = await _require_project(project_id, db, user)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    # Validate the run is accessible to this user before touching its results
+    await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     if body.action not in ("accepted", "rejected", "merged"):
         raise HTTPException(400, "action must be one of: accepted, rejected, merged")
@@ -698,7 +723,8 @@ async def export_run_csv(
 ) -> StreamingResponse:
     """Stream a CSV of all results for a completed run."""
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     # Build extraction template columns
     extraction_rows: list[dict] = []
@@ -851,7 +877,8 @@ async def compare_with_humans(
 ) -> dict:
     """Compare LLM decisions with human reviewer decisions for this run."""
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     # Load all LLM results for records (not clusters)
     llm_results = (
@@ -1050,8 +1077,9 @@ async def compare_runs(
 ) -> dict:
     """Compare TA decisions between two completed LLM screening runs."""
     project = await _require_project(project_id, db, user)
-    run_a = await _require_run(run_a_id, project, db)
-    run_b = await _require_run(run_b_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run_a = await _require_run(run_a_id, project, db, reviewer_only=reviewer_id)
+    run_b = await _require_run(run_b_id, project, db, reviewer_only=reviewer_id)
 
     def _effectively_completed(run: LlmScreeningRun) -> bool:
         total = run.total_records or 0
@@ -1431,7 +1459,8 @@ async def get_missing_pdfs(
     These are candidates for manual PDF upload so a future run can screen the full text.
     """
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     rows = (
         await db.execute(
@@ -1483,7 +1512,8 @@ async def get_excluded_summary(
     Also returns total_excluded count.
     """
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     # Total excluded
     total_excluded: int = (
@@ -1563,7 +1593,8 @@ async def get_ft_queue(
     from app.models.fulltext_pdf import FulltextPdf
 
     project = await _require_project(project_id, db, user)
-    run = await _require_run(run_id, project, db)
+    reviewer_id = await _reviewer_filter(project_id, user, db)
+    run = await _require_run(run_id, project, db, reviewer_only=reviewer_id)
 
     # Works for ta_only runs (all included papers) and also falls back to
     # the same abstract_only filter for prisma_scr / saturation runs.

@@ -26,7 +26,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE, ADMIN_ROLE
+from app.models.concept_extraction import ConceptExtraction
 from app.models.ontology_edge import OntologyEdge
 from app.models.ontology_node import OntologyNode
 from app.models.record_concept import RecordConcept
@@ -221,9 +222,38 @@ async def list_nodes(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    """Return all nodes in depth-first order (includes `depth` field)."""
-    await _require_project(project_id, current_user, db)
-    return await _load_tree_flat(project_id, db)
+    """Return all nodes in depth-first order (includes `depth` field).
+
+    Zipper model: reviewers only see nodes whose names match their extracted concept
+    values (blank ontology if they have no concept extractions).
+    Owners/admins see the full shared ontology.
+    """
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    flat = await _load_tree_flat(project_id, db)
+
+    if role not in ADMIN_ROLE:
+        extr_rows = (await db.execute(
+            select(ConceptExtraction).where(
+                ConceptExtraction.project_id == project_id,
+                ConceptExtraction.reviewer_id == current_user.id,
+            )
+        )).scalars().all()
+
+        extracted_values: set = set()
+        for ce in extr_rows:
+            cells = (ce.extracted_json or {}).get("cells", {})
+            for raw_value in cells.values():
+                vals = raw_value if isinstance(raw_value, list) else [raw_value] if raw_value else []
+                for v in vals:
+                    sv = str(v).strip() if v is not None else ""
+                    if sv:
+                        extracted_values.add(sv.lower())
+
+        if not extracted_values:
+            return []
+        flat = [n for n in flat if n["name"].lower() in extracted_values]
+
+    return flat
 
 
 @router.post("", status_code=201)
