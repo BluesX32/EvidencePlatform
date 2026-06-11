@@ -217,9 +217,9 @@ async def get_taxonomy_aggregate(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns all concept extraction values grouped by field_type (entity/relation/metadata).
-    Uses the project's concept_template to resolve field labels and types.
-    Non-owners see only their own extractions; owners/admins see all reviewers combined.
+    Returns concept extraction values grouped by field_type (entity/relation/metadata).
+    Reviewers see only their own concepts (zipper model: forms are per-reviewer, so the
+    aggregate is also per-reviewer).  Owners/admins see all reviewers combined.
     """
     project = await ProjectRepo.get_by_id(db, project_id)
     if not project:
@@ -229,12 +229,14 @@ async def get_taxonomy_aggregate(
     fields = concept_template.get("fields", [])
     field_map: Dict[str, Dict] = {f["id"]: f for f in fields}
 
-    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
-    # Taxonomy aggregates ALL reviewers' concept extractions — it is a collective
-    # synthesis step, not isolated per reviewer.  Individual extraction FORMS
-    # are still private (see /item and / list endpoints).
+    # Zipper model: concept forms are per-reviewer (derived from per-reviewer extraction).
+    # Reviewers therefore see only their own aggregate (their own taxonomy).
+    # Owners/admins see all reviewers combined for a full cross-reviewer view.
     stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
+    if role not in ADMIN_ROLE:
+        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
     result = await db.execute(stmt)
     extractions = result.scalars().all()
 

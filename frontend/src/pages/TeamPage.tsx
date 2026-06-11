@@ -33,11 +33,14 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 // Stage presets — each stage defines both the data-visibility level (data_stage)
-// and the default set of nav modules available, following the data flow:
-//   Import → Overlap → Screening → Extraction → Analysis (Thematic/Ontology/Consensus)
+// and the default set of nav modules available, following the zipper data-flow model:
+//   Import → Overlap → [zipper] → Screening → Extraction → Concepts → Analysis
 //
-// Per-reviewer isolated: screening decisions, extractions, concept forms, code assignments.
-// Shared / aggregated: records, overlap, concept taxonomy, themes/codes, ontology.
+// SHARED (before zipper):   records, overlap clusters
+// PER-REVIEWER (after zipper): screening decisions, extractions, concept forms,
+//                              concept taxonomy (each reviewer sees their own aggregate),
+//                              code assignments in thematic analysis
+// SHARED again (synthesis): thematic codebook structure, ontology nodes
 const STAGE_PRESETS = [
   {
     label: "Import only",
@@ -60,7 +63,7 @@ const STAGE_PRESETS = [
   {
     label: "Up to Extraction",
     value: "extraction" as string | null,
-    description: "Can extract and build concept taxonomy — own extraction forms, shared taxonomy",
+    description: "Can extract and build own concept taxonomy — own extraction forms, own concept aggregate",
     sections: ["overview", "import", "records", "overlap", "screening", "prisma", "labels", "saturation", "extractions", "citations", "concepts"],
   },
   {
