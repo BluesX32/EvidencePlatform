@@ -308,6 +308,14 @@ function PermissionsModal({
 
 // ── Assign papers modal ──────────────────────────────────────────────────────
 
+type PaperStageFilter = "all" | "ta_included" | "ft_included";
+
+const STAGE_FILTER_OPTIONS: { value: PaperStageFilter; label: string; description: string }[] = [
+  { value: "all",         label: "All records",   description: "Every record imported into this project" },
+  { value: "ta_included", label: "TA included",   description: "Passed title/abstract screening" },
+  { value: "ft_included", label: "FT included",   description: "Passed full-text screening — ready for extraction" },
+];
+
 function AssignPapersModal({
   member,
   projectId,
@@ -319,12 +327,17 @@ function AssignPapersModal({
 }) {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [stageFilter, setStageFilter] = useState<PaperStageFilter>("all");
 
-  // Use all project records (not just FT-included ones) so admins can assign
-  // papers even before screening is complete, and sub-project records always appear.
+  const queryParams = {
+    per_page: 5000,
+    ...(stageFilter === "ta_included" ? { ta_status: "include" } : {}),
+    ...(stageFilter === "ft_included" ? { ft_status: "include" } : {}),
+  };
+
   const { data: recordsPage, isLoading } = useQuery({
-    queryKey: ["project-records-all", projectId],
-    queryFn: () => recordsApi.list(projectId, { per_page: 5000 }).then(r => r.data),
+    queryKey: ["project-records-assign", projectId, stageFilter],
+    queryFn: () => recordsApi.list(projectId, queryParams).then(r => r.data),
     staleTime: 30_000,
   });
   const papers: RecordItem[] = recordsPage?.records ?? [];
@@ -399,6 +412,31 @@ function AssignPapersModal({
             Select the papers this reviewer can access in their screening queue.
             Leave empty to give full access to all records.
           </p>
+
+          {/* Stage filter */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+            {STAGE_FILTER_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                title={opt.description}
+                onClick={() => setStageFilter(opt.value)}
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 14,
+                  fontSize: 12,
+                  border: "1px solid",
+                  cursor: "pointer",
+                  borderColor: stageFilter === opt.value ? "var(--brand)" : "var(--border)",
+                  background: stageFilter === opt.value ? "#eef2ff" : "transparent",
+                  color: stageFilter === opt.value ? "var(--brand)" : "var(--text-muted)",
+                  fontWeight: stageFilter === opt.value ? 600 : 400,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="text"
