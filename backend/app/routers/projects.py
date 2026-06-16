@@ -2,12 +2,14 @@ import uuid
 from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.record import Record
 from app.models.record_source import RecordSource
 from app.models.screening_decision import ScreeningDecision
 from app.models.source import Source
@@ -491,19 +493,49 @@ async def create_sub_project_from_screening_endpoint(
     return ProjectResponse.from_orm(child)
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-):
+) -> Response:
     project, role = await _get_project_and_role(db, project_id, current_user.id)
     if role != "owner":
         raise HTTPException(status_code=403, detail="Only the owner can delete a project")
     if project.parent_project_id is None:
         raise HTTPException(status_code=400, detail="Only sub-projects can be deleted this way")
+
+    # match_log.record_src_id and dedup_pairs.source_a/b_id use NO ACTION FKs
+    # that are checked immediately during cascade, so we must clean them up first.
+    record_ids_result = await db.execute(
+        select(Record.id).where(Record.project_id == project_id)
+    )
+    record_ids = [r.id for r in record_ids_result]
+
+    if record_ids:
+        rs_ids_result = await db.execute(
+            select(RecordSource.id).where(RecordSource.record_id.in_(record_ids))
+        )
+        rs_ids = [r.id for r in rs_ids_result]
+
+        if rs_ids:
+            await db.execute(
+                text("DELETE FROM match_log WHERE record_src_id = ANY(:ids)"),
+                {"ids": rs_ids},
+            )
+            await db.execute(
+                text("DELETE FROM dedup_pairs WHERE source_a_id = ANY(:ids) OR source_b_id = ANY(:ids)"),
+                {"ids": rs_ids},
+            )
+
+        await db.execute(
+            text("DELETE FROM match_log WHERE new_record_id = ANY(:ids)"),
+            {"ids": record_ids},
+        )
+
     await db.delete(project)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class SharedWithTeamRequest(BaseModel):
