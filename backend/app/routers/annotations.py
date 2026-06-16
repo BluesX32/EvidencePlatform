@@ -119,10 +119,18 @@ async def list_annotations(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    """Return annotations for a project, optionally filtered by record or cluster."""
+    """Return the current reviewer's own annotations for a record or cluster.
+
+    Each reviewer sees only their own annotations — blinded from other reviewers'
+    notes and highlights. Admins who want to see all annotations must query by
+    reviewer_id explicitly (future extension).
+    """
     await _require_project(project_id, current_user, db)
 
-    q = select(Annotation).where(Annotation.project_id == project_id)
+    q = select(Annotation).where(
+        Annotation.project_id == project_id,
+        Annotation.reviewer_id == current_user.id,
+    )
 
     if record_id:
         try:
@@ -150,6 +158,7 @@ async def delete_annotation(
     """Delete an annotation. Only the creating reviewer or project owner may delete."""
     await _require_project(project_id, current_user, db)
 
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
     row = await db.execute(
         select(Annotation).where(
             Annotation.id == ann_id,
@@ -159,6 +168,9 @@ async def delete_annotation(
     ann = row.scalar_one_or_none()
     if ann is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
+
+    if ann.reviewer_id != current_user.id and role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="You can only delete your own annotations")
 
     await db.delete(ann)
     await db.commit()
