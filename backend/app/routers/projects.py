@@ -533,6 +533,16 @@ async def delete_project(
             {"ids": record_ids},
         )
 
+        # record_sources.import_job_id → import_jobs.id is NO ACTION.
+        # Deleting the project cascades to import_jobs, which would be blocked
+        # while record_sources still reference those rows. Delete them first.
+        # (overlap_cluster_members has ondelete=CASCADE so it cleans itself up.)
+        if rs_ids:
+            await db.execute(
+                text("DELETE FROM record_sources WHERE id = ANY(:ids)"),
+                {"ids": rs_ids},
+            )
+
     await db.delete(project)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

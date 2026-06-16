@@ -113,7 +113,7 @@ async def list_records(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=1, le=200),
+    per_page: int = Query(50, ge=1, le=5000),
     q: Optional[str] = Query(None),
     sort: str = Query("year_desc"),
     source_id: Optional[uuid.UUID] = Query(None),
