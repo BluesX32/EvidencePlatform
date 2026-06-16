@@ -751,7 +751,7 @@ export default function TeamPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#f8f9fb" }}>
-                {["Name", "Email", "Role", "Access", "Papers", ""].map(h => (
+                {["Name", "Email", "Role", "Access", "Papers", "Actions"].map(h => (
                   <th key={h} style={{ padding: "8px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>{h}</th>
                 ))}
               </tr>
@@ -841,10 +841,15 @@ export default function TeamPage() {
                                 `/projects/${projectId}/reviewer/${m.user_id}?name=${encodeURIComponent(m.name || m.email)}`
                               )
                             }
-                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", padding: 4 }}
-                            title={`View as ${m.name || m.email}`}
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: 4,
+                              background: "#eef2ff", border: "1px solid #c7d2fe",
+                              borderRadius: 5, padding: "3px 8px", fontSize: 12,
+                              cursor: "pointer", color: "var(--brand)", fontWeight: 500,
+                            }}
+                            title={`View activity for ${m.name || m.email}`}
                           >
-                            <Eye size={14} />
+                            <Eye size={12} /> View
                           </button>
                         )}
                         {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
