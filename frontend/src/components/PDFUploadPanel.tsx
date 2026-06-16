@@ -21,7 +21,7 @@ export function PDFUploadPanel({
         .getMeta(projectId, { record_id: item.record_id, cluster_id: item.cluster_id })
         .then((r) => r.data),
     enabled: !!itemKey,
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   const deleteMut = useMutation({
