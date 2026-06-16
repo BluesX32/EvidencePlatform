@@ -313,7 +313,7 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
         .getMeta(projectId, { record_id: item.record_id, cluster_id: item.cluster_id })
         .then((r) => r.data),
     enabled: !!itemKey,
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   // ── Annotations ──────────────────────────────────────────────────────────────
@@ -388,6 +388,11 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err?.response?.status === 404) {
+          // File no longer on server — drop the cached metadata so the UI
+          // stops showing a broken PDF panel and reverts to "upload" state.
+          qc.invalidateQueries({ queryKey: ["fulltext-pdf", projectId, itemKey] });
+        }
         const detail = err?.response?.data?.detail;
         setPdfError(detail || err?.message || "Failed to load PDF");
         setPdfLoading(false);
