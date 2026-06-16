@@ -197,24 +197,36 @@ Every stage generates a complete audit trail. At any point, a project owner can 
 
 ## Relational Database Diagram
 
-The platform uses PostgreSQL with 34 tables across 33 versioned Alembic migrations. The diagram below shows every table and its foreign-key relationships. PK = primary key · FK = foreign key · nullable FKs shown with dashed lines.
+The platform uses PostgreSQL with 39 tables across 44 versioned Alembic migrations. The diagram below shows every table and its foreign-key relationships. PK = primary key · FK = foreign key · `?` = nullable FK.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                              USERS & PROJECTS                                   │
 │                                                                                 │
-│  ┌──────────────┐         ┌──────────────────────────────────────────────────┐  │
-│  │    users     │         │                   projects                       │  │
-│  │──────────────│         │──────────────────────────────────────────────────│  │
-│  │ id (PK)      │◄────────│ created_by (FK→users)                            │  │
-│  │ email        │         │ id (PK)                                          │  │
-│  │ password_hash│         │ name                                             │  │
-│  │ name         │         │ description                                      │  │
-│  │ api_keys     │         │ criteria (JSONB)                                 │  │
-│  │ created_at   │         │ extraction_template (JSONB)                      │  │
-│  └──────────────┘         │ llm_config (JSONB)                               │  │
-│                           │ created_at · updated_at                          │  │
-│                           └──────────────────────────────────────────────────┘  │
+│  ┌───────────────────┐    ┌──────────────────────────────────────────────────┐  │
+│  │       users       │    │                   projects                       │  │
+│  │───────────────────│    │──────────────────────────────────────────────────│  │
+│  │ id (PK)           │◄───│ created_by (FK→users)                            │  │
+│  │ email (UNIQUE)    │    │ id (PK)                                          │  │
+│  │ password_hash     │    │ name                                             │  │
+│  │ name              │    │ description                                      │  │
+│  │ is_admin          │    │ criteria (JSONB)                                 │  │
+│  │ api_keys (JSONB)? │    │ extraction_template (JSONB)                      │  │
+│  │ invite_code_id FK?│    │ concept_template (JSONB)                         │  │
+│  │ created_at        │    │ llm_config (JSONB)                               │  │
+│  └───────────────────┘    │ parent_project_id (FK→self)?  ← sub-projects     │  │
+│                           │ shared_with_team                                 │  │
+│  ┌───────────────────┐    │ created_at · updated_at                          │  │
+│  │   invite_codes    │    └──────────────────────────────────────────────────┘  │
+│  │───────────────────│                                                          │
+│  │ id (PK)           │    ┌──────────────────────────────────────────────────┐  │
+│  │ code (UNIQUE)     │    │               project_samples                    │  │
+│  │ label?            │    │──────────────────────────────────────────────────│  │
+│  │ max_uses?         │    │ id (PK)  │  parent_project_id (FK)               │  │
+│  │ used_count        │    │ child_project_id (FK)  │  created_by (FK)        │  │
+│  │ expires_at?       │    │ seed  │  n_per_corpus  │  sampled_record_ids     │  │
+│  │ is_active         │    └──────────────────────────────────────────────────┘  │
+│  └───────────────────┘                                                          │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -346,44 +358,59 @@ The platform uses PostgreSQL with 34 tables across 33 versioned Alembic migratio
 │  │ selected_text · comment  │              │              │ original_fname │  │
 │  │ reviewer_id (FK)?        │   ┌──────────▼──────────┐   │ storage_path   │  │
 │  │ page_num                 │   │    record_labels     │   │ file_size      │  │
-│  │ highlight_rects (JSONB)  │   │─────────────────────│   │ drawing_data   │  │
-│  │ created_at               │   │ id (PK)             │   │ uploaded_by(FK)│  │
-│  └──────────────────────────┘   │ project_id (FK)     │   └────────────────┘  │
-│                                 │ record_id (FK)?     │                        │
-│                                 │ cluster_id (FK)?    │                        │
-│                                 │ label_id (FK)       │                        │
-│                                 │ reviewer_id (FK)?   │                        │
-│                                 └─────────────────────┘                        │
+│  │ highlight_rects (JSONB)  │   │─────────────────────│   │ uploaded_by FK?│  │
+│  │ created_at               │   │ id (PK)             │   └───────┬────────┘  │
+│  └──────────────────────────┘   │ project_id (FK)     │           │           │
+│                                 │ record_id (FK)?     │   ┌───────▼────────┐  │
+│                                 │ cluster_id (FK)?    │   │pdf_drawing_ann │  │
+│                                 │ label_id (FK)       │   │────────────────│  │
+│                                 │ reviewer_id (FK)?   │   │ id (PK)        │  │
+│                                 └─────────────────────┘   │fulltext_pdf_id │  │
+│                                                           │ reviewer_id FK?│  │
+│                                                           │drawing_data    │  │
+│                                                           │ updated_at     │  │
+│                                                           │UNIQUE(pdf,rev) │  │
+│                                                           └────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     ONTOLOGY & THEMATIC ANALYSIS                                │
+│                  ONTOLOGY, CONCEPTS & THEMATIC ANALYSIS                         │
 │                                                                                 │
 │  ┌──────────────────────────────────────────────────────────────────────────┐  │
 │  │                          ontology_nodes                                  │  │
 │  │──────────────────────────────────────────────────────────────────────────│  │
 │  │ id (PK)  │  project_id (FK)  │  parent_id (FK→self)?  │  name           │  │
 │  │ namespace (level|dimension|concept|population|intervention|outcome|other) │  │
-│  │ description · color · position · created_at · updated_at                 │  │
+│  │ description · color · position (JSONB) · created_at · updated_at         │  │
 │  └──────┬──────────────────────────────────────────────┬─────────────────── ┘  │
 │         │                                              │                        │
 │  ┌──────▼───────────────────┐        ┌────────────────▼───────────────────┐   │
 │  │      ontology_edges      │        │          record_concepts            │   │
 │  │──────────────────────────│        │────────────────────────────────────│   │
-│  │ id (PK)                  │        │ id (PK)                            │   │
-│  │ project_id (FK)          │        │ project_id (FK)                    │   │
-│  │ source_id (FK→on_nodes)  │        │ record_id (FK→records)?            │   │
-│  │ target_id (FK→on_nodes)  │        │ cluster_id (FK→ov_clusters)?       │   │
-│  │ label · color            │        │ node_id (FK→ontology_nodes)        │   │
-│  └──────────────────────────┘        │ assigned_by (FK→users)?            │   │
-│                                      └────────────────────────────────────┘   │
+│  │ id (PK)                  │        │ id (PK)  │  project_id (FK)        │   │
+│  │ project_id (FK)          │        │ record_id (FK→records)?            │   │
+│  │ source_id (FK→on_nodes)  │        │ cluster_id (FK→ov_clusters)?       │   │
+│  │ target_id (FK→on_nodes)  │        │ node_id (FK→ontology_nodes)        │   │
+│  │ label · color            │        │ assigned_by (FK→users)?            │   │
+│  └──────────────────────────┘        └────────────────────────────────────┘   │
+│                                                                                │
+│  ┌─────────────────────────────────┐  ┌────────────────────────────────────┐  │
+│  │    concept_taxonomy_nodes       │  │        concept_extractions         │  │
+│  │─────────────────────────────────│  │────────────────────────────────────│  │
+│  │ id (PK)  │  project_id (FK)     │  │ id (PK)  │  project_id (FK)       │  │
+│  │ name (value string)             │  │ record_id (FK)?                    │  │
+│  │ field_id  │  field_type         │  │ cluster_id (FK)?                   │  │
+│  │ parent_id (FK→self)?            │  │ extracted_json (JSONB)             │  │
+│  │ aliases (JSONB)?                │  │ reviewer_id (FK→users)?            │  │
+│  │ description?                    │  │ created_at · updated_at            │  │
+│  └─────────────────────────────────┘  └────────────────────────────────────┘  │
 │                                                                                │
 │  ┌─────────────────────────────────┐  ┌────────────────────────────────────┐  │
 │  │       code_extractions          │  │       thematic_history             │  │
 │  │─────────────────────────────────│  │────────────────────────────────────│  │
 │  │ id (PK)                         │  │ id (PK)                            │  │
 │  │ project_id (FK)                 │  │ project_id (FK)                    │  │
-│  │ code_id (FK→ontology_nodes)     │  │ code_id (FK→on_nodes)?             │  │
+│  │ code_id (varchar theme ref)     │  │ code_id (snapshot)?                │  │
 │  │ extraction_id (FK→extr_records) │  │ code_name (snapshot)               │  │
 │  │ snippet_text · note             │  │ action · old/new theme id/name     │  │
 │  │ assigned_by (FK→users)?         │  │ changed_by (FK→users)?             │  │
@@ -456,11 +483,15 @@ The platform uses PostgreSQL with 34 tables across 33 versioned Alembic migratio
 
 ### Key Structural Patterns
 
-**Record vs. Cluster polymorphism** — Eight tables (`screening_decisions`, `extraction_records`, `screening_claims`, `record_annotations`, `record_labels`, `record_concepts`, `fulltext_pdfs`, `llm_screening_results`, `consensus_decisions`) link to *either* a single `records` row (standalone paper) *or* an `overlap_clusters` row (clustered group), enforced via a CHECK constraint and partial unique indexes on each nullable FK column.
+**Record vs. Cluster polymorphism** — Twelve tables (`screening_decisions`, `extraction_records`, `concept_extractions`, `screening_claims`, `record_annotations`, `record_labels`, `record_concepts`, `fulltext_pdfs`, `llm_screening_results`, `consensus_decisions`, `citation_candidates`, `overlap_cluster_members`) link to *either* a single `records` row (standalone paper) *or* an `overlap_clusters` row (clustered group), enforced via a CHECK constraint and partial unique indexes on each nullable FK column.
 
-**JSONB for flexible schemas** — Extraction data, LLM outputs, overlap configs, strategy snapshots, PDF drawing strokes, and citation search inputs are stored as typed JSONB rather than additional tables, avoiding schema churn while retaining queryability.
+**Per-reviewer drawing isolation** — `pdf_drawing_annotations` gives each reviewer their own freehand stroke layer on the shared PDF file. Saving strokes UPSERTs on the `UNIQUE (fulltext_pdf_id, reviewer_id)` index so no two reviewers overwrite each other.
+
+**JSONB for flexible schemas** — Extraction data, LLM outputs, overlap configs, strategy snapshots, concept templates, PDF drawing strokes, and citation search inputs are stored as typed JSONB rather than additional tables, avoiding schema churn while retaining queryability.
 
 **Partial unique indexes** — Used throughout to enforce business rules that depend on NULL values: e.g., a reviewer can have at most one TA decision per record (`UNIQUE WHERE record_id IS NOT NULL`), and each citation candidate is direction-scoped (`UNIQUE (search_id, direction, doi) WHERE doi IS NOT NULL`).
+
+**Sub-project tree** — `projects.parent_project_id` self-references for nested projects. `projects.shared_with_team` allows a sub-project's records to be visible to the parent project's team without re-inviting members.
 
 **Advisory locking** — Import and deduplication mutations acquire a per-project PostgreSQL advisory lock (`pg_try_advisory_lock`) to serialize writes without blocking reads.
 
@@ -478,7 +509,7 @@ The platform uses PostgreSQL with 34 tables across 33 versioned Alembic migratio
 | Dedup algorithm | Union-Find with 3-tier blocking |
 | Overlap algorithm | Union-Find with 5-tier blocking + RapidFuzz |
 | PDF parsing | pdfplumber |
-| Schema migrations | Alembic (33 versioned migrations) |
+| Schema migrations | Alembic (44 versioned migrations) |
 | Citation sourcing | Semantic Scholar Graph API (httpx async; 1–100 RPS) |
 | Test suite | pytest + pytest-asyncio; 485+ backend tests, 23 Vitest frontend tests |
 | Auth | JWT-based; project membership enforced on all endpoints |
