@@ -24,6 +24,7 @@ from app.models.ontology_node import OntologyNode
 from app.models.code_extraction import CodeExtraction
 from app.models.thematic_history import ThematicHistory
 from app.models.fulltext_pdf import FulltextPdf
+from app.models.pdf_drawing_annotation import PdfDrawingAnnotation
 from app.models.llm_screening import LlmScreeningRun, LlmScreeningResult
 from app.models.screening_queue import ScreeningQueue
 from app.models.record_concept import RecordConcept
@@ -59,6 +60,7 @@ __all__ = [
     "CodeExtraction",
     "ThematicHistory",
     "FulltextPdf",
+    "PdfDrawingAnnotation",
     "LlmScreeningRun",
     "LlmScreeningResult",
     "ScreeningQueue",

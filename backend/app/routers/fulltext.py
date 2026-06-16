@@ -1,31 +1,39 @@
-"""Full-text PDF upload/download endpoints (Sprint 18).
+"""Full-text PDF upload/download endpoints (Sprint 18 / migration 016+044).
 
-One PDF may be stored per article (record or cluster). Files are saved to
-the local filesystem under uploads/{project_id}/.
+One PDF file may be stored per article (record or cluster), shared across all
+team members. Freehand drawing annotations are stored per-reviewer in the
+pdf_drawing_annotations table (migration 044) so each reviewer's strokes never
+overwrite another's.
 
-POST /projects/{id}/fulltext               → FulltextPdfMeta   (upload)
-GET  /projects/{id}/fulltext               → FulltextPdfMeta | null  (metadata by item key)
-GET  /projects/{id}/fulltext/links         → list[FulltextLink]  (candidate URLs)
-GET  /projects/{id}/fulltext/{pdf_id}/download → FileResponse
-DELETE /projects/{id}/fulltext/{pdf_id}   → {}
+POST   /projects/{id}/fulltext                        → FulltextPdfMeta   (upload; replace guarded to uploader/admin)
+GET    /projects/{id}/fulltext                        → FulltextPdfMeta | null  (metadata + current user's drawings)
+GET    /projects/{id}/fulltext/links                  → list[FulltextLink]
+GET    /projects/{id}/fulltext/{pdf_id}/download      → FileResponse
+DELETE /projects/{id}/fulltext/{pdf_id}               → {}  (uploader/admin only)
+PATCH  /projects/{id}/fulltext/{pdf_id}/drawing       → FulltextPdfMeta  (per-reviewer UPSERT)
 """
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func as sqlfunc, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.dependencies import (
+    ADMIN_ROLE,
+    REVIEWER_ROLE,
+    get_current_user,
+    require_project_role,
+)
 from app.models.fulltext_pdf import FulltextPdf
+from app.models.pdf_drawing_annotation import PdfDrawingAnnotation
 from app.models.project import Project
 from app.models.user import User
 from app.services.fulltext_link_service import FulltextLink, resolve_links
@@ -46,6 +54,12 @@ async def _require_project(project_id: str, db: AsyncSession, user: User) -> Pro
     return row
 
 
+async def _get_role(project_id: str, db: AsyncSession, user: User) -> str:
+    """Return the user's role string without raising on reviewer access."""
+    pid = uuid.UUID(project_id)
+    return await require_project_role(db, pid, user.id, allowed=REVIEWER_ROLE)
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 
@@ -55,10 +69,11 @@ class FulltextPdfMeta(BaseModel):
     file_size: int
     content_type: str
     uploaded_at: str
+    uploaded_by: Optional[str] = None
     drawing_data: Optional[Any] = None
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 async def _find(
@@ -82,15 +97,32 @@ async def _find(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
-def _to_meta(row: FulltextPdf) -> FulltextPdfMeta:
+async def _find_drawing(
+    db: AsyncSession,
+    pdf_id: uuid.UUID,
+    reviewer_id: uuid.UUID,
+) -> Optional[PdfDrawingAnnotation]:
+    stmt = select(PdfDrawingAnnotation).where(
+        PdfDrawingAnnotation.fulltext_pdf_id == pdf_id,
+        PdfDrawingAnnotation.reviewer_id == reviewer_id,
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+def _to_meta(row: FulltextPdf, drawing_data: Optional[Any] = None) -> FulltextPdfMeta:
     return FulltextPdfMeta(
         id=str(row.id),
         original_filename=row.original_filename,
         file_size=row.file_size,
         content_type=row.content_type,
         uploaded_at=row.uploaded_at.isoformat(),
-        drawing_data=row.drawing_data,
+        uploaded_by=str(row.uploaded_by) if row.uploaded_by else None,
+        drawing_data=drawing_data,
     )
+
+
+def _is_uploader_or_admin(row: FulltextPdf, user: User, role: str) -> bool:
+    return role in ADMIN_ROLE or (row.uploaded_by is not None and row.uploaded_by == user.id)
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -105,7 +137,7 @@ async def upload_pdf(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> FulltextPdfMeta:
-    await _require_project(project_id, db, user)
+    role = await _get_role(project_id, db, user)
 
     if not record_id and not cluster_id:
         raise HTTPException(400, "Provide record_id or cluster_id")
@@ -116,26 +148,28 @@ async def upload_pdf(
     rid = uuid.UUID(record_id) if record_id else None
     cid = uuid.UUID(cluster_id) if cluster_id else None
 
-    # If one already exists, delete the old file first
     existing = await _find(db, pid, rid, cid)
     if existing:
+        # Only the original uploader or an owner/admin may replace the shared PDF.
+        if not _is_uploader_or_admin(existing, user, role):
+            raise HTTPException(
+                403,
+                "Only the uploader or a project admin can replace this PDF.",
+            )
         old_path = Path(existing.storage_path)
         if old_path.exists():
             old_path.unlink()
         await db.delete(existing)
         await db.flush()
 
-    # Read file
     content = await file.read()
     if not content:
         raise HTTPException(400, "Empty file")
 
-    # Sanitise filename
     safe_name = Path(file.filename or "upload.pdf").name
     if len(safe_name) > 200:
         safe_name = safe_name[-200:]
 
-    # Persist to disk
     pdf_id = uuid.uuid4()
     project_dir = UPLOADS_ROOT / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -174,17 +208,12 @@ async def get_fulltext_links(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[FulltextLink]:
-    """Return a ranked list of candidate full-text URLs for a paper.
-
-    The caller supplies whatever identifiers it has (doi/pmid/pmcid/title) and
-    the service queries Unpaywall plus constructs static links for PMC, the
-    publisher DOI resolver, PubMed, and Google Scholar.
-    """
+    """Return a ranked list of candidate full-text URLs for a paper."""
     await _require_project(project_id, db, user)
     return await resolve_links(doi=doi, pmid=pmid, pmcid=pmcid, title=title)
 
 
-# ── Get metadata ──────────────────────────────────────────────────────────────
+# ── Get metadata (with current user's drawing layer) ─────────────────────────
 
 
 @router.get("/projects/{project_id}/fulltext")
@@ -200,7 +229,10 @@ async def get_pdf_meta(
     rid = uuid.UUID(record_id) if record_id else None
     cid = uuid.UUID(cluster_id) if cluster_id else None
     row = await _find(db, pid, rid, cid)
-    return _to_meta(row) if row else None
+    if row is None:
+        return None
+    drawing = await _find_drawing(db, row.id, user.id)
+    return _to_meta(row, drawing_data=drawing.drawing_data if drawing else None)
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -220,7 +252,6 @@ async def download_pdf(
     path = Path(row.storage_path)
     if not path.exists():
         raise HTTPException(404, "File missing from storage")
-    # HTTP headers are latin-1; use RFC 5987 filename* for Unicode filenames.
     from urllib.parse import quote
     safe_ascii = row.original_filename.encode("latin-1", errors="replace").decode("latin-1")
     encoded = quote(row.original_filename, safe="")
@@ -232,7 +263,7 @@ async def download_pdf(
     )
 
 
-# ── Delete ────────────────────────────────────────────────────────────────────
+# ── Delete (uploader/admin only) ──────────────────────────────────────────────
 
 
 @router.delete("/projects/{project_id}/fulltext/{pdf_id}")
@@ -242,10 +273,15 @@ async def delete_pdf(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    await _require_project(project_id, db, user)
+    role = await _get_role(project_id, db, user)
     row = await db.get(FulltextPdf, uuid.UUID(pdf_id))
     if not row or str(row.project_id) != project_id:
         raise HTTPException(404, "PDF not found")
+    if not _is_uploader_or_admin(row, user, role):
+        raise HTTPException(
+            403,
+            "Only the uploader or a project admin can delete this PDF.",
+        )
     path = Path(row.storage_path)
     if path.exists():
         path.unlink()
@@ -254,7 +290,7 @@ async def delete_pdf(
     return {}
 
 
-# ── Save drawing ──────────────────────────────────────────────────────────────
+# ── Save drawing (per-reviewer UPSERT) ───────────────────────────────────────
 
 
 class DrawingSaveBody(BaseModel):
@@ -273,7 +309,23 @@ async def save_drawing(
     row = await db.get(FulltextPdf, uuid.UUID(pdf_id))
     if not row or str(row.project_id) != project_id:
         raise HTTPException(404, "PDF not found")
-    row.drawing_data = body.drawing_data
+
+    # UPSERT into pdf_drawing_annotations keyed by (fulltext_pdf_id, reviewer_id)
+    stmt = (
+        pg_insert(PdfDrawingAnnotation)
+        .values(
+            fulltext_pdf_id=row.id,
+            reviewer_id=user.id,
+            drawing_data=body.drawing_data,
+        )
+        .on_conflict_do_update(
+            index_elements=["fulltext_pdf_id", "reviewer_id"],
+            set_={
+                "drawing_data": body.drawing_data,
+                "updated_at": sqlfunc.now(),
+            },
+        )
+    )
+    await db.execute(stmt)
     await db.commit()
-    await db.refresh(row)
-    return _to_meta(row)
+    return _to_meta(row, drawing_data=body.drawing_data)

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -52,8 +52,6 @@ class FulltextPdf(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    drawing_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-
     __table_args__ = (
         CheckConstraint(
             "(record_id IS NOT NULL AND cluster_id IS NULL) OR "
