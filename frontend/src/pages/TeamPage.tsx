@@ -13,8 +13,8 @@ import {
   X,
   BookMarked,
 } from "lucide-react";
-import { teamApi, consensusApi, extractionLibraryApi } from "../api/client";
-import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, ExtractionLibraryItem } from "../api/client";
+import { teamApi, consensusApi, recordsApi } from "../api/client";
+import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, RecordItem } from "../api/client";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -320,32 +320,24 @@ function AssignPapersModal({
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
 
-  const { data: papers = [], isLoading } = useQuery({
-    queryKey: ["extractions", projectId],
-    queryFn: () => extractionLibraryApi.list(projectId).then(r => r.data),
+  // Use all project records (not just FT-included ones) so admins can assign
+  // papers even before screening is complete, and sub-project records always appear.
+  const { data: recordsPage, isLoading } = useQuery({
+    queryKey: ["project-records-all", projectId],
+    queryFn: () => recordsApi.list(projectId, { per_page: 5000 }).then(r => r.data),
     staleTime: 30_000,
   });
-
-  // Deduplicate by record_id (multiple reviewers may have extracted the same paper)
-  const uniquePapers = useMemo(() => {
-    const seen = new Set<string>();
-    return papers.filter(p => {
-      const key = p.record_id ?? p.cluster_id ?? p.id;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [papers]);
+  const papers: RecordItem[] = recordsPage?.records ?? [];
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return uniquePapers;
+    if (!search.trim()) return papers;
     const q = search.toLowerCase();
-    return uniquePapers.filter(p =>
+    return papers.filter(p =>
       (p.title ?? "").toLowerCase().includes(q) ||
       (p.authors ?? []).join(" ").toLowerCase().includes(q) ||
       String(p.year ?? "").includes(q)
     );
-  }, [uniquePapers, search]);
+  }, [papers, search]);
 
   // Initial selection: currently assigned record_ids
   const currentIds = useMemo<Set<string>>(() => {
@@ -355,8 +347,8 @@ function AssignPapersModal({
 
   const [selected, setSelected] = useState<Set<string>>(currentIds);
 
-  function getPaperId(p: ExtractionLibraryItem) {
-    return p.record_id ?? p.cluster_id ?? p.id;
+  function getPaperId(p: RecordItem) {
+    return p.id;
   }
 
   function toggle(id: string) {
@@ -419,7 +411,7 @@ function AssignPapersModal({
             <button className="btn-ghost btn-sm" onClick={clearAll}>None</button>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
-            {selected.size} of {uniquePapers.length} selected
+            {selected.size} of {papers.length} selected
             {selected.size === 0 && " (full access — no filter)"}
           </div>
         </div>
@@ -429,8 +421,8 @@ function AssignPapersModal({
             <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>Loading…</div>
           ) : filtered.length === 0 ? (
             <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
-              {uniquePapers.length === 0
-                ? "No extracted papers yet. Extract papers first, then assign them here."
+              {papers.length === 0
+                ? "No records found in this project yet."
                 : "No papers match your search."}
             </div>
           ) : (
@@ -461,7 +453,7 @@ function AssignPapersModal({
                       {[
                         p.authors?.slice(0, 3).join(", "),
                         p.year,
-                        p.source_names?.join(" · "),
+                        p.sources?.join(" · "),
                       ].filter(Boolean).join(" · ")}
                     </div>
                   </div>

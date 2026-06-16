@@ -25,6 +25,7 @@ from sqlalchemy import func as sqlfunc, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import (
     ADMIN_ROLE,
@@ -40,8 +41,15 @@ from app.services.fulltext_link_service import FulltextLink, resolve_links
 
 router = APIRouter(tags=["fulltext"])
 
-# Files stored under backend/uploads/<project_id>/<pdf_id>_<original_name>
-UPLOADS_ROOT = Path("uploads")
+# Resolve UPLOADS_ROOT to an absolute path at startup so it is stable regardless
+# of process working directory. Override with UPLOADS_DIR env var in production.
+def _resolve_uploads_root() -> Path:
+    if settings.uploads_dir:
+        return Path(settings.uploads_dir).resolve()
+    # Default: <backend_dir>/uploads/  (one level up from this file's package)
+    return (Path(__file__).parent.parent.parent / "uploads").resolve()
+
+UPLOADS_ROOT: Path = _resolve_uploads_root()
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -249,9 +257,18 @@ async def download_pdf(
     row = await db.get(FulltextPdf, uuid.UUID(pdf_id))
     if not row or str(row.project_id) != project_id:
         raise HTTPException(404, "PDF not found")
+    # Try the stored path first, then fall back to resolving it under UPLOADS_ROOT
+    # (handles servers where the path was stored as a relative path before the fix)
     path = Path(row.storage_path)
+    if not path.is_absolute():
+        path = (UPLOADS_ROOT.parent / row.storage_path).resolve()
     if not path.exists():
-        raise HTTPException(404, "File missing from storage")
+        raise HTTPException(
+            404,
+            f"PDF file is no longer available on the server. "
+            f"The file '{row.original_filename}' was uploaded but the server "
+            f"storage may have been reset. Please re-upload the PDF.",
+        )
     from urllib.parse import quote
     safe_ascii = row.original_filename.encode("latin-1", errors="replace").decode("latin-1")
     encoded = quote(row.original_filename, safe="")

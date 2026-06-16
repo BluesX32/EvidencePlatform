@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # Request a free key at https://www.semanticscholar.org/product/api
     semantic_scholar_api_key: str = ""
 
+    # Absolute path for uploaded PDF storage. Defaults to uploads/ next to the
+    # backend/ directory. Override with UPLOADS_DIR=/data/uploads in production
+    # so files survive container restarts.
+    uploads_dir: str = ""
+
     # Invite-code system.
     # Set INVITE_REQUIRED=false to allow open registration (e.g. local dev).
     # Set ADMIN_SECRET to a strong random string; required to call admin endpoints

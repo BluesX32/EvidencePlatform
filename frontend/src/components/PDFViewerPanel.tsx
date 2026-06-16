@@ -388,7 +388,8 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
       })
       .catch((err) => {
         if (cancelled) return;
-        setPdfError(err?.message || "Failed to load PDF");
+        const detail = err?.response?.data?.detail;
+        setPdfError(detail || err?.message || "Failed to load PDF");
         setPdfLoading(false);
       });
     return () => {
