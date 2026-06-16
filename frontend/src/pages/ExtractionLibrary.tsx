@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi, teamApi } from "../api/client";
 import type {
@@ -1019,6 +1019,7 @@ function downloadCsv(
 
 export default function ExtractionLibrary() {
   const { id: projectId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -1026,7 +1027,10 @@ export default function ExtractionLibrary() {
   const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
-  const [selectedReviewerId, setSelectedReviewerId] = useState<string | null>(null);
+  // Pre-select reviewer if navigated from "View as" flow
+  const [selectedReviewerId, setSelectedReviewerId] = useState<string | null>(
+    () => searchParams.get("reviewerId") ?? null
+  );
 
   // Fetch project (for role check + template)
   const { data: project } = useQuery({

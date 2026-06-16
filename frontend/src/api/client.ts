@@ -1129,8 +1129,24 @@ export const screeningApi = {
     }
   ) => api.post<ScreeningDecision>(`/projects/${projectId}/screening/decisions`, body),
 
-  listDecisions: (projectId: string, params?: { stage?: string }) =>
+  listDecisions: (projectId: string, params?: { stage?: string; reviewer_id?: string }) =>
     api.get<ScreeningDecision[]>(`/projects/${projectId}/screening/decisions`, { params }),
+
+  getReviewerSummary: (projectId: string, reviewerId: string) =>
+    api.get<{
+      reviewer_id: string;
+      stats: {
+        ta_screened: number; ta_included: number; ta_excluded: number;
+        ft_screened: number; ft_included: number; ft_excluded: number;
+        extractions: number;
+      };
+      decisions: Array<{
+        record_id: string | null; cluster_id: string | null;
+        title: string | null; authors: string[] | null; year: number | null;
+        ta_decision: string | null; ft_decision: string | null;
+        reason_code: string | null; notes: string | null;
+      }>;
+    }>(`/projects/${projectId}/screening/reviewer-summary`, { params: { reviewer_id: reviewerId } }),
 
   submitExtraction: (
     projectId: string,

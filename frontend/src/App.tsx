@@ -58,6 +58,7 @@ import ThematicAnalysis from "./pages/ThematicAnalysis";
 import PrismaPage from "./pages/PrismaPage";
 import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
+import ReviewerViewPage from "./pages/ReviewerViewPage";
 import AppShell from "./components/AppShell";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -120,6 +121,7 @@ export default function App() {
             <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><LLMScreeningPage /></Suspense></WithShell>} />
             <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
             <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />
+            <Route path="/projects/:id/reviewer/:reviewerId" element={<WithShell><ReviewerViewPage /></WithShell>} />
           </Routes>
         </Suspense>
       </BrowserRouter>

@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash,
+  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash, Eye,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
@@ -797,6 +797,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ── Main content ────────────────────────────────────────────────── */}
       <main className="shell-main" style={{ marginLeft: mainMarginLeft }}>
+        {/* Reviewer view banner */}
+        {location.pathname.includes("/reviewer/") && (() => {
+          const params = new URLSearchParams(window.location.search);
+          const name = params.get("name") ?? "Reviewer";
+          return (
+            <div style={{
+              background: "#fef3c7", borderBottom: "1px solid #fbbf24",
+              padding: "8px 20px", display: "flex", alignItems: "center", gap: 10,
+              fontSize: 13, color: "#92400e",
+            }}>
+              <Eye size={14} />
+              <span>Viewing as <strong>{name}</strong> — read-only</span>
+              <Link
+                to={location.pathname.replace(/\/reviewer\/[^/]+.*/, "/team")}
+                style={{ marginLeft: "auto", color: "#92400e", fontWeight: 600, textDecoration: "underline", fontSize: 12 }}
+              >
+                Exit reviewer view
+              </Link>
+            </div>
+          );
+        })()}
         {children}
       </main>
 

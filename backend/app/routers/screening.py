@@ -317,12 +317,13 @@ async def create_decision(
 async def list_decisions(
     project_id: uuid.UUID,
     stage: Optional[str] = Query(None),
+    reviewer_id: Optional[uuid.UUID] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return screening decisions.
 
-    Owners/admins see all reviewers' decisions.
+    Owners/admins see all reviewers' decisions (optionally filtered by reviewer_id).
     Reviewers see only their own decisions — blinded from other reviewers' work.
     """
     await _require_project(project_id, current_user, db)
@@ -334,11 +335,108 @@ async def list_decisions(
     role = await ProjectRepo.user_role(db, project_id, current_user.id)
     if role not in ("owner", "admin"):
         q = q.where(ScreeningDecision.reviewer_id == current_user.id)
+    elif reviewer_id:
+        q = q.where(ScreeningDecision.reviewer_id == reviewer_id)
 
     q = q.order_by(ScreeningDecision.created_at)
     rows = await db.execute(q)
     decisions = rows.scalars().all()
     return [_decision_out(d) for d in decisions]
+
+
+@router.get("/reviewer-summary")
+async def get_reviewer_summary(
+    project_id: uuid.UUID,
+    reviewer_id: uuid.UUID = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: return enriched screening activity for a specific reviewer."""
+    await _require_project(project_id, current_user, db)
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    if role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    from app.models.record import Record
+
+    decisions_q = (
+        select(ScreeningDecision)
+        .where(
+            ScreeningDecision.project_id == project_id,
+            ScreeningDecision.reviewer_id == reviewer_id,
+        )
+        .order_by(ScreeningDecision.created_at)
+    )
+    decisions_rows = (await db.execute(decisions_q)).scalars().all()
+
+    # Group per paper: last TA and FT decision wins
+    paper_map: Dict[str, Any] = {}
+    for d in decisions_rows:
+        key = str(d.record_id or d.cluster_id)
+        if key not in paper_map:
+            paper_map[key] = {
+                "record_id": d.record_id,
+                "cluster_id": d.cluster_id,
+                "ta_decision": None,
+                "ft_decision": None,
+                "reason_code": None,
+                "notes": None,
+            }
+        if d.stage == "TA":
+            paper_map[key].update(
+                ta_decision=d.decision,
+                reason_code=d.reason_code,
+                notes=d.notes,
+            )
+        elif d.stage == "FT":
+            paper_map[key]["ft_decision"] = d.decision
+
+    record_ids = [v["record_id"] for v in paper_map.values() if v["record_id"]]
+    record_info: Dict[Any, Any] = {}
+    if record_ids:
+        records_q = select(Record).where(Record.id.in_(record_ids))
+        for r in (await db.execute(records_q)).scalars().all():
+            record_info[r.id] = {"title": r.title, "authors": r.authors, "year": r.year}
+
+    decisions_out = []
+    for v in paper_map.values():
+        rec = record_info.get(v["record_id"], {}) if v["record_id"] else {}
+        decisions_out.append(
+            {
+                "record_id": str(v["record_id"]) if v["record_id"] else None,
+                "cluster_id": str(v["cluster_id"]) if v["cluster_id"] else None,
+                "title": rec.get("title"),
+                "authors": rec.get("authors"),
+                "year": rec.get("year"),
+                "ta_decision": v["ta_decision"],
+                "ft_decision": v["ft_decision"],
+                "reason_code": v["reason_code"],
+                "notes": v["notes"],
+            }
+        )
+
+    ta_rows = [d for d in decisions_rows if d.stage == "TA"]
+    ft_rows = [d for d in decisions_rows if d.stage == "FT"]
+
+    ex_q = select(ExtractionRecord).where(
+        ExtractionRecord.project_id == project_id,
+        ExtractionRecord.reviewer_id == reviewer_id,
+    )
+    extractions_count = len((await db.execute(ex_q)).scalars().all())
+
+    return {
+        "reviewer_id": str(reviewer_id),
+        "decisions": decisions_out,
+        "stats": {
+            "ta_screened": len(ta_rows),
+            "ta_included": sum(1 for d in ta_rows if d.decision == "include"),
+            "ta_excluded": sum(1 for d in ta_rows if d.decision == "exclude"),
+            "ft_screened": len(ft_rows),
+            "ft_included": sum(1 for d in ft_rows if d.decision == "include"),
+            "ft_excluded": sum(1 for d in ft_rows if d.decision == "exclude"),
+            "extractions": extractions_count,
+        },
+    }
 
 
 @router.post("/extractions", status_code=201)
@@ -495,12 +593,15 @@ async def get_queue_list(
     project_id: uuid.UUID,
     source: str = Query("all"),
     stage: str = Query("screen"),
+    reviewer_id: Optional[uuid.UUID] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return all queue slots seen so far with title, ta_decision, ft_decision (for side nav panel)."""
     await _require_project(project_id, current_user, db)
-    return await get_queue_list_summary(db, project_id, current_user.id, source, stage)
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    effective = reviewer_id if (reviewer_id and role in ("owner", "admin")) else current_user.id
+    return await get_queue_list_summary(db, project_id, effective, source, stage)
 
 
 @router.get("/queue-slot")
@@ -509,12 +610,15 @@ async def get_queue_slot_endpoint(
     source: str = Query("all"),
     stage: str = Query("screen"),
     position: int = Query(..., ge=1),
+    reviewer_id: Optional[uuid.UUID] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get paper metadata at a specific queue position (1-indexed). Only positions 1..current_position are accessible."""
     await _require_project(project_id, current_user, db)
-    item = await get_queue_slot(db, project_id, current_user.id, source, stage, position)
+    role = await ProjectRepo.user_role(db, project_id, current_user.id)
+    effective = reviewer_id if (reviewer_id and role in ("owner", "admin")) else current_user.id
+    item = await get_queue_slot(db, project_id, effective, source, stage, position)
     if item is None:
         raise HTTPException(status_code=404, detail="Queue slot not found")
     return item

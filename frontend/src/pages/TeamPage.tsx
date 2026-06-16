@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   Users,
   UserPlus,
@@ -12,6 +12,7 @@ import {
   Shield,
   X,
   BookMarked,
+  Eye,
 } from "lucide-react";
 import { teamApi, consensusApi, recordsApi } from "../api/client";
 import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, RecordItem } from "../api/client";
@@ -526,6 +527,7 @@ function AssignPapersModal({
 
 export default function TeamPage() {
   const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
   const qc = useQueryClient();
 
   const [inviteEmail, setInviteEmail] = useState("");
@@ -831,15 +833,30 @@ export default function TeamPage() {
                       )}
                     </td>
                     <td style={{ padding: "10px 16px", textAlign: "right" }}>
-                      {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
-                        <button
-                          onClick={() => removeMut.mutate(m.user_id)}
-                          style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", padding: 4 }}
-                          title="Remove member"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                        {isAdmin && !m.is_owner && (
+                          <button
+                            onClick={() =>
+                              navigate(
+                                `/projects/${projectId}/reviewer/${m.user_id}?name=${encodeURIComponent(m.name || m.email)}`
+                              )
+                            }
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", padding: 4 }}
+                            title={`View as ${m.name || m.email}`}
+                          >
+                            <Eye size={14} />
+                          </button>
+                        )}
+                        {!m.is_owner && (isAdmin || m.user_id === myRole?.user_id) && (
+                          <button
+                            onClick={() => removeMut.mutate(m.user_id)}
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", padding: 4 }}
+                            title="Remove member"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
