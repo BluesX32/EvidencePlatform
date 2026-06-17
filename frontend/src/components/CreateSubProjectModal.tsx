@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { projectsApi, sourcesApi } from "../api/client";
+import { projectsApi, sourcesApi, type Source } from "../api/client";
 
 type TopChoice = "corpora" | "included" | "excluded";
 
@@ -46,11 +46,11 @@ export default function CreateSubProjectModal({
   const [busy, setBusy] = useState(false);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
-  const { data: sources = [], isLoading: sourcesLoading } = useQuery({
+  const { data: sources = [], isLoading: sourcesLoading } = useQuery<Source[]>({
     queryKey: ["sources", parentProjectId],
     queryFn: () => sourcesApi.list(parentProjectId).then((r) => r.data),
     staleTime: 30_000,
-    onSuccess: (data: typeof sources) => {
+    onSuccess: (data: Source[]) => {
       if (selectedSourceIds === null) {
         setSelectedSourceIds(new Set(data.map((s) => s.id)));
       }

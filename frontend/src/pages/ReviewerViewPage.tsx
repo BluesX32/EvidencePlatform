@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams, useSearchParams, Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, XCircle, Minus, ExternalLink } from "lucide-react";
-import { screeningApi, teamApi } from "../api/client";
+import { screeningApi } from "../api/client";
 
 function DecisionBadge({ decision }: { decision: string | null }) {
   if (!decision) return <span style={{ color: "#94a3b8", fontSize: 12 }}>—</span>;

@@ -1873,13 +1873,14 @@ async def submit_extraction(
     extracted_json: dict,
     reviewer_id: Optional[uuid.UUID],
 ) -> Dict[str, Any]:
-    """Upsert an extraction record."""
-    # Check for existing
+    """Upsert an extraction record, scoped to the reviewer so each reviewer's
+    data is stored in its own row and cannot overwrite another's."""
     if record_id is not None:
         existing = await db.execute(
             select(ExtractionRecord).where(
                 ExtractionRecord.project_id == project_id,
                 ExtractionRecord.record_id == record_id,
+                ExtractionRecord.reviewer_id == reviewer_id,
             )
         )
     else:
@@ -1887,6 +1888,7 @@ async def submit_extraction(
             select(ExtractionRecord).where(
                 ExtractionRecord.project_id == project_id,
                 ExtractionRecord.cluster_id == cluster_id,
+                ExtractionRecord.reviewer_id == reviewer_id,
             )
         )
 

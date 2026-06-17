@@ -1420,7 +1420,7 @@ export default function ProjectPage() {
                           {allNodes.length === 0 && <span style={{ fontSize: 12, color: "#bbb", fontStyle: "italic" }}>No ontology nodes defined yet</span>}
                           {allNodes.map((node) => {
                             const active = linkedNodeIds.includes(node.id);
-                            const color = node.color ?? (node.namespace === "thematic" ? "#7c3aed" : "#3b82f6");
+                            const color = node.color ?? (node.namespace === "relationship" ? "#7c3aed" : "#3b82f6");
                             return (
                               <button key={node.id} type="button"
                                 onClick={() => setTemplateRows((prev) => prev.map((r, i) => i !== idx ? r : { ...r, linked_node_ids: active ? (r.linked_node_ids ?? []).filter((x) => x !== node.id) : [...(r.linked_node_ids ?? []), node.id] }))}

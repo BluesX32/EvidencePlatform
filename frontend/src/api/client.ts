@@ -940,7 +940,7 @@ export interface ExtractionJson {
   framework_update_note: string;
   levels: string[];
   dimensions: string[];
-  snippets: Snippet[];
+  snippets?: Snippet[];
 }
 
 export interface ExtractionRecord {

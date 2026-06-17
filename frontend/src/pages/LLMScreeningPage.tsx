@@ -48,7 +48,6 @@ import {
   type TeamMember,
   type MissingPdfRecord,
   type FtQueuePaper,
-  type FtQueueResponse,
 } from "../api/client";
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
@@ -573,7 +572,7 @@ function ModelComparisonTable({ onSelectModel }: { onSelectModel: (id: string) =
 
 // ── Review Actions ────────────────────────────────────────────────────────────
 
-function ReviewActions({ result, projectId, runId, onReviewed }: { result: LlmResultResponse; projectId: string; runId: string; onReviewed: () => void }) {
+export function ReviewActions({ result, projectId, runId, onReviewed }: { result: LlmResultResponse; projectId: string; runId: string; onReviewed: () => void }) {
   const [pending, setPending] = useState(false);
 
   async function handle(action: "accepted" | "rejected" | "merged") {
@@ -600,7 +599,7 @@ function ReviewActions({ result, projectId, runId, onReviewed }: { result: LlmRe
 
 // ── Result Row ────────────────────────────────────────────────────────────────
 
-function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }: {
+function ResultRow({ result, projectId: _projectId, runId: _runId, extractionTemplate, onReviewed: _onReviewed }: {
   result: LlmResultResponse;
   projectId: string;
   runId: string;

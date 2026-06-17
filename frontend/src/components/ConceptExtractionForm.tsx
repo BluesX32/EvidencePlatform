@@ -232,7 +232,7 @@ function FieldInput({
 }
 
 function CustomOptionInput({
-  selected, options, onSelect, multi,
+  selected, options: _options, onSelect, multi,
 }: {
   selected: string | string[]; options: string[];
   onSelect: (v: string | string[]) => void; multi: boolean;

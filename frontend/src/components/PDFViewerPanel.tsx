@@ -27,7 +27,9 @@ import type {
 
 // @ts-ignore
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+// Append cache-buster so browsers that cached the old wrong-MIME-type response
+// are forced to re-fetch with the corrected application/javascript MIME type.
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl + "?v=2";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

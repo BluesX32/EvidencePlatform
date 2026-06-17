@@ -202,7 +202,7 @@ export default function OntologyPage() {
   // ── 3D graph data ─────────────────────────────────────────────────────────
 
   const graphData = useMemo(() => {
-    const graphNodes = nodes.map((n) => ({
+    const graphNodes: Array<{ id: string; name: string; namespace: OntologyNamespace; nodeColor: string; val: number; x?: number; y?: number; z?: number }> = nodes.map((n) => ({
       id: n.id, name: n.name, namespace: n.namespace,
       nodeColor: n.color ?? NS_COLORS[n.namespace] ?? "#9ca3af",
       val: n.parent_id ? 1 : 2.5,

@@ -305,7 +305,7 @@ function ParentPicker({ entry, allEntries, projectId, fieldType, onClose }: {
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [parentKey, setParentKey] = useState(entry.node?.parent_id ?? "");
+  const [_parentKey, _setParentKey] = useState(entry.node?.parent_id ?? "");
 
   const candidates = allEntries.filter(e =>
     e.key !== entry.key &&
@@ -617,7 +617,7 @@ export default function ConceptTaxonomyPage() {
   const [merging, setMerging] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const [_expandedNodes, _setExpandedNodes] = useState<Set<string>>(new Set());
 
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
@@ -719,10 +719,6 @@ export default function ConceptTaxonomyPage() {
   }
 
   // Delete node
-  const deleteMut = useMutation({
-    mutationFn: (nodeId: string) => conceptTaxonomyApi.deleteNode(projectId!, nodeId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["concept-taxonomy-nodes", projectId] }),
-  });
 
   const tabColor = TAB_COLORS[activeTab];
   const selectedForTab = new Set([...selected].filter(k => filtered.some(e => e.key === k)));

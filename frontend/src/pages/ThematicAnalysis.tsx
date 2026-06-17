@@ -14,8 +14,6 @@ import {
   type ThemeItem,
   type ThemeCode,
   type CodeEvidence,
-  type ThematicHistoryEntry,
-  type ExtractionLibraryItem,
 } from "../api/client";
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────

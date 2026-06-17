@@ -402,7 +402,7 @@ function ManualImportModal({
             >
               <option value="">— Select the extracted paper these citations relate to —</option>
               {libItems.map(item => (
-                <option key={item.id} value={item.id}>
+                <option key={item.id ?? ""} value={item.id ?? ""}>
                   {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
                   {item.record_id === null ? " (cluster)" : ""}
                 </option>
@@ -592,7 +592,7 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
                   </span>
                   <div style={{ display: "flex", gap: "0.5rem" }}>
                     <button
-                      onClick={() => setCustomIds(libItems.map(i => i.record_id ?? i.cluster_id ?? i.id))}
+                      onClick={() => setCustomIds(libItems.map(i => i.record_id ?? i.cluster_id ?? i.id ?? "").filter(Boolean) as string[])}
                       style={{ fontSize: "0.75rem", border: "none", background: "none", cursor: "pointer", color: "#1a73e8", fontWeight: 500 }}
                     >
                       Select all
@@ -606,7 +606,7 @@ function SearchHistoryView({ projectId }: { projectId: string }) {
                   </div>
                 </div>
                 {libItems.map(item => {
-                  const itemId = item.record_id ?? item.cluster_id ?? item.id;
+                  const itemId = item.record_id ?? item.cluster_id ?? item.id ?? "";
                   const checked = customIds.includes(itemId);
                   return (
                     <label
@@ -875,7 +875,7 @@ function AppendCandidatesModal({
             >
               <option value="">— Select the extracted paper these references belong to —</option>
               {libItems.map(item => (
-                <option key={item.id} value={item.id}>
+                <option key={item.id ?? ""} value={item.id ?? ""}>
                   {item.title ?? "(Untitled)"}{item.year ? ` (${item.year})` : ""}
                   {item.record_id === null ? " (cluster)" : ""}
                 </option>
@@ -915,7 +915,6 @@ function CandidateScreeningView({
   projectId: string;
   searchId: string;
 }) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [decisionFilter, setDecisionFilter] = useState("all");

@@ -100,69 +100,6 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Change-password modal ─────────────────────────────────────────────────
-
-function ChangePasswordModal({ onClose }: { onClose: () => void }) {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [localErr, setLocalErr] = useState("");
-  const [done, setDone] = useState(false);
-
-  const mut = useMutation({
-    mutationFn: () => authApi.changePassword(current, next),
-    onSuccess: () => setDone(true),
-    onError: (err: any) => setLocalErr(err?.response?.data?.detail ?? "Password change failed"),
-  });
-
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setLocalErr("");
-    if (next.length < 8) { setLocalErr("New password must be at least 8 characters"); return; }
-    if (next !== confirm) { setLocalErr("Passwords do not match"); return; }
-    mut.mutate();
-  }
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3 style={{ margin: 0, fontSize: "1rem" }}>Change password</h3>
-          <button className="modal-close" onClick={onClose}>✕</button>
-        </div>
-        {done ? (
-          <div style={{ padding: "1.5rem 1.25rem", textAlign: "center" }}>
-            <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>✅</div>
-            <p style={{ margin: 0, fontSize: "0.88rem", color: "#16a34a", fontWeight: 600 }}>Password updated successfully.</p>
-            <button className="btn-primary btn-sm" style={{ marginTop: "1rem" }} onClick={onClose}>Close</button>
-          </div>
-        ) : (
-          <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "0.75rem", padding: "1.1rem 1.25rem 1.25rem" }}>
-            <div>
-              <label style={labelSt}>Current password</label>
-              <input type="password" value={current} onChange={e => setCurrent(e.target.value)} required autoFocus style={inputSt} placeholder="••••••••" />
-            </div>
-            <div>
-              <label style={labelSt}>New password</label>
-              <input type="password" value={next} onChange={e => setNext(e.target.value)} required style={inputSt} placeholder="At least 8 characters" />
-            </div>
-            <div>
-              <label style={labelSt}>Confirm new password</label>
-              <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required style={inputSt} placeholder="••••••••" />
-            </div>
-            {localErr && <p style={{ margin: 0, fontSize: "0.8rem", color: "#dc2626" }}>{localErr}</p>}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.25rem" }}>
-              <button type="button" className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-              <button type="submit" className="btn-primary btn-sm" disabled={mut.isPending}>
-                {mut.isPending ? "Saving…" : "Update password"}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
-  );
-}
 
 const labelSt: React.CSSProperties = { display: "block", fontSize: "0.78rem", fontWeight: 600, color: "#475569", marginBottom: "0.3rem" };
 const inputSt: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "0.45rem 0.6rem", border: "1px solid #cbd5e1", borderRadius: "0.375rem", fontSize: "0.88rem", outline: "none" };

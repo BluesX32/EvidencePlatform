@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
-import type { ExtractionJson, ScreeningNextItem, LlmScreeningNote, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode, ConceptTemplate } from "../api/client";
+import type { ExtractionJson, ScreeningNextItem, LlmScreeningNote, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptExtractionForm from "../components/ConceptExtractionForm";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -2396,7 +2396,7 @@ function ExtractionForm({ projectId, source, form, setForm, onSave, onSkip, onGo
                               <span key={lbl.id} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 999, background: lbl.color + "22", color: lbl.color, border: `1px solid ${lbl.color}` }}>{lbl.name}</span>
                             ))}
                             {linkedNodes.map((node) => {
-                              const color = node.color ?? (node.namespace === "thematic" ? "#7c3aed" : "#3b82f6");
+                              const color = node.color ?? (node.namespace === "relationship" ? "#7c3aed" : "#3b82f6");
                               return <span key={node.id} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: color + "18", color, border: `1px solid ${color}` }}>{node.name}</span>;
                             })}
                           </div>

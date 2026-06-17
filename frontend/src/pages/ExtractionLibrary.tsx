@@ -69,45 +69,7 @@ function Chip({
   );
 }
 
-function FilterRow({
-  label,
-  values,
-  active,
-  color,
-  onToggle,
-}: {
-  label: string;
-  values: string[];
-  active: Set<string>;
-  color: "blue" | "purple";
-  onToggle: (v: string) => void;
-}) {
-  return (
-    <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", flexWrap: "wrap" }}>
-      <span style={{ fontSize: "0.8rem", color: "#5f6368", minWidth: 70 }}>{label}:</span>
-      {values.map((v) => (
-        <Chip
-          key={v}
-          label={v}
-          active={active.has(v)}
-          color={color}
-          onClick={() => onToggle(v)}
-        />
-      ))}
-      {active.size > 0 && (
-        <button
-          onClick={() => active.forEach((v) => onToggle(v))}
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            fontSize: "0.75rem", color: "#c5221f", padding: "0 0.25rem",
-          }}
-        >
-          Clear
-        </button>
-      )}
-    </div>
-  );
-}
+
 
 // ---------------------------------------------------------------------------
 // Template table: read-only preview (summary row)
@@ -1044,7 +1006,7 @@ export default function ExtractionLibrary() {
   // Fetch team members so owner/admin can filter by reviewer
   const { data: members = [] } = useQuery<TeamMember[]>({
     queryKey: ["team-members", projectId],
-    queryFn: () => teamApi.getMembers(projectId!).then((r) => r.data),
+    queryFn: () => teamApi.listMembers(projectId!).then((r: { data: TeamMember[] }) => r.data),
     enabled: !!projectId && isOwnerOrAdmin,
   });
 

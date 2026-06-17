@@ -7,7 +7,7 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ontologyApi, conceptsApi, type OntologyNode } from "../api/client";
+import { ontologyApi, conceptsApi, type OntologyNode, type OntologyNamespace } from "../api/client";
 
 interface Props {
   projectId: string;
@@ -29,7 +29,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
     queryKey: ["ontology", projectId],
     queryFn: () => ontologyApi.list(projectId).then((r) => r.data),
   });
-  const conceptNodes = allNodes.filter((n) => n.namespace === "thematic");
+  const conceptNodes = allNodes.filter((n) => (n.namespace as string) === "thematic");
 
   const { data: itemNodes = [] } = useQuery<OntologyNode[]>({
     queryKey: ["item-concepts", projectId, itemKey],
@@ -56,7 +56,7 @@ export default function ConceptPicker({ projectId, recordId, clusterId }: Props)
 
   const createAndAssignMut = useMutation({
     mutationFn: async (name: string) => {
-      const created = await ontologyApi.create(projectId, { name: name.trim(), namespace: "thematic" });
+      const created = await ontologyApi.create(projectId, { name: name.trim(), namespace: "thematic" as OntologyNamespace });
       await conceptsApi.assign(projectId, {
         record_id: recordId ?? null,
         cluster_id: clusterId ?? null,

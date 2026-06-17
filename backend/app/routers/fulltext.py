@@ -34,8 +34,10 @@ from app.dependencies import (
     require_project_role,
 )
 from app.models.fulltext_pdf import FulltextPdf
+from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.pdf_drawing_annotation import PdfDrawingAnnotation
 from app.models.project import Project
+from app.models.record_source import RecordSource
 from app.models.user import User
 from app.services.fulltext_link_service import FulltextLink, resolve_links
 
@@ -91,10 +93,34 @@ async def _find(
     cluster_id: Optional[uuid.UUID],
 ) -> Optional[FulltextPdf]:
     if record_id:
+        # Direct record-linked PDF lookup
         stmt = select(FulltextPdf).where(
             FulltextPdf.project_id == project_id,
             FulltextPdf.record_id == record_id,
         )
+        row = (await db.execute(stmt)).scalar_one_or_none()
+        if row:
+            return row
+        # Fallback: the PDF may have been uploaded from the screening workspace
+        # where it was stored against the overlap cluster rather than the record.
+        # Walk record → record_sources → overlap_cluster_members → fulltext_pdfs.
+        cluster_stmt = (
+            select(FulltextPdf)
+            .join(
+                OverlapClusterMember,
+                OverlapClusterMember.cluster_id == FulltextPdf.cluster_id,
+            )
+            .join(
+                RecordSource,
+                RecordSource.id == OverlapClusterMember.record_source_id,
+            )
+            .where(
+                FulltextPdf.project_id == project_id,
+                RecordSource.record_id == record_id,
+            )
+            .limit(1)
+        )
+        return (await db.execute(cluster_stmt)).scalar_one_or_none()
     elif cluster_id:
         stmt = select(FulltextPdf).where(
             FulltextPdf.project_id == project_id,

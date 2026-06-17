@@ -19,7 +19,6 @@ export const SOURCE_COLORS = [
 const R_MAX       = 85;
 const ITERATIONS  = 400;
 const PAD         = 28;
-const LABEL_W     = 148;
 const LABEL_GAP   = 14;
 const MIN_VGAP    = 22;
 const LABEL_FS    = 10.5;
@@ -233,7 +232,6 @@ export default function EulerDiagram({ visualData, sourceTotals, selectedSourceI
   }));
 
   const dMinX = Math.min(...circles.map((c) => c.x - c.r)) - PAD;
-  const dMinY = Math.min(...circles.map((c) => c.y - c.r)) - PAD;
   const dMaxX = Math.max(...circles.map((c) => c.x + c.r)) + PAD;
 
   const centX      = enriched.reduce((s, c) => s + c.x, 0) / n;

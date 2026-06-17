@@ -16,7 +16,7 @@
  * Node types are defined at module scope (required by React Flow to avoid
  * unmount/remount on every parent render).
  */
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -34,6 +34,7 @@ import {
   type NodeProps,
   type OnConnect,
   type OnNodeDrag,
+  type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import Dagre from "@dagrejs/dagre";
@@ -108,8 +109,8 @@ const ARROW_CLIP = "polygon(0 0, calc(100% - 22px) 0, 100% 50%, calc(100% - 22px
 
 // IMPORTANT: defined at module scope so React Flow does not recreate on every
 // parent render (which would cause all nodes to unmount/remount).
-function OntologyNodeCard({ id, data }: NodeProps<RFOntologyNode>) {
-  const { node, isSelected, isDragTarget, isSearchMatch, actionsRef } = data;
+function OntologyNodeCard({ id: _id, data }: NodeProps<RFOntologyNode>) {
+  const { node, isSelected, isDragTarget, isSearchMatch, actionsRef: _actionsRef } = data;
   const isRelNode = node.namespace === "relationship";
 
   const entityColor = node.color ?? "#3b82f6";
@@ -443,7 +444,7 @@ export default function OntologyCanvas2D({
 
   // ── Connection — only allow rel→rel to create relationship edges ──────────
 
-  const isValidConnection = useCallback((connection: Connection) => {
+  const isValidConnection: IsValidConnection<RFOntologyEdge> = useCallback((connection: Connection | RFOntologyEdge) => {
     if (connection.sourceHandle !== "rel" || connection.targetHandle !== "rel") return false;
     if (!connection.source || !connection.target) return false;
     if (connection.source === connection.target) return false;
