@@ -185,6 +185,7 @@ async def get_item_concept_extraction(
     project_id: uuid.UUID,
     record_id: Optional[str] = Query(None),
     cluster_id: Optional[str] = Query(None),
+    as_reviewer_id: Optional[uuid.UUID] = Query(None, description="Admin only: view a specific reviewer's extraction"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -193,15 +194,25 @@ async def get_item_concept_extraction(
     if not record_id and not cluster_id:
         raise HTTPException(400, "Provide record_id or cluster_id")
 
-    stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
+    # The form always shows one reviewer's extraction.
+    # Admins may pass as_reviewer_id to inspect another reviewer's row;
+    # everyone else (and admins who don't pass it) sees their own row.
+    if as_reviewer_id and role in ADMIN_ROLE:
+        target_reviewer = as_reviewer_id
+    else:
+        target_reviewer = current_user.id
+
+    stmt = (
+        select(ConceptExtraction)
+        .where(
+            ConceptExtraction.project_id == project_id,
+            ConceptExtraction.reviewer_id == target_reviewer,
+        )
+    )
     if record_id:
         stmt = stmt.where(ConceptExtraction.record_id == uuid.UUID(record_id))
     else:
         stmt = stmt.where(ConceptExtraction.cluster_id == uuid.UUID(cluster_id))
-
-    # Non-owners see only their own extraction (form pre-fill is per-reviewer)
-    if role not in ADMIN_ROLE:
-        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
 
     result = await db.execute(stmt)
     rows = result.scalars().all()

@@ -371,7 +371,7 @@ export const conceptExtractionApi = {
 
   getItem: (
     projectId: string,
-    params: { record_id?: string | null; cluster_id?: string | null },
+    params: { record_id?: string | null; cluster_id?: string | null; as_reviewer_id?: string | null },
   ) => api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions/item`, { params }),
 
   getAggregate: (projectId: string) =>

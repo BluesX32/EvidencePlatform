@@ -25,6 +25,8 @@ interface Props {
   clusterId?: string | null;
   onSaved?: () => void;
   allExtractions?: ConceptExtractionRecord[];
+  /** Admin only: load and display this reviewer's concept extraction instead of the current user's. */
+  asReviewerId?: string | null;
 }
 
 const SECTION_COLORS: Record<string, string> = {
@@ -283,7 +285,7 @@ function CustomOptionInput({
 
 // ── Main form ─────────────────────────────────────────────────────────────────
 
-export default function ConceptExtractionForm({ projectId, template, recordId, clusterId, onSaved, allExtractions }: Props) {
+export default function ConceptExtractionForm({ projectId, template, recordId, clusterId, onSaved, allExtractions, asReviewerId }: Props) {
   const qc = useQueryClient();
   const itemKey = recordId ?? clusterId;
 
@@ -310,11 +312,12 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
   }, [allExtractions, recordId, clusterId]);
 
   const { data: existing } = useQuery({
-    queryKey: ["concept-extraction-item", projectId, itemKey],
+    queryKey: ["concept-extraction-item", projectId, itemKey, asReviewerId ?? "self"],
     queryFn: () =>
       conceptExtractionApi.getItem(projectId, {
         record_id: recordId ?? undefined,
         cluster_id: clusterId ?? undefined,
+        as_reviewer_id: asReviewerId ?? undefined,
       }).then((r) => r.data[0] ?? null),
     enabled: !!itemKey,
   });

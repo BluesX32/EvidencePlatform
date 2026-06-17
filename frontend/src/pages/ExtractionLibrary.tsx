@@ -119,6 +119,7 @@ function EditPanel({
   templateRows,
   conceptTemplate,
   allExtractions,
+  asReviewerId,
   onClose,
 }: {
   item: ExtractionLibraryItem;
@@ -126,6 +127,7 @@ function EditPanel({
   templateRows: ExtractionTemplateRow[];
   conceptTemplate: ConceptTemplate | null;
   allExtractions: ConceptExtractionRecord[];
+  asReviewerId?: string | null;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -535,6 +537,7 @@ function EditPanel({
                 recordId={item.record_id ?? undefined}
                 clusterId={item.cluster_id ?? undefined}
                 allExtractions={allExtractions}
+                asReviewerId={asReviewerId}
               />
             </div>
           )}
@@ -1336,6 +1339,7 @@ export default function ExtractionLibrary() {
                       templateRows={templateRows}
                       conceptTemplate={conceptTemplate}
                       allExtractions={conceptExtractions}
+                      asReviewerId={selectedReviewerId}
                       onClose={() => setExpandedId(null)}
                     />
                   )}
