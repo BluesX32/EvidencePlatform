@@ -15,6 +15,7 @@ import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
 import ConceptExtractionForm from "../components/ConceptExtractionForm";
+import { useReviewerView } from "../context/ReviewerViewContext";
 
 // ---------------------------------------------------------------------------
 // Constants (same vocabulary as ScreeningWorkspace)
@@ -985,6 +986,13 @@ function downloadCsv(
 export default function ExtractionLibrary() {
   const { id: projectId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
+  const { reviewerView } = useReviewerView();
+
+  // Pre-select reviewer: URL param takes priority, then active reviewer canvas context
+  const contextReviewerId =
+    reviewerView && projectId && reviewerView.projectId === projectId
+      ? reviewerView.reviewerId
+      : null;
 
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -992,9 +1000,8 @@ export default function ExtractionLibrary() {
   const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
-  // Pre-select reviewer if navigated from "View as" flow
   const [selectedReviewerId, setSelectedReviewerId] = useState<string | null>(
-    () => searchParams.get("reviewerId") ?? null
+    () => searchParams.get("reviewerId") ?? contextReviewerId
   );
 
   // Fetch project (for role check + template)
@@ -1065,8 +1072,8 @@ export default function ExtractionLibrary() {
   const conceptTemplate: ConceptTemplate | null = project?.concept_template ?? null;
 
   const { data: conceptExtractions = [] } = useQuery({
-    queryKey: ["concept-extractions-list", projectId],
-    queryFn: () => conceptExtractionApi.list(projectId!).then((r) => r.data),
+    queryKey: ["concept-extractions-list", projectId, selectedReviewerId],
+    queryFn: () => conceptExtractionApi.list(projectId!, selectedReviewerId ?? null).then((r) => r.data),
     enabled: !!projectId,
   });
 

@@ -361,8 +361,10 @@ export const projectsApi = {
 // ── Concept extraction API ────────────────────────────────────────────────────
 
 export const conceptExtractionApi = {
-  list: (projectId: string) =>
-    api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions`),
+  list: (projectId: string, asReviewerId?: string | null) =>
+    api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions`, {
+      params: asReviewerId ? { as_reviewer_id: asReviewerId } : undefined,
+    }),
 
   upsert: (
     projectId: string,

@@ -15,6 +15,7 @@ import {
   Eye,
 } from "lucide-react";
 import { teamApi, consensusApi, recordsApi } from "../api/client";
+import { useReviewerView } from "../context/ReviewerViewContext";
 import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, RecordItem } from "../api/client";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -529,6 +530,7 @@ export default function TeamPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { enterReviewerView } = useReviewerView();
 
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("reviewer");
@@ -836,11 +838,12 @@ export default function TeamPage() {
                       <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
                         {isAdmin && !m.is_owner && (
                           <button
-                            onClick={() =>
+                            onClick={() => {
+                              enterReviewerView(projectId!, m.user_id, m.name || m.email);
                               navigate(
                                 `/projects/${projectId}/reviewer/${m.user_id}?name=${encodeURIComponent(m.name || m.email)}`
-                              )
-                            }
+                              );
+                            }}
                             style={{
                               display: "inline-flex", alignItems: "center", gap: 4,
                               background: "#eef2ff", border: "1px solid #c7d2fe",

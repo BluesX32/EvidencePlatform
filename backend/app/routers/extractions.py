@@ -53,7 +53,10 @@ WITH cluster_reps AS (
     ORDER BY ocm.cluster_id, ocm.id
 ),
 included_items AS (
-    -- FT=include is the definitive inclusion gate (covers sequential + mixed mode)
+    -- FT=include is the definitive inclusion gate (covers sequential + mixed mode).
+    -- Intentionally NOT filtered by reviewer_id: all FT-included papers form the
+    -- shared corpus visible to every reviewer. Per-reviewer extraction data is
+    -- applied via the LEFT JOIN below.
     SELECT DISTINCT record_id, cluster_id
     FROM screening_decisions
     WHERE project_id = :project_id

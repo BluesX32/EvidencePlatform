@@ -60,6 +60,7 @@ import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import ReviewerViewPage from "./pages/ReviewerViewPage";
 import AppShell from "./components/AppShell";
+import { ReviewerViewProvider } from "./context/ReviewerViewContext";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
 
@@ -90,6 +91,7 @@ function WithShell({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <ReviewerViewProvider>
       <BrowserRouter>
         <Suspense fallback={null}>
           <Routes>
@@ -125,6 +127,7 @@ export default function App() {
           </Routes>
         </Suspense>
       </BrowserRouter>
+      </ReviewerViewProvider>
     </QueryClientProvider>
   );
 }

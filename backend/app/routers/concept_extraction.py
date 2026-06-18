@@ -160,16 +160,25 @@ async def upsert_concept_extraction(
 @router.get("", response_model=List[ConceptExtractionOut])
 async def list_concept_extractions(
     project_id: uuid.UUID,
+    as_reviewer_id: Optional[uuid.UUID] = Query(None, description="Admin only: list another reviewer's extractions"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return all concept extractions for this project (current reviewer's own rows)."""
-    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    """Return concept extractions for this project scoped to one reviewer.
+
+    Admins may pass ?as_reviewer_id= to view a specific reviewer's extractions
+    (e.g. for the chart in reviewer canvas mode).  Everyone else sees their own.
+    """
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    if as_reviewer_id and role in ADMIN_ROLE:
+        target_reviewer = as_reviewer_id
+    else:
+        target_reviewer = current_user.id
     stmt = (
         select(ConceptExtraction)
         .where(
             ConceptExtraction.project_id == project_id,
-            ConceptExtraction.reviewer_id == current_user.id,
+            ConceptExtraction.reviewer_id == target_reviewer,
         )
         .order_by(ConceptExtraction.updated_at.desc())
     )

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
+import { useReviewerView } from "../context/ReviewerViewContext";
 import OnboardingTour from "./OnboardingTour";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
@@ -522,6 +523,13 @@ function GlobalNav({ onNavigate }: { onNavigate: () => void }) {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { id: projectId } = useParams<{ id?: string }>();
   const location = useLocation();
+  const { reviewerView, exitReviewerView } = useReviewerView();
+
+  // Auto-clear reviewer view when leaving this project
+  const activeReviewerView =
+    reviewerView && projectId && reviewerView.projectId === projectId
+      ? reviewerView
+      : null;
 
   // Onboarding tour — shown on first visit (or after "Tutorial" in profile menu)
   const [showTour, setShowTour] = useState(() => !localStorage.getItem("ep_tour_done"));
@@ -655,6 +663,81 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
 
+            {/* ── Reviewer mode panel ─────────────────────────────────── */}
+            {activeReviewerView && (() => {
+              const rv = activeReviewerView;
+              const initials = rv.reviewerName
+                .split(/[\s@.]+/).slice(0, 2).map((w: string) => w[0]?.toUpperCase()).join("");
+              return (
+                <div style={{
+                  margin: "0 8px 0", borderRadius: 8,
+                  background: "linear-gradient(135deg, #78350f18, #92400e12)",
+                  border: "1px solid #f59e0b44",
+                  overflow: "hidden",
+                }}>
+                  {/* Header strip */}
+                  <div style={{
+                    background: "linear-gradient(90deg, #d97706, #f59e0b)",
+                    padding: "5px 10px",
+                    display: "flex", alignItems: "center", gap: 5,
+                    fontSize: 10, fontWeight: 700, color: "#78350f",
+                    letterSpacing: "0.07em", textTransform: "uppercase",
+                  }}>
+                    <Eye size={10} />
+                    <span className="sidebar-label">Reviewer View</span>
+                  </div>
+                  {/* Reviewer identity */}
+                  <div style={{ padding: "10px 10px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
+                      background: "linear-gradient(135deg, #d97706, #f59e0b)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      color: "#fff", fontWeight: 700, fontSize: 11,
+                    }}>
+                      {initials}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="sidebar-label" style={{
+                        fontSize: 12, fontWeight: 600, color: "#fbbf24",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        {rv.reviewerName}
+                      </div>
+                      <div className="sidebar-label" style={{ fontSize: 10, color: "#92400e", marginTop: 1 }}>
+                        read-only
+                      </div>
+                    </div>
+                  </div>
+                  {/* Action row */}
+                  <div style={{ padding: "0 8px 8px", display: "flex", gap: 4 }}>
+                    <Link
+                      to={`/projects/${projectId}/reviewer/${rv.reviewerId}?name=${encodeURIComponent(rv.reviewerName)}`}
+                      style={{
+                        flex: 1, textAlign: "center", fontSize: 11, fontWeight: 600,
+                        padding: "4px 0", borderRadius: 5, textDecoration: "none",
+                        background: "rgba(251,191,36,0.15)", color: "#fbbf24",
+                        border: "1px solid rgba(251,191,36,0.25)",
+                      }}
+                    >
+                      Activity
+                    </Link>
+                    <button
+                      onClick={exitReviewerView}
+                      title="Exit reviewer view"
+                      style={{
+                        flex: 1, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                        padding: "4px 0", borderRadius: 5,
+                        background: "rgba(239,68,68,0.12)", color: "#f87171",
+                        border: "1px solid rgba(239,68,68,0.2)",
+                      }}
+                    >
+                      ✕ Exit
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="sidebar-divider" />
 
             <nav className="sidebar-nav">
@@ -664,6 +747,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 if (path === "/screen" && projectId) {
                   const saved = localStorage.getItem(`ep_screening_last_${projectId}`);
                   if (saved) fullPath = `${basePath}?${saved}`;
+                }
+                // In reviewer canvas mode, Extractions link carries the reviewer filter
+                if (path === "/extractions" && activeReviewerView) {
+                  fullPath = `${basePath}?reviewerId=${activeReviewerView.reviewerId}&reviewerName=${encodeURIComponent(activeReviewerView.reviewerName)}`;
                 }
                 const isActive =
                   path === ""
@@ -734,27 +821,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ── Main content ────────────────────────────────────────────────── */}
       <main className="shell-main" style={{ marginLeft: mainMarginLeft }}>
-        {/* Reviewer view banner */}
-        {location.pathname.includes("/reviewer/") && (() => {
-          const params = new URLSearchParams(window.location.search);
-          const name = params.get("name") ?? "Reviewer";
-          return (
-            <div style={{
-              background: "#fef3c7", borderBottom: "1px solid #fbbf24",
-              padding: "8px 20px", display: "flex", alignItems: "center", gap: 10,
-              fontSize: 13, color: "#92400e",
-            }}>
-              <Eye size={14} />
-              <span>Viewing as <strong>{name}</strong> — read-only</span>
-              <Link
-                to={location.pathname.replace(/\/reviewer\/[^/]+.*/, "/team")}
-                style={{ marginLeft: "auto", color: "#92400e", fontWeight: 600, textDecoration: "underline", fontSize: 12 }}
-              >
-                Exit reviewer view
-              </Link>
-            </div>
-          );
-        })()}
         {children}
       </main>
 
