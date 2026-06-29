@@ -63,10 +63,22 @@ included_items AS (
       AND stage = 'FT'
       AND decision = 'include'
     UNION
-    -- Backward compat: papers already extracted before strict two-stage screening
-    SELECT DISTINCT record_id, cluster_id
-    FROM extraction_records
-    WHERE project_id = :project_id
+    -- Backward compat: papers already extracted before strict two-stage screening.
+    -- Exclude any paper that has been explicitly FT-excluded so that "Exclude
+    -- from library" works even when an extraction_record already exists.
+    SELECT DISTINCT er.record_id, er.cluster_id
+    FROM extraction_records er
+    WHERE er.project_id = :project_id
+      AND NOT EXISTS (
+          SELECT 1 FROM screening_decisions sd
+          WHERE sd.project_id = :project_id
+            AND sd.stage = 'FT'
+            AND sd.decision = 'exclude'
+            AND (
+                  (er.record_id  IS NOT NULL AND sd.record_id  = er.record_id)
+               OR (er.cluster_id IS NOT NULL AND sd.cluster_id = er.cluster_id)
+            )
+      )
 )
 SELECT
     er.id,
@@ -123,9 +135,19 @@ included_items AS (
       AND stage = 'FT'
       AND decision = 'include'
     UNION
-    SELECT DISTINCT record_id, cluster_id
-    FROM extraction_records
-    WHERE project_id = :project_id
+    SELECT DISTINCT er.record_id, er.cluster_id
+    FROM extraction_records er
+    WHERE er.project_id = :project_id
+      AND NOT EXISTS (
+          SELECT 1 FROM screening_decisions sd
+          WHERE sd.project_id = :project_id
+            AND sd.stage = 'FT'
+            AND sd.decision = 'exclude'
+            AND (
+                  (er.record_id  IS NOT NULL AND sd.record_id  = er.record_id)
+               OR (er.cluster_id IS NOT NULL AND sd.cluster_id = er.cluster_id)
+            )
+      )
 )
 SELECT
     er.id,

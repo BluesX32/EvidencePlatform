@@ -129,6 +129,7 @@ class UpdateExtractionTemplateRequest(BaseModel):
 
 class UpdateConceptTemplateRequest(BaseModel):
     fields: List[Dict[str, Any]] = []
+    ai_instructions: Optional[str] = None
 
 
 class UpdateCriteriaRequest(BaseModel):
@@ -327,7 +328,10 @@ async def update_concept_template(
     if role not in _WRITE_ROLES:
         raise HTTPException(status_code=403, detail="Admin access required to edit concept template")
 
-    project.concept_template = {"fields": body.fields}
+    template: Dict[str, Any] = {"fields": body.fields}
+    if body.ai_instructions is not None:
+        template["ai_instructions"] = body.ai_instructions
+    project.concept_template = template
     await db.commit()
     await db.refresh(project)
 

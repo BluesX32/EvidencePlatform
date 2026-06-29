@@ -184,6 +184,7 @@ export interface ConceptTemplateField {
 
 export interface ConceptTemplate {
   fields: ConceptTemplateField[];
+  ai_instructions?: string;
 }
 
 export interface ConceptExtractionJson {
@@ -324,8 +325,8 @@ export const projectsApi = {
     api.patch<ProjectDetail>(`/projects/${id}/criteria`, body),
   updateExtractionTemplate: (id: string, rows: ExtractionTemplateRow[]) =>
     api.patch<ProjectDetail>(`/projects/${id}/extraction-template`, { rows }),
-  updateConceptTemplate: (id: string, fields: ConceptTemplateField[]) =>
-    api.patch<ProjectDetail>(`/projects/${id}/concept-template`, { fields }),
+  updateConceptTemplate: (id: string, fields: ConceptTemplateField[], ai_instructions?: string) =>
+    api.patch<ProjectDetail>(`/projects/${id}/concept-template`, { fields, ai_instructions }),
   createSubProject: (
     parentId: string,
     body: {

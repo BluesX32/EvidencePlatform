@@ -1876,7 +1876,14 @@ async def auto_concept_extract(
     lines.append("\n## Concept Fields to Extract")
     for f in fields:
         lines.append(f"- **{f.get('label', f.get('id'))}** ({f.get('field_type', 'metadata')})")
+    # Allow user-configured instructions to override/extend the default prompt
+    ai_instructions = concept_template.get("ai_instructions") or ""
+    if ai_instructions:
+        lines.append(f"\n## Additional Instructions\n{ai_instructions}")
     lines.append("\nUse the submit_concepts tool. For each field, list ALL values you can identify from the paper.")
+
+    base_system = "You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated."
+    system_prompt = f"{base_system}\n\n{ai_instructions}".strip() if ai_instructions else base_system
 
     anthropic_key = _resolve_anthropic_key(user)
     openrouter_key = _resolve_openrouter_key(user)
@@ -1891,14 +1898,14 @@ async def auto_concept_extract(
             from openai import AsyncOpenAI  # type: ignore
             oai_tools = [{"type": "function", "function": {"name": "submit_concepts", "description": "Submit extracted concept values", "parameters": {"type": "object", "properties": properties, "required": list(properties.keys())}}}]
             oa_client = AsyncOpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1", default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"})
-            or_resp = await oa_client.chat.completions.create(model=body.model, max_tokens=2000, messages=[{"role": "system", "content": "You are an expert qualitative researcher. Extract only what is explicitly stated."}, {"role": "user", "content": "\n".join(lines)}], tools=oai_tools, tool_choice={"type": "function", "function": {"name": "submit_concepts"}})
+            or_resp = await oa_client.chat.completions.create(model=body.model, max_tokens=2000, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n".join(lines)}], tools=oai_tools, tool_choice={"type": "function", "function": {"name": "submit_concepts"}})
             import json as _json
             tc = or_resp.choices[0].message.tool_calls
             if tc:
                 result = _json.loads(tc[0].function.arguments)
         else:
             ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
-            resp = await ac.messages.create(model=body.model, max_tokens=2000, system="You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated.", messages=[{"role": "user", "content": "\n".join(lines)}], tools=tool_schema, tool_choice={"type": "tool", "name": "submit_concepts"})
+            resp = await ac.messages.create(model=body.model, max_tokens=2000, system=system_prompt, messages=[{"role": "user", "content": "\n".join(lines)}], tools=tool_schema, tool_choice={"type": "tool", "name": "submit_concepts"})
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "submit_concepts":
                     result = block.input or {}

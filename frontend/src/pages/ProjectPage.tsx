@@ -503,6 +503,7 @@ export default function ProjectPage() {
 
   // Concept template state
   const [conceptFields, setConceptFields] = useState<ConceptTemplateField[]>([]);
+  const [conceptAiInstructions, setConceptAiInstructions] = useState<string>("");
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -580,6 +581,9 @@ export default function ProjectPage() {
   useEffect(() => {
     if (project?.concept_template?.fields) {
       setConceptFields(project.concept_template.fields);
+    }
+    if (project?.concept_template?.ai_instructions !== undefined) {
+      setConceptAiInstructions(project.concept_template.ai_instructions ?? "");
     }
   }, [project?.concept_template]);
 
@@ -671,8 +675,8 @@ export default function ProjectPage() {
   });
 
   const conceptTemplateMutation = useMutation({
-    mutationFn: (fields: ConceptTemplateField[]) =>
-      projectsApi.updateConceptTemplate(id!, fields),
+    mutationFn: ({ fields, ai_instructions }: { fields: ConceptTemplateField[]; ai_instructions: string }) =>
+      projectsApi.updateConceptTemplate(id!, fields, ai_instructions || undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       setToast({ message: "Concept template saved.", type: "success" });
@@ -1774,11 +1778,26 @@ export default function ProjectPage() {
                   type="button"
                   className="btn-primary"
                   disabled={conceptTemplateMutation.isPending}
-                  onClick={() => conceptTemplateMutation.mutate(conceptFields)}
+                  onClick={() => conceptTemplateMutation.mutate({ fields: conceptFields, ai_instructions: conceptAiInstructions })}
                 >
                   {conceptTemplateMutation.isPending ? "Saving…" : "Save template"}
                 </button>
               </div>
+            </div>
+
+            {/* AI instructions */}
+            <div style={{ marginTop: "1rem", borderTop: "1px solid var(--border)", paddingTop: "0.85rem" }}>
+              <label style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: "0.3rem" }}>
+                AI extraction instructions <span style={{ fontWeight: 400 }}>(optional — appended to the system prompt sent to the AI)</span>
+              </label>
+              <textarea
+                className="form-input"
+                rows={3}
+                placeholder={"e.g. Focus on explicitly stated findings only. Use verbatim language from the paper. If a field is not mentioned, leave it empty."}
+                value={conceptAiInstructions}
+                onChange={(e) => setConceptAiInstructions(e.target.value)}
+                style={{ width: "100%", fontFamily: "inherit", fontSize: "0.84rem", resize: "vertical" }}
+              />
             </div>
           </div>
         </CollapsibleSection>
