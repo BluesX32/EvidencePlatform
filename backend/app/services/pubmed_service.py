@@ -40,7 +40,7 @@ def _ncbi_params(**kw: str) -> dict:
 
 async def generate_search_strategy(
     research_question: str,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = "anthropic/claude-haiku-4-5",
     api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
 ) -> dict:
@@ -65,9 +65,13 @@ Return only valid JSON, no markdown fences."""
     resolved_anthropic = api_key or os.environ.get("ANTHROPIC_API_KEY")
     resolved_openrouter = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
 
-    use_openrouter = resolved_openrouter and (not resolved_anthropic or not model.startswith("claude-"))
+    use_openrouter = resolved_openrouter and (not resolved_anthropic or not model.startswith("claude-") or "/" in model)
 
     if use_openrouter:
+        # Bare claude- model names (Anthropic native format) aren't valid on OpenRouter;
+        # convert to provider-prefixed format if no slash present
+        if model.startswith("claude-") and "/" not in model:
+            model = f"anthropic/{model.rsplit('-2025', 1)[0].rsplit('-2024', 1)[0]}"
         from openai import AsyncOpenAI  # type: ignore
         client = AsyncOpenAI(
             api_key=resolved_openrouter,

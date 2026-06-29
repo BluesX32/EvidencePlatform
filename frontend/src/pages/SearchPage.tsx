@@ -114,6 +114,7 @@ export default function SearchPage() {
 
   const [step, setStep] = useState<Step>(1);
   const [question, setQuestion] = useState("");
+  const [model, setModel] = useState("anthropic/claude-haiku-4-5");
   const [strategy, setStrategy] = useState<SearchStrategyResponse | null>(null);
   const [query, setQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
@@ -126,7 +127,7 @@ export default function SearchPage() {
 
   // Step 1: generate strategy
   const strategyMut = useMutation({
-    mutationFn: () => searchApi.generateStrategy(projectId!, { research_question: question }),
+    mutationFn: () => searchApi.generateStrategy(projectId!, { research_question: question, model }),
     onSuccess: (res) => {
       setStrategyError(null);
       const s = res.data;
@@ -213,7 +214,31 @@ export default function SearchPage() {
                   onChange={e => setQuestion(e.target.value)}
                   style={{ width: "100%", resize: "vertical" }}
                 />
-                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <select
+                    value={model}
+                    onChange={e => setModel(e.target.value)}
+                    className="form-input"
+                    style={{ fontSize: "0.82rem", padding: "0.3rem 0.6rem", width: "auto" }}
+                  >
+                    <optgroup label="Anthropic via OpenRouter">
+                      <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 (fast)</option>
+                      <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                      <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                    </optgroup>
+                    <optgroup label="Anthropic Direct">
+                      <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (direct)</option>
+                      <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (direct)</option>
+                    </optgroup>
+                    <optgroup label="OpenAI via OpenRouter">
+                      <option value="openai/gpt-4o-mini">GPT-4o mini</option>
+                      <option value="openai/gpt-4o">GPT-4o</option>
+                    </optgroup>
+                    <optgroup label="Free via OpenRouter">
+                      <option value="google/gemini-2.0-flash-exp:free">Gemini 2.0 Flash (free)</option>
+                      <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (free)</option>
+                    </optgroup>
+                  </select>
                   <button
                     className="btn-primary"
                     onClick={() => strategyMut.mutate()}
