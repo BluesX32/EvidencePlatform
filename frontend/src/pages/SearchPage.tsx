@@ -136,8 +136,11 @@ export default function SearchPage() {
       setStep(2);
     },
     onError: (err: unknown) => {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setStrategyError(detail || "Generation failed — check server logs");
+      const raw = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const detail = Array.isArray(raw)
+        ? (raw[0] as { msg?: string })?.msg ?? "Validation error"
+        : typeof raw === "string" ? raw : "Generation failed — check server logs";
+      setStrategyError(detail);
     },
   });
 
