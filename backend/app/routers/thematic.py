@@ -18,8 +18,11 @@ GET  /projects/{id}/thematic/history                   → ThematicHistoryEntry[
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import uuid
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -640,3 +643,120 @@ async def get_history(
         )
         for r in rows
     ]
+
+
+# ── AI auto-assign codes ──────────────────────────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+class AiAssignRequest(BaseModel):
+    model: str = "anthropic/claude-haiku-4-5"
+    max_papers: int = 60
+
+
+@router.post("/projects/{project_id}/thematic/codes/{code_id}/ai-assign")
+async def ai_assign_code(
+    project_id: str,
+    code_id: str,
+    body: AiAssignRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """AI reads all extractions and assigns this code to papers where it applies."""
+    _, role = await _require_project(project_id, db, user)
+    pid = uuid.UUID(project_id)
+
+    code_node = await db.get(OntologyNode, uuid.UUID(code_id))
+    if not code_node or str(code_node.project_id) != project_id or code_node.namespace != "code":
+        raise HTTPException(404, "Code not found")
+
+    er_rows = (await db.execute(
+        select(ExtractionRecord)
+        .where(ExtractionRecord.project_id == pid)
+        .limit(body.max_papers)
+    )).scalars().all()
+
+    if not er_rows:
+        raise HTTPException(400, "No extraction records found — extract papers first")
+
+    existing_assigns = (await db.execute(
+        select(CodeExtraction.extraction_id).where(
+            CodeExtraction.code_id == uuid.UUID(code_id)
+        )
+    )).scalars().all()
+    already_assigned = {str(eid) for eid in existing_assigns}
+
+    api_keys = user.api_keys or {}
+    anthropic_key = api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
+    openrouter_key = api_keys.get("openrouter") or os.environ.get("OPENROUTER_API_KEY")
+    if not anthropic_key and not openrouter_key:
+        raise HTTPException(400, "No API key configured — add one in Settings")
+
+    use_openrouter = openrouter_key and (not anthropic_key or not body.model.startswith("claude-"))
+    code_desc = code_node.name + (f": {code_node.description}" if code_node.description else "")
+
+    new_assignments = 0
+    for er in er_rows:
+        if str(er.id) in already_assigned:
+            continue
+
+        ej = er.extracted_json or {}
+        table = ej.get("table") or {}
+        summary = "; ".join(f"{k}: {v}" for k, v in list(table.items())[:8] if v) or ej.get("free_note", "")
+        if not summary:
+            continue
+
+        prompt = (
+            f"Code: \"{code_desc}\"\n\nPaper extraction: {summary[:1000]}\n\n"
+            "Does this code apply to this paper? Return JSON: "
+            '{\"applies\": true/false, \"snippet\": \"short supporting phrase or empty\"}. '
+            "Return only valid JSON."
+        )
+        system = "You are a thematic analysis expert. Assess whether a qualitative code applies to a paper."
+
+        try:
+            if use_openrouter:
+                from openai import AsyncOpenAI  # type: ignore
+                oa = AsyncOpenAI(
+                    api_key=openrouter_key,
+                    base_url="https://openrouter.ai/api/v1",
+                    default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
+                )
+                oar = await oa.chat.completions.create(
+                    model=body.model, max_tokens=200,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                )
+                raw = oar.choices[0].message.content or ""
+            else:
+                import anthropic as _ant
+                ac = _ant.AsyncAnthropic(api_key=anthropic_key)
+                antr = await ac.messages.create(
+                    model=body.model, max_tokens=200, system=system,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = antr.content[0].text.strip()
+
+            t = raw.strip()
+            if t.startswith("```"):
+                parts = t.split("```")
+                t = parts[1][4:] if len(parts) > 1 and parts[1].startswith("json") else (parts[1] if len(parts) > 1 else t)
+            parsed = json.loads(t.strip())
+            if parsed.get("applies"):
+                db.add(CodeExtraction(
+                    project_id=pid,
+                    code_id=uuid.UUID(code_id),
+                    extraction_id=er.id,
+                    snippet_text=parsed.get("snippet") or None,
+                    note="[AI assigned]",
+                    assigned_by=user.id,
+                ))
+                new_assignments += 1
+        except Exception as e:
+            logger.warning("ai-assign error for extraction %s: %s", er.id, e)
+
+    await db.commit()
+    return {
+        "assigned": new_assignments,
+        "message": f"AI assigned this code to {new_assignments} paper{'s' if new_assignments != 1 else ''}.",
+    }

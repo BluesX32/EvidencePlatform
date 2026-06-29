@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi, teamApi } from "../api/client";
+import { extractionLibraryApi, projectsApi, screeningApi, conceptExtractionApi, teamApi, aiPilotApi } from "../api/client";
 import type {
   ExtractionLibraryItem,
   ExtractionJson,
@@ -997,6 +997,7 @@ export default function ExtractionLibrary() {
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showChart, setShowChart] = useState(true);
+  const [bulkExtractModel, setBulkExtractModel] = useState("anthropic/claude-haiku-4-5");
   const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
@@ -1025,6 +1026,19 @@ export default function ExtractionLibrary() {
     queryFn: () =>
       extractionLibraryApi.list(projectId!, selectedReviewerId ?? undefined).then((r) => r.data),
     enabled: !!projectId,
+  });
+
+  // Bulk AI extraction
+  const bulkExtractStatus = useQuery({
+    queryKey: ["bulk-extract-status", projectId],
+    queryFn: () => aiPilotApi.getBulkExtractionStatus(projectId!).then(r => r.data),
+    enabled: !!projectId,
+    refetchInterval: (q) => q.state.data?.status === "running" ? 2000 : false,
+  });
+
+  const bulkExtractMut = useMutation({
+    mutationFn: () => aiPilotApi.startBulkExtraction(projectId!, { model: bulkExtractModel }),
+    onSuccess: () => bulkExtractStatus.refetch(),
   });
 
   // Sync server data into orderedItems, preserving any custom drag order.
@@ -1145,6 +1159,36 @@ export default function ExtractionLibrary() {
             >
               {showChart ? "Hide Chart" : "Show Chart"}
             </button>
+            {/* Bulk AI extraction */}
+            {isOwnerOrAdmin && (() => {
+              const bj = bulkExtractStatus.data;
+              const running = bj?.status === "running";
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                  {running && bj?.total ? (
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      {bj.done}/{bj.total}
+                    </span>
+                  ) : bj?.status === "done" ? (
+                    <span style={{ fontSize: "0.75rem", color: "#16a34a" }}>✓ Done</span>
+                  ) : null}
+                  <button
+                    disabled={running || bulkExtractMut.isPending}
+                    onClick={() => bulkExtractMut.mutate()}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                      padding: "0.28rem 0.65rem", borderRadius: "0.375rem", border: "none",
+                      background: running ? "#a5b4fc" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                      color: "#fff", fontSize: "0.78rem", fontWeight: 600,
+                      cursor: running ? "default" : "pointer", whiteSpace: "nowrap",
+                    }}
+                    title="Extract all included papers with AI"
+                  >
+                    ✦ {running ? "Extracting…" : "Extract All with AI"}
+                  </button>
+                </div>
+              );
+            })()}
             <button
               className="btn-secondary"
               disabled={visible.length === 0}

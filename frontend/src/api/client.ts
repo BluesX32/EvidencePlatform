@@ -2320,3 +2320,71 @@ export const searchApi = {
       params,
     ),
 };
+
+// ── AI Pilot API ──────────────────────────────────────────────────────────────
+
+export interface AiPilotStatus {
+  setup: { has_criteria: boolean; has_extraction_template: boolean; has_concept_template: boolean };
+  import: { source_count: number; record_count: number };
+  dedup: { cluster_count: number };
+  screening: {
+    ft_included_count: number;
+    llm_run: { id: string; status: string; model: string; total: number; done: number; pct: number } | null;
+  };
+  extraction: { extracted_count: number; ft_included_count: number; batch_job: AiBatchJob };
+  concepts: { concept_count: number; batch_job: AiBatchJob };
+  thematic: { theme_count: number; code_count: number };
+  conflicts: { unresolved_count: number };
+}
+
+export interface AiBatchJob {
+  status: "idle" | "running" | "done" | "failed";
+  done?: number;
+  total?: number;
+  errors?: number;
+  error?: string;
+}
+
+export interface AiDraftSetup {
+  criteria: { inclusion: { text: string; active: boolean }[]; exclusion: { text: string; active: boolean }[] };
+  extraction_template: { rows: Record<string, unknown>[] };
+  concept_template: { fields: Record<string, unknown>[] };
+}
+
+export const aiPilotApi = {
+  getStatus: (projectId: string) =>
+    api.get<AiPilotStatus>(`/projects/${projectId}/ai-pilot-status`),
+
+  draftSetup: (projectId: string, params: { research_question: string; model?: string }) =>
+    api.post<AiDraftSetup>(`/projects/${projectId}/ai-draft-setup`, params),
+
+  startBulkExtraction: (projectId: string, params: { model?: string }) =>
+    api.post<AiBatchJob>(`/projects/${projectId}/auto-extract-all`, params),
+
+  getBulkExtractionStatus: (projectId: string) =>
+    api.get<AiBatchJob>(`/projects/${projectId}/auto-extract-all/status`),
+
+  startBulkConcepts: (projectId: string, params: { model?: string }) =>
+    api.post<AiBatchJob>(`/projects/${projectId}/auto-concepts-all`, params),
+
+  getBulkConceptsStatus: (projectId: string) =>
+    api.get<AiBatchJob>(`/projects/${projectId}/auto-concepts-all/status`),
+
+  suggestThemes: (projectId: string, params: { model?: string; focus_question?: string; max_papers?: number }) =>
+    api.post<{ themes: { name: string; description: string; rationale: string }[] }>(
+      `/projects/${projectId}/ai-suggest-themes`,
+      params,
+    ),
+
+  resolveAll: (projectId: string, params: { model?: string; stage?: string }) =>
+    api.post<{ resolved: number; failed: number; message: string }>(
+      `/projects/${projectId}/ai-resolve-all`,
+      params,
+    ),
+
+  aiAssignCode: (projectId: string, codeId: string, params: { model?: string; max_papers?: number }) =>
+    api.post<{ assigned: number; message: string }>(
+      `/projects/${projectId}/thematic/codes/${codeId}/ai-assign`,
+      params,
+    ),
+};

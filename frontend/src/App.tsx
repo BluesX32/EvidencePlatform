@@ -60,6 +60,7 @@ import TeamPage from "./pages/TeamPage";
 import ConsensusPage from "./pages/ConsensusPage";
 import ReportPage from "./pages/ReportPage";
 import SearchPage from "./pages/SearchPage";
+import AIPilotPage from "./pages/AIPilotPage";
 import ReviewerViewPage from "./pages/ReviewerViewPage";
 import AppShell from "./components/AppShell";
 import { ReviewerViewProvider } from "./context/ReviewerViewContext";
@@ -124,6 +125,7 @@ export default function App() {
             <Route path="/projects/:id/prisma"           element={<WithShell><PrismaPage /></WithShell>} />
             <Route path="/projects/:id/report"           element={<WithShell><ReportPage /></WithShell>} />
             <Route path="/projects/:id/search"           element={<WithShell><SearchPage /></WithShell>} />
+            <Route path="/projects/:id/ai-pilot"         element={<WithShell><AIPilotPage /></WithShell>} />
             <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><LLMScreeningPage /></Suspense></WithShell>} />
             <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
             <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />

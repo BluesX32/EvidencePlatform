@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
 import { CheckCircle, XCircle, AlertTriangle, Scale, Sparkles } from "lucide-react";
-import { consensusApi, teamApi, aiApi } from "../api/client";
+import { consensusApi, teamApi, aiApi, aiPilotApi } from "../api/client";
 import type { ConflictItem, ConsensusDecision, ReviewerDecision } from "../api/client";
 
 // ── Decision chip ─────────────────────────────────────────────────────────────
@@ -226,6 +226,14 @@ export default function ConsensusPage() {
     },
   });
 
+  const resolveAllMut = useMutation({
+    mutationFn: () => aiPilotApi.resolveAll(projectId!, { model: "anthropic/claude-haiku-4-5" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["consensus-conflicts", projectId] });
+      qc.invalidateQueries({ queryKey: ["consensus-resolved", projectId] });
+    },
+  });
+
   const isAdmin = myRole?.role === "owner" || myRole?.role === "admin";
 
   return (
@@ -236,6 +244,22 @@ export default function ConsensusPage() {
           <h1>Consensus</h1>
           <span className="subtitle">Review and adjudicate conflicting screening decisions</span>
         </div>
+        {isAdmin && conflicts.length > 0 && (
+          <button
+            disabled={resolveAllMut.isPending}
+            onClick={() => resolveAllMut.mutate()}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "0.3rem 0.7rem", borderRadius: "0.375rem", border: "none",
+              background: resolveAllMut.isPending ? "#a5b4fc" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+              color: "#fff", fontSize: "0.78rem", fontWeight: 600,
+              cursor: resolveAllMut.isPending ? "default" : "pointer",
+            }}
+            title="Use AI to auto-adjudicate all unresolved conflicts"
+          >
+            ✦ {resolveAllMut.isPending ? "Resolving…" : `Resolve All with AI (${conflicts.length})`}
+          </button>
+        )}
       </header>
 
       {/* ── Tabs ─────────────────────────────────────────────────────────────── */}

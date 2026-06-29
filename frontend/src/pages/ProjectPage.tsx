@@ -12,6 +12,7 @@ import {
   labelsApi,
   ontologyApi,
   screeningApi,
+  aiPilotApi,
   DEFAULT_OVERLAP_CONFIG,
 } from "../api/client";
 import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource, ConceptTemplateField, ConceptFieldType, ConceptInputType } from "../api/client";
@@ -496,6 +497,11 @@ export default function ProjectPage() {
   // Criteria state
   const [localCriteria, setLocalCriteria] = useState<ProjectCriteria>({ inclusion: [], exclusion: [] });
 
+  // AI draft setup state
+  const [showAiDraftPanel, setShowAiDraftPanel] = useState(false);
+  const [aiDraftModel, setAiDraftModel] = useState("anthropic/claude-haiku-4-5");
+  const [aiDraftQuestion, setAiDraftQuestion] = useState("");
+
   // Extraction template state
   const [templateRows, setTemplateRows] = useState<ExtractionTemplateRow[]>([]);
   const [templatePasteText, setTemplatePasteText] = useState("");
@@ -660,6 +666,22 @@ export default function ProjectPage() {
     onError: () => {
       setToast({ message: "Failed to save criteria.", type: "error" });
     },
+  });
+
+  const draftSetupMut = useMutation({
+    mutationFn: () => aiPilotApi.draftSetup(id!, { model: aiDraftModel, research_question: aiDraftQuestion || project?.name || "" }),
+    onSuccess: (r) => {
+      const draft = r.data;
+      const toItems = (arr: { text: string; active: boolean }[]) =>
+        arr.map(item => ({ id: Math.random().toString(36).slice(2), text: item.text, active: item.active }));
+      setLocalCriteria({
+        inclusion: toItems(draft.criteria.inclusion),
+        exclusion: toItems(draft.criteria.exclusion),
+      });
+      setShowAiDraftPanel(false);
+      setToast({ message: "AI draft applied — review and save below.", type: "success" });
+    },
+    onError: () => setToast({ message: "AI draft failed — check API key.", type: "error" }),
   });
 
   const templateMutation = useMutation({
@@ -1092,10 +1114,50 @@ export default function ProjectPage() {
               : undefined
           }
         >
-          <p className="muted" style={{ marginBottom: "1rem" }}>
-            Define inclusion and exclusion criteria for this systematic review. These will
-            be visible as a reference panel during screening.
-          </p>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "1rem" }}>
+            <p className="muted" style={{ margin: 0 }}>
+              Define inclusion and exclusion criteria for this systematic review. These will
+              be visible as a reference panel during screening.
+            </p>
+            <button
+              onClick={() => setShowAiDraftPanel(v => !v)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: "1rem",
+                padding: "0.28rem 0.65rem", borderRadius: "0.375rem", border: "none",
+                background: showAiDraftPanel ? "#ede9fe" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                color: showAiDraftPanel ? "#6d28d9" : "#fff", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer",
+              }}
+            >✦ Draft with AI</button>
+          </div>
+          {showAiDraftPanel && (
+            <div style={{ padding: "0.85rem 1rem", background: "#faf5ff", borderRadius: "0.4rem", border: "1px solid #ede9fe", marginBottom: "1rem" }}>
+              <div style={{ fontWeight: 700, fontSize: "0.83rem", color: "#6d28d9", marginBottom: "0.5rem" }}>✦ Draft Criteria with AI</div>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div>
+                  <label style={{ fontSize: "0.72rem", fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 2 }}>Model</label>
+                  <select value={aiDraftModel} onChange={e => setAiDraftModel(e.target.value)}
+                    style={{ fontSize: "0.78rem", padding: "0.25rem 0.4rem", borderRadius: "0.25rem", border: "1px solid #d1d5db" }}>
+                    <option value="anthropic/claude-haiku-4-5">Claude Haiku (OpenRouter)</option>
+                    <option value="anthropic/claude-sonnet-4-5">Claude Sonnet (OpenRouter)</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <label style={{ fontSize: "0.72rem", fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 2 }}>Research question (optional)</label>
+                  <input className="form-input" value={aiDraftQuestion} onChange={e => setAiDraftQuestion(e.target.value)}
+                    placeholder="e.g. What interventions improve adherence to ART?" style={{ width: "100%", fontSize: "0.82rem" }} />
+                </div>
+                <button
+                  disabled={draftSetupMut.isPending}
+                  onClick={() => draftSetupMut.mutate()}
+                  style={{ padding: "0.35rem 0.85rem", borderRadius: "0.375rem", border: "none", background: "#7c3aed", color: "#fff", fontSize: "0.82rem", fontWeight: 600, cursor: "pointer" }}
+                >{draftSetupMut.isPending ? "Thinking…" : "Generate Draft"}</button>
+              </div>
+              {draftSetupMut.isError && <p style={{ color: "#c5221f", fontSize: "0.78rem", marginTop: "0.35rem" }}>Failed — check your API key in LLM Screening settings.</p>}
+              <p style={{ color: "#6b7280", fontSize: "0.75rem", marginTop: "0.35rem", margin: "0.35rem 0 0" }}>
+                AI will draft criteria based on the project name and research question. Review and save after applying.
+              </p>
+            </div>
+          )}
           <div
             style={{
               border: "1px solid #dadce0",

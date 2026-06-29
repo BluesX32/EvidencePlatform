@@ -14,6 +14,7 @@ import {
   conceptExtractionApi,
   conceptTaxonomyApi,
   projectsApi,
+  aiPilotApi,
   type ConceptTaxonomyEntry,
   type ConceptFieldType,
   type ConceptTaxonomyNode,
@@ -615,6 +616,19 @@ export default function ConceptTaxonomyPage() {
 
   const [activeTab, setActiveTab] = useState<ConceptFieldType>("entity");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkConceptModel, setBulkConceptModel] = useState("anthropic/claude-haiku-4-5");
+
+  const bulkConceptStatus = useQuery({
+    queryKey: ["bulk-concepts-status", projectId],
+    queryFn: () => aiPilotApi.getBulkConceptsStatus(projectId!).then(r => r.data),
+    enabled: !!projectId,
+    refetchInterval: (q) => q.state.data?.status === "running" ? 2000 : false,
+  });
+
+  const bulkConceptMut = useMutation({
+    mutationFn: () => aiPilotApi.startBulkConcepts(projectId!, { model: bulkConceptModel }),
+    onSuccess: () => { bulkConceptStatus.refetch(); qc.invalidateQueries({ queryKey: ["concept-taxonomy-aggregate", projectId] }); },
+  });
   const [search, setSearch] = useState("");
   const [fieldFilter, setFieldFilter] = useState<string>("__all__");
   const [viewMode, setViewMode] = useState<"flat" | "tree">("flat");
@@ -753,7 +767,30 @@ export default function ConceptTaxonomyPage() {
             Drag concepts onto each other to set parent-child relationships. Select multiple and click Merge to unify them.
           </span>
         </div>
-        <Link to={`/projects/${projectId}/ontology`} className="btn-secondary btn-sm">Open Ontology</Link>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          {/* Bulk AI concept extraction */}
+          {project?.my_role !== "reviewer" && (() => {
+            const bj = bulkConceptStatus.data;
+            const running = bj?.status === "running";
+            return (
+              <button
+                disabled={running || bulkConceptMut.isPending}
+                onClick={() => bulkConceptMut.mutate()}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "0.3rem 0.7rem", borderRadius: "0.375rem", border: "none",
+                  background: running ? "#a5b4fc" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                  color: "#fff", fontSize: "0.78rem", fontWeight: 600,
+                  cursor: running ? "default" : "pointer", whiteSpace: "nowrap",
+                }}
+                title="Suggest concept extractions for all included papers using AI"
+              >
+                ✦ {running ? `Extracting… ${bj?.done ?? 0}/${bj?.total ?? "?"}` : "Suggest All with AI"}
+              </button>
+            );
+          })()}
+          <Link to={`/projects/${projectId}/ontology`} className="btn-secondary btn-sm">Open Ontology</Link>
+        </div>
       </header>
 
       {!isLoading && !hasTemplate && (
