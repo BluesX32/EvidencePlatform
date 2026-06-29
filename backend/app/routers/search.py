@@ -80,9 +80,11 @@ class ImportResponse(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-def _resolve_anthropic_key(user: User) -> Optional[str]:
+def _resolve_keys(user: User) -> tuple[Optional[str], Optional[str]]:
     profile_keys = user.api_keys or {}
-    return profile_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
+    anthropic_key = profile_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
+    openrouter_key = profile_keys.get("openrouter") or os.environ.get("OPENROUTER_API_KEY")
+    return anthropic_key, openrouter_key
 
 
 @router.post("/{project_id}/search/strategy", response_model=StrategyResponse)
@@ -93,12 +95,13 @@ async def generate_strategy(
     user: User = Depends(get_current_user),
 ):
     await require_project_role(db, project_id, user.id, allowed=ADMIN_ROLE)
-    api_key = _resolve_anthropic_key(user)
-    if not api_key:
-        raise HTTPException(status_code=400, detail="No Anthropic API key — add one in Settings")
+    anthropic_key, openrouter_key = _resolve_keys(user)
+    if not anthropic_key and not openrouter_key:
+        raise HTTPException(status_code=400, detail="No API key configured — add an Anthropic or OpenRouter key in Settings")
     try:
         result = await pubmed_service.generate_search_strategy(
-            body.research_question, model=body.model, api_key=api_key
+            body.research_question, model=body.model,
+            api_key=anthropic_key, openrouter_api_key=openrouter_key,
         )
     except Exception as exc:
         logger.exception("Strategy generation failed")

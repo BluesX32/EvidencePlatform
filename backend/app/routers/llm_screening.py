@@ -1670,12 +1670,56 @@ class AutoExtractRequest(BaseModel):
 
 
 def _resolve_anthropic_key(user: User) -> Optional[str]:
-    """Check user profile first, then fall back to environment variable."""
+    """Return Anthropic key from profile/env."""
     profile_keys = user.api_keys or {}
-    return (
-        profile_keys.get("anthropic")
-        or os.environ.get("ANTHROPIC_API_KEY")
-    )
+    return profile_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
+
+
+def _resolve_openrouter_key(user: User) -> Optional[str]:
+    """Return OpenRouter key from profile/env."""
+    profile_keys = user.api_keys or {}
+    return profile_keys.get("openrouter") or os.environ.get("OPENROUTER_API_KEY")
+
+
+async def _simple_llm_call(
+    user: User,
+    model: str,
+    system: str,
+    prompt: str,
+    max_tokens: int = 1024,
+) -> str:
+    """Call LLM using whichever key the user has configured. Returns text response."""
+    import anthropic as _anthropic
+
+    anthropic_key = _resolve_anthropic_key(user)
+    openrouter_key = _resolve_openrouter_key(user)
+
+    if not anthropic_key and not openrouter_key:
+        raise HTTPException(400, "No API key configured — add an Anthropic or OpenRouter key in Settings")
+
+    # Prefer Anthropic direct for Claude models; use OpenRouter as fallback
+    use_openrouter = openrouter_key and (not anthropic_key or not model.startswith("claude-"))
+
+    if use_openrouter:
+        from openai import AsyncOpenAI  # type: ignore
+        client = AsyncOpenAI(
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
+        )
+        resp = await client.chat.completions.create(
+            model=model, max_tokens=max_tokens,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content or ""
+    else:
+        ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
+        resp = await ac.messages.create(
+            model=model, max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text
 
 
 @router.post("/projects/{project_id}/llm-screening/auto-extract")
@@ -1738,14 +1782,14 @@ async def auto_extract_paper(
             pass  # fall back to abstract-only extraction
 
     llm_config = project.llm_config or {}
-    api_key = _resolve_anthropic_key(user)
     result = await svc._extract_one_record(
         record=record,
         full_text=full_text,
         extraction_template=extraction_template,
         llm_config=llm_config,
         model=body.model,
-        anthropic_api_key=api_key,
+        anthropic_api_key=_resolve_anthropic_key(user),
+        openrouter_api_key=_resolve_openrouter_key(user),
     )
     if result is None:
         raise HTTPException(500, "AI extraction failed — check API key and template")
@@ -1834,27 +1878,34 @@ async def auto_concept_extract(
         lines.append(f"- **{f.get('label', f.get('id'))}** ({f.get('field_type', 'metadata')})")
     lines.append("\nUse the submit_concepts tool. For each field, list ALL values you can identify from the paper.")
 
-    api_key = _resolve_anthropic_key(user)
-    if not api_key:
-        raise HTTPException(500, "No Anthropic API key — add one in Settings")
+    anthropic_key = _resolve_anthropic_key(user)
+    openrouter_key = _resolve_openrouter_key(user)
+    if not anthropic_key and not openrouter_key:
+        raise HTTPException(400, "No API key configured — add an Anthropic or OpenRouter key in Settings")
 
-    client = _anthropic.AsyncAnthropic(api_key=api_key)
+    use_openrouter = openrouter_key and (not anthropic_key or not body.model.startswith("claude-"))
+
     try:
-        resp = await client.messages.create(
-            model=body.model,
-            max_tokens=2000,
-            system="You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated.",
-            messages=[{"role": "user", "content": "\n".join(lines)}],
-            tools=tool_schema,
-            tool_choice={"type": "tool", "name": "submit_concepts"},
-        )
         result: dict = {}
-        for block in resp.content:
-            if block.type == "tool_use" and block.name == "submit_concepts":
-                result = block.input or {}
-                break
-        # Wrap as concept extraction cells format
+        if use_openrouter:
+            from openai import AsyncOpenAI  # type: ignore
+            oai_tools = [{"type": "function", "function": {"name": "submit_concepts", "description": "Submit extracted concept values", "parameters": {"type": "object", "properties": properties, "required": list(properties.keys())}}}]
+            oa_client = AsyncOpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1", default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"})
+            or_resp = await oa_client.chat.completions.create(model=body.model, max_tokens=2000, messages=[{"role": "system", "content": "You are an expert qualitative researcher. Extract only what is explicitly stated."}, {"role": "user", "content": "\n".join(lines)}], tools=oai_tools, tool_choice={"type": "function", "function": {"name": "submit_concepts"}})
+            import json as _json
+            tc = or_resp.choices[0].message.tool_calls
+            if tc:
+                result = _json.loads(tc[0].function.arguments)
+        else:
+            ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
+            resp = await ac.messages.create(model=body.model, max_tokens=2000, system="You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated.", messages=[{"role": "user", "content": "\n".join(lines)}], tools=tool_schema, tool_choice={"type": "tool", "name": "submit_concepts"})
+            for block in resp.content:
+                if block.type == "tool_use" and block.name == "submit_concepts":
+                    result = block.input or {}
+                    break
         return {"cells": result}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, f"AI concept extraction failed: {exc}")
 
@@ -1917,22 +1968,17 @@ Based on the criteria and the paper content, which decision is better supported?
 Respond with a JSON object with two keys: "decision" ("include" or "exclude") and "rationale" (1-2 sentences).
 Return ONLY the JSON, no other text."""
 
-    api_key = _resolve_anthropic_key(user)
-    if not api_key:
-        raise HTTPException(500, "No Anthropic API key — add one in Settings")
-
-    client = _anthropic.AsyncAnthropic(api_key=api_key)
     try:
-        resp = await client.messages.create(
-            model=body.model,
-            max_tokens=300,
+        text = await _simple_llm_call(
+            user, body.model,
             system="You are an expert systematic review methodologist. Respond only with valid JSON.",
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt, max_tokens=300,
         )
-        text = resp.content[0].text.strip()
         import json as _json
-        parsed = _json.loads(text)
+        parsed = _json.loads(text.strip())
         return {"decision": parsed.get("decision", "uncertain"), "rationale": parsed.get("rationale", "")}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, f"AI suggestion failed: {exc}")
 
@@ -2041,19 +2087,13 @@ Write a comprehensive evidence synthesis report in markdown with the following s
 
 Be specific, cite paper titles where relevant, and write in an academic tone."""
 
-    api_key = _resolve_anthropic_key(user)
-    if not api_key:
-        raise HTTPException(500, "No Anthropic API key — add one in Settings")
-
-    client = _anthropic.AsyncAnthropic(api_key=api_key)
     try:
-        resp = await client.messages.create(
-            model=body.model,
-            max_tokens=4000,
+        report_md = await _simple_llm_call(
+            user, body.model,
             system="You are an expert systematic review author. Produce clear, structured, academic synthesis reports in markdown.",
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt, max_tokens=4000,
         )
-        report_md = resp.content[0].text.strip()
+        report_md = report_md.strip()
 
         # Persist draft to project
         await db.execute(
@@ -2064,6 +2104,8 @@ Be specific, cite paper titles where relevant, and write in an academic tone."""
         await db.commit()
 
         return {"report": report_md, "paper_count": len(paper_blocks)}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, f"Synthesis failed: {exc}")
 

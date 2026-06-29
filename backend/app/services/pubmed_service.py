@@ -42,16 +42,14 @@ async def generate_search_strategy(
     research_question: str,
     model: str = "claude-haiku-4-5-20251001",
     api_key: Optional[str] = None,
+    openrouter_api_key: Optional[str] = None,
 ) -> dict:
     """
     Returns {"query": str, "explanation": str, "pico": dict}.
+    Supports both Anthropic direct and OpenRouter.
     """
-    import anthropic
+    import json
 
-    resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not resolved_key:
-        raise ValueError("No Anthropic API key — add one in Settings")
-    client = anthropic.AsyncAnthropic(api_key=resolved_key)
     prompt = f"""You are an expert medical librarian. A researcher wants to search PubMed for papers relevant to this research question:
 
 "{research_question}"
@@ -64,22 +62,47 @@ Generate a comprehensive PubMed search strategy. Return a JSON object with these
 
 Return only valid JSON, no markdown fences."""
 
-    message = await client.messages.create(
-        model=model,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    import json
-    text = message.content[0].text.strip()
-    # Strip markdown fences if model adds them anyway
+    resolved_anthropic = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    resolved_openrouter = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
+
+    use_openrouter = resolved_openrouter and (not resolved_anthropic or not model.startswith("claude-"))
+
+    if use_openrouter:
+        from openai import AsyncOpenAI  # type: ignore
+        client = AsyncOpenAI(
+            api_key=resolved_openrouter,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
+        )
+        resp = await client.chat.completions.create(
+            model=model,
+            max_tokens=1024,
+            messages=[
+                {"role": "system", "content": "You are an expert medical librarian. Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        text = resp.choices[0].message.content or ""
+    elif resolved_anthropic:
+        import anthropic
+        ac = anthropic.AsyncAnthropic(api_key=resolved_anthropic)
+        message = await ac.messages.create(
+            model=model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = message.content[0].text.strip()
+    else:
+        raise ValueError("No API key configured — add an Anthropic or OpenRouter key in Settings")
+
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
     try:
-        return json.loads(text)
+        return json.loads(text.strip())
     except json.JSONDecodeError:
-        return {"query": text, "explanation": "", "pico": {}, "suggested_filters": []}
+        return {"query": text.strip(), "explanation": "", "pico": {}, "suggested_filters": []}
 
 
 # ── 2. Execute search (count + preview) ───────────────────────────────────────
