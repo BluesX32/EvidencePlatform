@@ -2216,3 +2216,66 @@ export const citationsApi = {
     );
   },
 };
+
+// ── AI Automation (Sprints B, C, E, F) ───────────────────────────────────────
+
+export const aiApi = {
+  /** Sprint B: Auto-fill extraction fields for one paper */
+  autoExtract: (
+    projectId: string,
+    params: { record_id?: string | null; cluster_id?: string | null; model?: string },
+  ) =>
+    api.post<{ extracted_json: Record<string, unknown> }>(
+      `/projects/${projectId}/llm-screening/auto-extract`,
+      params,
+    ),
+
+  /** Sprint C: Auto-suggest concept extraction values for one paper */
+  autoConcepts: (
+    projectId: string,
+    params: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      extraction_text?: string;
+      model?: string;
+    },
+  ) =>
+    api.post<{ cells: Record<string, string[]> }>(
+      `/projects/${projectId}/llm-screening/auto-concepts`,
+      params,
+    ),
+
+  /** Sprint E: Ask AI for conflict resolution suggestion */
+  suggestResolution: (
+    projectId: string,
+    params: {
+      record_id?: string | null;
+      cluster_id?: string | null;
+      title?: string;
+      abstract?: string;
+      reviewer_a_decision: string;
+      reviewer_a_notes?: string;
+      reviewer_b_decision: string;
+      reviewer_b_notes?: string;
+      criteria?: Record<string, string[]>;
+    },
+  ) =>
+    api.post<{ decision: string; rationale: string }>(
+      `/projects/${projectId}/llm-screening/suggest-resolution`,
+      params,
+    ),
+
+  /** Sprint F: Generate evidence synthesis report */
+  synthesize: (
+    projectId: string,
+    params: { focus?: string; max_papers?: number; model?: string },
+  ) =>
+    api.post<{ report: string; paper_count: number }>(
+      `/projects/${projectId}/llm-screening/synthesize`,
+      params,
+    ),
+
+  /** Sprint F: Load saved synthesis draft */
+  getSynthesisDraft: (projectId: string) =>
+    api.get<{ report: string }>(`/projects/${projectId}/llm-screening/synthesis-draft`),
+};

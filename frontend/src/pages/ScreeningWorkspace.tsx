@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi } from "../api/client";
+import { screeningApi, projectsApi, annotationsApi, labelsApi, ontologyApi, aiApi } from "../api/client";
 import type { ExtractionJson, ScreeningNextItem, LlmScreeningNote, SaturationStatus, SaturationPaper, ScreeningSource, ExtractionTemplateRow, QueueListEntry, ProjectLabel, OntologyNode } from "../api/client";
 import LabelPicker from "../components/LabelPicker";
 import ConceptExtractionForm from "../components/ConceptExtractionForm";
@@ -1965,6 +1965,7 @@ function ScreeningPanel({
         </div>
         <ExtractionForm
           projectId={projectId} form={form} setForm={setForm} levels={levels}
+          itemRecordId={item.record_id} itemClusterId={item.cluster_id}
           onSave={() => {
             const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
             onDecision?.({ record_id: item.record_id, cluster_id: item.cluster_id, title: item.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
@@ -2245,9 +2246,37 @@ interface ExtractionFormProps {
   isPending: boolean;
   isError: boolean;
   toggleChip: (field: "levels" | "dimensions", value: string) => void;
+  itemRecordId?: string | null;
+  itemClusterId?: string | null;
 }
 
-function ExtractionForm({ projectId, source, form, setForm, onSave, onSkip, onGoBack, isPending, isError }: ExtractionFormProps) {
+function ExtractionForm({ projectId, source, form, setForm, onSave, onSkip, onGoBack, isPending, isError, itemRecordId, itemClusterId }: ExtractionFormProps) {
+  const [aiFilling, setAiFilling] = React.useState(false);
+  const [aiError, setAiError] = React.useState<string | null>(null);
+
+  async function fillWithAI() {
+    setAiFilling(true);
+    setAiError(null);
+    try {
+      const res = await aiApi.autoExtract(projectId, {
+        record_id: itemRecordId ?? null,
+        cluster_id: itemClusterId ?? null,
+      });
+      const aiTable = (res.data.extracted_json as { table?: Record<string, string | string[]> }).table ?? {};
+      const filtered = Object.fromEntries(
+        Object.entries(aiTable).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && v.length === 0))
+      ) as Record<string, string | string[]>;
+      setForm((f) => ({
+        ...f,
+        table: { ...f.table, ...filtered },
+      }));
+    } catch {
+      setAiError("AI fill failed — check that your project has an API key and extraction template.");
+    } finally {
+      setAiFilling(false);
+    }
+  }
+
   // Load the project's extraction template
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
@@ -2554,6 +2583,29 @@ function ExtractionForm({ projectId, source, form, setForm, onSave, onSkip, onGo
 
       {isError && <p style={{ color: "#c5221f", marginBottom: "0.5rem" }}>Failed to save extraction. Try again.</p>}
 
+      {/* AI auto-fill */}
+      <div style={{ marginBottom: "0.75rem" }}>
+        <button
+          onClick={fillWithAI}
+          disabled={aiFilling || !itemRecordId && !itemClusterId}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            background: aiFilling ? "#f3f4f6" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color: aiFilling ? "#9ca3af" : "#fff",
+            border: "none", transition: "opacity 0.15s",
+          }}
+        >
+          {aiFilling ? "⏳ Filling with AI…" : "✨ Fill with AI"}
+        </button>
+        {aiError && <span style={{ marginLeft: 8, fontSize: 11, color: "#dc2626" }}>{aiError}</span>}
+        {!aiFilling && !aiError && (
+          <span style={{ marginLeft: 8, fontSize: 11, color: "#9ca3af" }}>
+            Pre-fills fields from abstract + PDF. Review before saving.
+          </span>
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
         <button className="btn-primary" onClick={onSave} disabled={isPending}>
           {isPending ? "Saving…" : "Save"}
@@ -2831,6 +2883,7 @@ function MixedPanel({
             </div>
             <ExtractionForm
               projectId={projectId} source={source} form={browseForm} setForm={setBrowseForm} levels={levels}
+              itemRecordId={browseItem.record_id} itemClusterId={browseItem.cluster_id}
               onSave={async () => {
                 setBrowseSaving(true);
                 setBrowseSaveError(false);
@@ -3016,6 +3069,7 @@ function MixedPanel({
           </div>
           <ExtractionForm
             projectId={projectId} source={source} form={form} setForm={setForm} levels={levels}
+            itemRecordId={item?.record_id} itemClusterId={item?.cluster_id}
             onSave={() => {
               const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
               onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });
@@ -3229,6 +3283,7 @@ function ExtractionPanel({
         {browsePdfOpen && <PDFViewerPanel projectId={projectId} item={browseItem} onClose={() => setBrowsePdfOpen(false)} />}
         <ExtractionForm
           projectId={projectId} source={source} form={browseForm} setForm={setBrowseForm} levels={levels}
+          itemRecordId={browseItem.record_id} itemClusterId={browseItem.cluster_id}
           onSave={async () => {
             setBrowseSaving(true);
             setBrowseSaveError(false);
@@ -3300,6 +3355,7 @@ function ExtractionPanel({
       </div>
       <ExtractionForm
         projectId={projectId} source={source} form={form} setForm={setForm} levels={levels}
+        itemRecordId={item?.record_id} itemClusterId={item?.cluster_id}
         onSave={() => {
           const timeSpent = Math.round((Date.now() - itemStartedAt.current) / 1000);
           onDecision?.({ record_id: item!.record_id, cluster_id: item!.cluster_id, title: item!.title ?? "(unknown)", stage: "extract", decision: "save", decided_at: new Date().toISOString(), time_spent_seconds: timeSpent });

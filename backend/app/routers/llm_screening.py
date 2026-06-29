@@ -33,8 +33,10 @@ from sqlalchemy import Integer, case, func as sqlfunc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.models.fulltext_pdf import FulltextPdf
 from app.models.llm_screening import LlmScreeningResult, LlmScreeningRun
+from app.models.ontology_node import OntologyNode
 from app.models.overlap_cluster import OverlapCluster
 from app.models.overlap_cluster_member import OverlapClusterMember
 from app.models.project import Project
@@ -1657,3 +1659,418 @@ async def get_ft_queue(
             for result, record in ta_rows
         ],
     }
+
+
+# ── Sprint B: Per-paper AI auto-fill extraction ────────────────────────────────
+
+class AutoExtractRequest(BaseModel):
+    record_id: Optional[str] = None
+    cluster_id: Optional[str] = None
+    model: str = "claude-haiku-4-5-20251001"
+
+
+@router.post("/projects/{project_id}/llm-screening/auto-extract")
+async def auto_extract_paper(
+    project_id: str,
+    body: AutoExtractRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Auto-fill extraction fields for a single paper using AI.
+
+    Reads the paper's title/abstract (and uploaded PDF text if available),
+    runs Claude against the project extraction template, and returns a
+    pre-filled extracted_json. The caller decides whether to save it.
+    """
+    await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
+    project = await ProjectRepo.get_by_id(db, uuid.UUID(project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    extraction_template = project.extraction_template or {}
+    if not extraction_template.get("rows"):
+        raise HTTPException(400, "Project has no extraction template configured")
+
+    # Resolve record
+    record: Optional[Record] = None
+    if body.record_id:
+        record = (await db.execute(select(Record).where(Record.id == uuid.UUID(body.record_id)))).scalar_one_or_none()
+    elif body.cluster_id:
+        rep_row = (await db.execute(
+            select(Record)
+            .join(RecordSource, RecordSource.record_id == Record.id)
+            .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+            .where(OverlapClusterMember.cluster_id == uuid.UUID(body.cluster_id))
+            .order_by(OverlapClusterMember.id)
+            .limit(1)
+        )).scalar_one_or_none()
+        record = rep_row
+
+    if not record:
+        raise HTTPException(404, "Record not found")
+
+    # Try to read uploaded PDF text
+    full_text: Optional[str] = None
+    pdf_row = (await db.execute(
+        select(FulltextPdf).where(
+            FulltextPdf.project_id == uuid.UUID(project_id),
+            FulltextPdf.record_id == record.id if body.record_id else FulltextPdf.cluster_id == uuid.UUID(body.cluster_id or ""),
+        ).limit(1)
+    )).scalar_one_or_none()
+
+    if pdf_row and pdf_row.storage_path:
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_row.storage_path) as pdf:
+                full_text = "\n".join(
+                    p.extract_text() or "" for p in pdf.pages[:30]
+                )[:12000]
+        except Exception:
+            pass  # fall back to abstract-only extraction
+
+    llm_config = project.llm_config or {}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    result = await svc._extract_one_record(
+        record=record,
+        full_text=full_text,
+        extraction_template=extraction_template,
+        llm_config=llm_config,
+        model=body.model,
+        anthropic_api_key=api_key,
+    )
+    if result is None:
+        raise HTTPException(500, "AI extraction failed — check API key and template")
+    return {"extracted_json": result}
+
+
+# ── Sprint C: Auto concept extraction suggestions ─────────────────────────────
+
+class AutoConceptRequest(BaseModel):
+    record_id: Optional[str] = None
+    cluster_id: Optional[str] = None
+    extraction_text: Optional[str] = None  # already-extracted free text to enrich suggestions
+    model: str = "claude-haiku-4-5-20251001"
+
+
+@router.post("/projects/{project_id}/llm-screening/auto-concepts")
+async def auto_concept_extract(
+    project_id: str,
+    body: AutoConceptRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Suggest concept extractions (entities/relations/metadata) for one paper.
+
+    Uses the project's concept_template to build a tool schema, then calls
+    Claude against the paper abstract + any provided extraction_text.
+    Returns suggested values per field — caller decides whether to accept.
+    """
+    import anthropic as _anthropic
+
+    await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
+    project = await ProjectRepo.get_by_id(db, uuid.UUID(project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    concept_template = project.concept_template or {}
+    fields = concept_template.get("fields") or []
+    if not fields:
+        raise HTTPException(400, "Project has no concept template configured")
+
+    # Resolve record for title/abstract
+    record: Optional[Record] = None
+    if body.record_id:
+        record = (await db.execute(select(Record).where(Record.id == uuid.UUID(body.record_id)))).scalar_one_or_none()
+    elif body.cluster_id:
+        record = (await db.execute(
+            select(Record)
+            .join(RecordSource, RecordSource.record_id == Record.id)
+            .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+            .where(OverlapClusterMember.cluster_id == uuid.UUID(body.cluster_id))
+            .order_by(OverlapClusterMember.id).limit(1)
+        )).scalar_one_or_none()
+
+    # Build concept tool schema
+    properties: dict = {}
+    for f in fields:
+        fid = f.get("id", "")
+        if not fid:
+            continue
+        ft = f.get("field_type", "metadata")
+        label = f.get("label", fid)
+        input_type = f.get("input_type", "text")
+        opts = f.get("options") or []
+        desc = f"{ft}: {label}"
+        if opts and input_type in ("select", "multiselect"):
+            properties[fid] = {"type": "array", "items": {"type": "string", "enum": opts}, "description": desc}
+        else:
+            properties[fid] = {"type": "array", "items": {"type": "string"}, "description": f"{desc} — list all values found"}
+
+    tool_schema = [{
+        "name": "submit_concepts",
+        "description": "Submit extracted concept values for this paper",
+        "input_schema": {"type": "object", "properties": properties, "required": list(properties.keys())},
+    }]
+
+    # Build prompt
+    lines = ["## Paper\n"]
+    if record:
+        lines.append(f"**Title**: {record.title or '(no title)'}")
+        if record.abstract:
+            lines.append(f"\n**Abstract**: {record.abstract}")
+    if body.extraction_text:
+        lines.append(f"\n## Extracted Data\n{body.extraction_text[:4000]}")
+    lines.append("\n## Concept Fields to Extract")
+    for f in fields:
+        lines.append(f"- **{f.get('label', f.get('id'))}** ({f.get('field_type', 'metadata')})")
+    lines.append("\nUse the submit_concepts tool. For each field, list ALL values you can identify from the paper.")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+
+    client = _anthropic.AsyncAnthropic(api_key=api_key)
+    try:
+        resp = await client.messages.create(
+            model=body.model,
+            max_tokens=2000,
+            system="You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated.",
+            messages=[{"role": "user", "content": "\n".join(lines)}],
+            tools=tool_schema,
+            tool_choice={"type": "tool", "name": "submit_concepts"},
+        )
+        result: dict = {}
+        for block in resp.content:
+            if block.type == "tool_use" and block.name == "submit_concepts":
+                result = block.input or {}
+                break
+        # Wrap as concept extraction cells format
+        return {"cells": result}
+    except Exception as exc:
+        raise HTTPException(500, f"AI concept extraction failed: {exc}")
+
+
+# ── Sprint E: LLM conflict resolution suggestion ──────────────────────────────
+
+class ConflictSuggestRequest(BaseModel):
+    record_id: Optional[str] = None
+    cluster_id: Optional[str] = None
+    title: Optional[str] = None
+    abstract: Optional[str] = None
+    reviewer_a_decision: str
+    reviewer_a_notes: Optional[str] = None
+    reviewer_b_decision: str
+    reviewer_b_notes: Optional[str] = None
+    criteria: Optional[dict] = None
+    model: str = "claude-haiku-4-5-20251001"
+
+
+@router.post("/projects/{project_id}/llm-screening/suggest-resolution")
+async def suggest_conflict_resolution(
+    project_id: str,
+    body: ConflictSuggestRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Ask the LLM to suggest a resolution for a reviewer conflict.
+
+    Returns {decision, rationale} — not binding. Shown in ConsensusPage as
+    an AI suggestion that the adjudicator can accept or override.
+    """
+    import anthropic as _anthropic
+
+    await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
+    project = await ProjectRepo.get_by_id(db, uuid.UUID(project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    criteria = body.criteria or project.criteria or {}
+    inclusion_str = "; ".join(criteria.get("inclusion", [])) or "Not specified"
+    exclusion_str = "; ".join(criteria.get("exclusion", [])) or "Not specified"
+
+    prompt = f"""You are an expert systematic review methodologist adjudicating a disagreement between two reviewers.
+
+## Paper
+Title: {body.title or '(unknown)'}
+Abstract: {body.abstract or '(not available)'}
+
+## Inclusion Criteria
+{inclusion_str}
+
+## Exclusion Criteria
+{exclusion_str}
+
+## Reviewer Disagreement
+- Reviewer A: **{body.reviewer_a_decision.upper()}** {f'— "{body.reviewer_a_notes}"' if body.reviewer_a_notes else ''}
+- Reviewer B: **{body.reviewer_b_decision.upper()}** {f'— "{body.reviewer_b_notes}"' if body.reviewer_b_notes else ''}
+
+Based on the criteria and the paper content, which decision is better supported?
+Respond with a JSON object with two keys: "decision" ("include" or "exclude") and "rationale" (1-2 sentences).
+Return ONLY the JSON, no other text."""
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+
+    client = _anthropic.AsyncAnthropic(api_key=api_key)
+    try:
+        resp = await client.messages.create(
+            model=body.model,
+            max_tokens=300,
+            system="You are an expert systematic review methodologist. Respond only with valid JSON.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+        import json as _json
+        parsed = _json.loads(text)
+        return {"decision": parsed.get("decision", "uncertain"), "rationale": parsed.get("rationale", "")}
+    except Exception as exc:
+        raise HTTPException(500, f"AI suggestion failed: {exc}")
+
+
+# ── Sprint F: Evidence synthesis report ───────────────────────────────────────
+
+class SynthesisRequest(BaseModel):
+    focus: Optional[str] = None  # optional user-provided focus question
+    max_papers: int = 30
+    model: str = "claude-sonnet-4-6"
+
+
+@router.post("/projects/{project_id}/llm-screening/synthesize")
+async def synthesize_evidence(
+    project_id: str,
+    body: SynthesisRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate a structured evidence synthesis narrative from extracted data.
+
+    Reads all extraction_records for this project, aggregates thematic codes,
+    pulls concept taxonomy, then calls Claude to produce a structured report.
+    Returns markdown text that can be displayed in ReportPage.
+    """
+    import anthropic as _anthropic
+    from app.models.extraction_record import ExtractionRecord
+    from sqlalchemy import text as sa_text
+
+    await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
+    project = await ProjectRepo.get_by_id(db, uuid.UUID(project_id))
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    pid = uuid.UUID(project_id)
+
+    # 1. Gather all extraction records (up to max_papers, reviewer = current user OR all if owner)
+    from app.models.extraction_record import ExtractionRecord
+    extraction_rows = (await db.execute(
+        select(ExtractionRecord, Record)
+        .join(Record, Record.id == ExtractionRecord.record_id, isouter=True)
+        .where(ExtractionRecord.project_id == pid)
+        .order_by(ExtractionRecord.created_at.desc())
+        .limit(body.max_papers)
+    )).all()
+
+    if not extraction_rows:
+        raise HTTPException(400, "No extraction data found — extract some papers first")
+
+    # 2. Build paper summaries
+    template_rows = (project.extraction_template or {}).get("rows", [])
+    field_labels = {r.get("id", ""): f"{r.get('domain','')}: {r.get('item','')}" if r.get('domain') else r.get('item','') for r in template_rows}
+
+    paper_blocks = []
+    for er, rec in extraction_rows:
+        title = (rec.title if rec else None) or "(unknown title)"
+        year = (rec.year if rec else None) or ""
+        table = (er.extracted_json or {}).get("table", {})
+        fields_text = "\n".join(
+            f"  - {field_labels.get(k, k)}: {v}"
+            for k, v in table.items() if v
+        )
+        paper_blocks.append(f"### {title} ({year})\n{fields_text or '  (no fields extracted)'}")
+
+    # 3. Gather themes if available
+    theme_rows = (await db.execute(sa_text(
+        "SELECT t.name, t.description, COUNT(ta.id) as n "
+        "FROM thematic_themes t "
+        "LEFT JOIN thematic_assignments ta ON ta.theme_id = t.id "
+        "WHERE t.project_id = :pid GROUP BY t.id ORDER BY n DESC LIMIT 20"
+    ).bindparams(pid=pid))).fetchall()
+
+    themes_text = ""
+    if theme_rows:
+        themes_text = "\n## Identified Themes\n" + "\n".join(
+            f"- **{r.name}** ({r.n} codes): {r.description or ''}" for r in theme_rows
+        )
+
+    # 4. Project criteria for context
+    criteria = project.criteria or {}
+    focus_q = body.focus or project.name or "evidence synthesis"
+    inclusion_criteria = "; ".join(criteria.get("inclusion", [])) or "Not specified"
+
+    prompt = f"""You are an expert systematic review author. Write a structured evidence synthesis based on the following extracted data.
+
+## Review Focus
+{focus_q}
+
+## Inclusion Criteria
+{inclusion_criteria}
+{themes_text}
+
+## Extracted Papers ({len(paper_blocks)} total)
+
+{chr(10).join(paper_blocks[:body.max_papers])}
+
+---
+
+Write a comprehensive evidence synthesis report in markdown with the following sections:
+1. **Overview** — number of studies, date range, study designs
+2. **Key Findings** — main evidence themes (reference papers by title/year)
+3. **Convergences** — where multiple papers agree
+4. **Divergences & Gaps** — contradictions or areas with limited evidence  
+5. **Limitations** — methodological notes
+6. **Conclusion** — summary for policy/practice
+
+Be specific, cite paper titles where relevant, and write in an academic tone."""
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+
+    client = _anthropic.AsyncAnthropic(api_key=api_key)
+    try:
+        resp = await client.messages.create(
+            model=body.model,
+            max_tokens=4000,
+            system="You are an expert systematic review author. Produce clear, structured, academic synthesis reports in markdown.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        report_md = resp.content[0].text.strip()
+
+        # Persist draft to project
+        await db.execute(
+            sa_text("UPDATE projects SET synthesis_draft = :draft WHERE id = :pid").bindparams(
+                draft=report_md, pid=pid
+            )
+        )
+        await db.commit()
+
+        return {"report": report_md, "paper_count": len(paper_blocks)}
+    except Exception as exc:
+        raise HTTPException(500, f"Synthesis failed: {exc}")
+
+
+@router.get("/projects/{project_id}/llm-screening/synthesis-draft")
+async def get_synthesis_draft(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return the last saved synthesis draft for this project."""
+    from sqlalchemy import text as sa_text
+    await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
+    row = (await db.execute(
+        sa_text("SELECT synthesis_draft FROM projects WHERE id = :pid").bindparams(pid=uuid.UUID(project_id))
+    )).one_or_none()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    return {"report": row[0] or ""}

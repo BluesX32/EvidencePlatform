@@ -10,6 +10,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   conceptExtractionApi,
+  aiApi,
   type ConceptTemplate,
   type ConceptTemplateField,
   type ConceptExtractionJson,
@@ -291,6 +292,33 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
 
   const [form, setForm] = useState<ConceptExtractionJson>(EMPTY_CE);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [aiSuggesting, setAiSuggesting] = useState(false);
+  const [aiSuggestError, setAiSuggestError] = useState<string | null>(null);
+
+  async function suggestWithAI() {
+    setAiSuggesting(true);
+    setAiSuggestError(null);
+    try {
+      const res = await aiApi.autoConcepts(projectId, {
+        record_id: recordId ?? null,
+        cluster_id: clusterId ?? null,
+      });
+      const cells = res.data.cells ?? {};
+      // Merge suggestions into form — only fill empty fields
+      userEdited.current = true;
+      setForm((prev) => ({
+        ...prev,
+        cells: {
+          ...Object.fromEntries(Object.entries(cells).filter(([, v]) => Array.isArray(v) && v.length > 0)),
+          ...prev.cells,
+        },
+      }));
+    } catch {
+      setAiSuggestError("AI suggestion failed.");
+    } finally {
+      setAiSuggesting(false);
+    }
+  }
   const userEdited = useRef(false);
 
   // Build set of values seen in OTHER articles (for auto-detection)
@@ -417,6 +445,21 @@ export default function ConceptExtractionForm({ projectId, template, recordId, c
               <span style={{ color: "#16a34a", fontWeight: 700 }}>★NEW</span> / <span style={{ fontWeight: 700 }}>= SEEN</span> — click to toggle
             </span>
           )}
+          {!asReviewerId && (
+            <button
+              onClick={suggestWithAI}
+              disabled={aiSuggesting}
+              title="Let AI suggest concept values from the paper abstract"
+              style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 9px", borderRadius: 6, cursor: "pointer",
+                background: aiSuggesting ? "#f3f4f6" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                color: aiSuggesting ? "#9ca3af" : "#fff", border: "none",
+              }}
+            >
+              {aiSuggesting ? "⏳…" : "✨ Suggest"}
+            </button>
+          )}
+          {aiSuggestError && <span style={{ fontSize: 10, color: "#dc2626" }}>{aiSuggestError}</span>}
           <span style={{ fontSize: 11, color: saveMut.isPending ? "#6b7280" : saveMut.isError ? "#dc2626" : saveMut.isSuccess ? "#16a34a" : "#9ca3af" }}>
             {saveMut.isPending ? "Saving…" : saveMut.isError ? "Save failed" : saveMut.isSuccess ? "Saved ✓" : ""}
           </span>

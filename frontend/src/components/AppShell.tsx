@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash, Eye,
+  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash, Eye, FileText,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
@@ -37,6 +37,7 @@ const PROJECT_NAV = [
   { path: "/labels",            icon: Tag,             label: "Labels",          section: "labels"        },
   { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts",        section: "concepts"      },
   { path: "/thematic",          icon: Hash,            label: "Thematic",        section: "thematic"      },
+  { path: "/report",            icon: FileText,        label: "Synthesis",       section: "report"        },
   { path: "/ontology",          icon: Network,         label: "Ontology",        section: "ontology"      },
   { path: "/llm-screening",     icon: Bot,             label: "LLM Screening",   section: "llm_screening" },
   { path: "/team",              icon: Users,           label: "Team",            section: "team"          },

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
-import { CheckCircle, XCircle, AlertTriangle, Scale } from "lucide-react";
-import { consensusApi, teamApi } from "../api/client";
+import { CheckCircle, XCircle, AlertTriangle, Scale, Sparkles } from "lucide-react";
+import { consensusApi, teamApi, aiApi } from "../api/client";
 import type { ConflictItem, ConsensusDecision, ReviewerDecision } from "../api/client";
 
 // ── Decision chip ─────────────────────────────────────────────────────────────
@@ -20,13 +20,40 @@ function DecisionChip({ decision }: { decision: string }) {
 
 // ── Conflict card ─────────────────────────────────────────────────────────────
 
-function ConflictCard({ conflict, onAdjudicate, isAdmin }: {
+function ConflictCard({ conflict, onAdjudicate, isAdmin, projectId }: {
   conflict: ConflictItem;
   onAdjudicate: (c: ConflictItem, decision: string) => void;
   isAdmin: boolean;
+  projectId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [pendingDecision, setPendingDecision] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<{ decision: string; rationale: string } | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  async function askAI() {
+    setAiLoading(true);
+    setAiError(null);
+    setAiSuggestion(null);
+    try {
+      const d0 = conflict.decisions[0];
+      const d1 = conflict.decisions[1] ?? d0;
+      const res = await aiApi.suggestResolution(projectId, {
+        reviewer_a_decision: d0.decision,
+        reviewer_b_decision: d1.decision,
+        reviewer_a_notes: d0.notes ?? undefined,
+        reviewer_b_notes: d1.notes ?? undefined,
+        record_id: conflict.record_id ?? undefined,
+        cluster_id: conflict.cluster_id ?? undefined,
+      });
+      setAiSuggestion(res.data);
+    } catch {
+      setAiError("AI suggestion failed.");
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   const byStage: Record<string, ReviewerDecision[]> = {};
   for (const d of conflict.decisions) {
@@ -103,6 +130,34 @@ function ConflictCard({ conflict, onAdjudicate, isAdmin }: {
             <div className="card" style={{ padding: "0.75rem 1rem" }}>
               <div className="section-title" style={{ marginBottom: "0.6rem" }}>
                 <Scale size={13} /> Adjudicate
+              </div>
+              {/* AI suggestion row */}
+              <div style={{ marginBottom: "0.6rem", display: "flex", alignItems: "flex-start", gap: "0.6rem" }}>
+                <button
+                  onClick={askAI}
+                  disabled={aiLoading}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "0.28rem 0.7rem", borderRadius: "var(--radius)", fontSize: "0.78rem", fontWeight: 600,
+                    background: aiLoading ? "#f3f4f6" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                    color: aiLoading ? "#9ca3af" : "#fff", border: "none", cursor: "pointer",
+                  }}
+                >
+                  <Sparkles size={12} /> {aiLoading ? "Asking AI…" : "Ask AI"}
+                </button>
+                {aiError && <span style={{ fontSize: "0.78rem", color: "var(--danger)" }}>{aiError}</span>}
+                {aiSuggestion && (
+                  <div style={{
+                    flex: 1, background: aiSuggestion.decision === "include" ? "var(--success-light)" : "var(--danger-light)",
+                    border: `1px solid ${aiSuggestion.decision === "include" ? "var(--success-border)" : "var(--danger-border)"}`,
+                    borderRadius: "var(--radius)", padding: "0.4rem 0.7rem",
+                  }}>
+                    <span style={{ fontSize: "0.78rem", fontWeight: 700, color: aiSuggestion.decision === "include" ? "var(--success)" : "var(--danger)", textTransform: "uppercase" }}>
+                      AI suggests: {aiSuggestion.decision}
+                    </span>
+                    <p style={{ margin: "0.2rem 0 0", fontSize: "0.76rem", color: "var(--text-muted)" }}>{aiSuggestion.rationale}</p>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button
@@ -239,6 +294,7 @@ export default function ConsensusPage() {
                 key={`${c.item_id}-${c.stage}`}
                 conflict={c}
                 isAdmin={isAdmin}
+                projectId={projectId!}
                 onAdjudicate={(conflict, decision) => adjudicateMut.mutate({ conflict, decision })}
               />
             ))
