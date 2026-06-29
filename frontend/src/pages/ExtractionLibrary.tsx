@@ -1130,7 +1130,7 @@ export default function ExtractionLibrary() {
                 style={{ fontSize: "0.82rem", padding: "4px 8px", height: 32 }}
                 title="Filter by reviewer"
               >
-                <option value="">All reviewers</option>
+                <option value="">My extractions</option>
                 {members.map((m) => (
                   <option key={m.user_id} value={m.user_id}>
                     {m.name || m.email}

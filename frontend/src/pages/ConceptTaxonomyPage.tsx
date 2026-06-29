@@ -18,6 +18,7 @@ import {
   type ConceptFieldType,
   type ConceptTaxonomyNode,
 } from "../api/client";
+import { useReviewerView } from "../context/ReviewerViewContext";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -608,6 +609,9 @@ function PushPanel({ projectId, tab, selected, allEntries, onSuccess }: {
 export default function ConceptTaxonomyPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const { reviewerView } = useReviewerView();
+  const activeReviewerView = reviewerView && reviewerView.projectId === projectId ? reviewerView : null;
+  const asReviewerId = activeReviewerView?.reviewerId ?? null;
 
   const [activeTab, setActiveTab] = useState<ConceptFieldType>("entity");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -627,8 +631,8 @@ export default function ConceptTaxonomyPage() {
   });
 
   const { data: aggregate, isLoading: aggLoading, error: aggError } = useQuery({
-    queryKey: ["concept-taxonomy-aggregate", projectId],
-    queryFn: () => conceptExtractionApi.getAggregate(projectId!).then(r => r.data),
+    queryKey: ["concept-taxonomy-aggregate", projectId, asReviewerId],
+    queryFn: () => conceptExtractionApi.getAggregate(projectId!, asReviewerId).then(r => r.data),
     enabled: !!projectId,
     staleTime: 30_000,
   });

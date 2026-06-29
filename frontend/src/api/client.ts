@@ -376,8 +376,10 @@ export const conceptExtractionApi = {
     params: { record_id?: string | null; cluster_id?: string | null; as_reviewer_id?: string | null },
   ) => api.get<ConceptExtractionRecord[]>(`/projects/${projectId}/concept-extractions/item`, { params }),
 
-  getAggregate: (projectId: string) =>
-    api.get<ConceptTaxonomyAggregate>(`/projects/${projectId}/concept-extractions/aggregate`),
+  getAggregate: (projectId: string, asReviewerId?: string | null) =>
+    api.get<ConceptTaxonomyAggregate>(`/projects/${projectId}/concept-extractions/aggregate`, {
+      params: asReviewerId ? { as_reviewer_id: asReviewerId } : undefined,
+    }),
 
   pushToOntology: (
     projectId: string,

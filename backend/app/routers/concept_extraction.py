@@ -233,13 +233,15 @@ async def get_item_concept_extraction(
 @router.get("/aggregate", response_model=TaxonomyAggregate)
 async def get_taxonomy_aggregate(
     project_id: uuid.UUID,
+    as_reviewer_id: Optional[uuid.UUID] = Query(None, description="Admin only: aggregate for a specific reviewer"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Returns concept extraction values grouped by field_type (entity/relation/metadata).
     Reviewers see only their own concepts (zipper model: forms are per-reviewer, so the
-    aggregate is also per-reviewer).  Owners/admins see all reviewers combined.
+    aggregate is also per-reviewer).  Owners/admins see all reviewers combined unless
+    ?as_reviewer_id= is supplied, in which case only that reviewer's data is returned.
     """
     project = await ProjectRepo.get_by_id(db, project_id)
     if not project:
@@ -251,12 +253,13 @@ async def get_taxonomy_aggregate(
 
     role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
-    # Zipper model: concept forms are per-reviewer (derived from per-reviewer extraction).
-    # Reviewers therefore see only their own aggregate (their own taxonomy).
-    # Owners/admins see all reviewers combined for a full cross-reviewer view.
     stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
     if role not in ADMIN_ROLE:
+        # Reviewers always see only their own aggregate.
         stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
+    elif as_reviewer_id:
+        # Admins can scope to a specific reviewer (for canvas mode).
+        stmt = stmt.where(ConceptExtraction.reviewer_id == as_reviewer_id)
     result = await db.execute(stmt)
     extractions = result.scalars().all()
 

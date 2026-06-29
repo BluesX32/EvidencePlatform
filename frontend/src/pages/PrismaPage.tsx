@@ -1,36 +1,22 @@
-import { useRef } from "react";
+import { useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { projectsApi, screeningApi } from "../api/client";
 
-// ── Layout ──────────────────────────────────────────────────────────────────
-const PHASE_W  = 128;
-const PHASE_X  = 10;
-const MAIN_X   = PHASE_X + PHASE_W + 18;
-const MAIN_W   = 330;
-const SIDE_GAP = 38;
-const SIDE_X   = MAIN_X + MAIN_W + SIDE_GAP;
-const SIDE_W   = 296;
-const W        = SIDE_X + SIDE_W + 20;
-const ROW_GAP  = 42;
-const BOX_RX   = 10;
-const MAIN_MIN_H = 92;
-const SIDE_MIN_H = 92;
-const LINE_H     = 16;
-const REASON_TOP = 48; // y-offset inside side box where first reason row starts
-
-// Colors
+// ── Color palette ─────────────────────────────────────────────────────────────
 const C = {
-  id:     { fill: "#eff6ff", stroke: "#2563eb", head: "#1e40af", body: "#1d4ed8" },
-  dedup:  { fill: "#f5f3ff", stroke: "#7c3aed", head: "#4c1d95", body: "#6d28d9" },
-  screen: { fill: "#ecfdf5", stroke: "#059669", head: "#064e3b", body: "#047857" },
-  excl:   { fill: "#fff1f2", stroke: "#e11d48", head: "#9f1239", body: "#be123c" },
-  incl:   { fill: "#f0fdf4", stroke: "#16a34a", head: "#14532d", body: "#166534" },
+  id:     { bg: "#eff6ff", border: "#2563eb", title: "#1e40af", body: "#1d4ed8" },
+  dedup:  { bg: "#f5f3ff", border: "#7c3aed", title: "#4c1d95", body: "#6d28d9" },
+  screen: { bg: "#ecfdf5", border: "#059669", title: "#064e3b", body: "#047857" },
+  excl:   { bg: "#fff1f2", border: "#e11d48", title: "#9f1239", body: "#be123c" },
+  incl:   { bg: "#f0fdf4", border: "#16a34a", title: "#14532d", body: "#166534" },
   arrow:  "#94a3b8",
-  muted:  "#64748b",
   phase:  "#475569",
+  phBg:   "#f8fafc",
+  phBd:   "#e2e8f0",
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtReason(code: string | null): string {
   if (!code) return "No reason recorded";
   return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -40,10 +26,9 @@ function groupSources(raw: { name: string; count: number }[]) {
   let bwN = 0, bwCount = 0, fwN = 0, fwCount = 0;
   const dbs: { name: string; count: number }[] = [];
   for (const s of raw) {
-    // Strip leading non-alphabetic characters (← → arrows, spaces) before checking prefix
     const core = s.name.replace(/^[^A-Za-z]+/, "");
-    if (core.startsWith("Refs:") || core.startsWith("Refs "))           { bwN += s.count; bwCount++; }
-    else if (core.startsWith("Citing:") || core.startsWith("Citing "))  { fwN += s.count; fwCount++; }
+    if (core.startsWith("Refs:") || core.startsWith("Refs "))          { bwN += s.count; bwCount++; }
+    else if (core.startsWith("Citing:") || core.startsWith("Citing ")) { fwN += s.count; fwCount++; }
     else dbs.push(s);
   }
   const out = [...dbs];
@@ -52,97 +37,333 @@ function groupSources(raw: { name: string; count: number }[]) {
   return out;
 }
 
-function sideH(reasons: { reason_code: string | null; count: number }[]): number {
-  return Math.max(SIDE_MIN_H, REASON_TOP + reasons.length * LINE_H + 10);
-}
+// ── Inline-editable number ────────────────────────────────────────────────────
+function EN({
+  value, color, size = 22, onSave,
+}: { value: number; color: string; size?: number; onSave: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
 
-// ── SVG primitives ──────────────────────────────────────────────────────────
-const mainCx = MAIN_X + MAIN_W / 2;
-const sideCx  = SIDE_X + SIDE_W / 2;
+  const commit = () => {
+    const n = parseInt(draft.replace(/,/g, ""), 10);
+    if (!isNaN(n) && n >= 0) onSave(n);
+    setEditing(false);
+  };
 
-/** Renders "n =" in a small muted weight, then the big bold number. */
-function BigN({
-  x, y, value, color, size = 20,
-}: { x: number; y: number; value: number; color: string; size?: number }) {
-  return (
-    <text x={x} y={y} textAnchor="middle">
-      <tspan fontSize={size * 0.58} fontWeight="500" fill={color} opacity={0.55}>n = </tspan>
-      <tspan fontSize={size} fontWeight="800" fill={color}>{value.toLocaleString()}</tspan>
-    </text>
-  );
-}
-
-/** Main flow box with optional top accent stripe. */
-function Box({
-  x, y, w, h, fill, stroke, accent = true, children,
-}: {
-  x: number; y: number; w: number; h: number;
-  fill: string; stroke: string; accent?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <g filter="url(#shadow)">
-      <rect x={x} y={y} width={w} height={h} rx={BOX_RX} fill={fill} stroke={stroke} strokeWidth={1.6} />
-      {accent && (
-        <rect x={x + 2} y={y + 2} width={w - 4} height={6} rx={4} fill={stroke} opacity={0.14} />
-      )}
-      {children}
-    </g>
-  );
-}
-
-function DownArrow({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
-  return <line x1={x} y1={y1} x2={x} y2={y2 - 8} stroke={C.arrow} strokeWidth={2} markerEnd="url(#ah)" />;
-}
-
-function RightArrow({ x1, x2, y }: { x1: number; x2: number; y: number }) {
-  return <line x1={x1} y1={y} x2={x2 - 8} y2={y} stroke={C.arrow} strokeWidth={2} markerEnd="url(#ah)" />;
-}
-
-/** Reason rows: label left-aligned, count right-aligned — reads like a table. */
-function ReasonRows({
-  reasons, boxY,
-}: { reasons: { reason_code: string | null; count: number }[]; boxY: number }) {
-  if (reasons.length === 0) return null;
-  return (
-    <>
-      {/* separator */}
-      <line
-        x1={SIDE_X + 10} y1={boxY + REASON_TOP - 8}
-        x2={SIDE_X + SIDE_W - 10} y2={boxY + REASON_TOP - 8}
-        stroke="#fca5a5" strokeWidth={0.8} strokeDasharray="3 3"
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+        style={{
+          width: 90, border: "none", borderBottom: `2px solid ${color}`,
+          background: "transparent", textAlign: "center",
+          fontSize: size, fontWeight: 800, color, outline: "none",
+        }}
       />
-      {reasons.map((r, i) => {
-        const ry = boxY + REASON_TOP + i * LINE_H;
-        const isEven = i % 2 === 0;
-        return (
-          <g key={i}>
-            {isEven && (
-              <rect
-                x={SIDE_X + 4} y={ry - 11}
-                width={SIDE_W - 8} height={LINE_H}
-                rx={2} fill="#fef2f2" opacity={0.7}
-              />
-            )}
-            {/* reason label */}
-            <text x={SIDE_X + 10} y={ry} fontSize={9.5} fill="#374151">
-              {fmtReason(r.reason_code)}
-            </text>
-            {/* count right-aligned */}
-            <text x={SIDE_X + SIDE_W - 10} y={ry} textAnchor="end" fontSize={9.5} fontWeight="700" fill={C.excl.stroke}>
-              {r.count.toLocaleString()}
-            </text>
-          </g>
-        );
-      })}
-    </>
+    );
+  }
+
+  return (
+    <span
+      title="Click to edit"
+      onClick={() => { setDraft(String(value)); setEditing(true); }}
+      style={{
+        fontSize: size, fontWeight: 800, color, cursor: "text",
+        borderBottom: `1.5px dashed ${color}44`, paddingBottom: 1,
+      }}
+    >
+      {value.toLocaleString()}
+    </span>
   );
 }
 
-// ── Page ────────────────────────────────────────────────────────────────────
+function NLine({
+  label = "n = ", value, color, size = 22, onSave,
+}: { label?: string; value: number; color: string; size?: number; onSave: (v: number) => void }) {
+  return (
+    <div style={{ textAlign: "center", marginTop: 10 }}>
+      <span style={{ fontSize: size * 0.55, color, opacity: 0.55 }}>{label}</span>
+      <EN value={value} color={color} size={size} onSave={onSave} />
+    </div>
+  );
+}
+
+// ── Structural primitives ─────────────────────────────────────────────────────
+function PhaseBadge({ label }: { label: string }) {
+  return (
+    <div style={{
+      width: 110, minWidth: 110, display: "flex", alignItems: "center", justifyContent: "center",
+      background: C.phBg, border: `1px solid ${C.phBd}`, borderRadius: 8,
+      fontSize: 10.5, fontWeight: 700, color: C.phase, letterSpacing: "0.06em",
+      textTransform: "uppercase", writingMode: "horizontal-tb", padding: "6px 8px",
+      textAlign: "center", lineHeight: 1.3,
+    }}>
+      {label}
+    </div>
+  );
+}
+
+function VArrow() {
+  return (
+    <div style={{ display: "flex", gap: 0 }}>
+      <div style={{ width: 110, minWidth: 110 }} />
+      <div style={{ width: 48 }} />
+      <div style={{ width: 320, display: "flex", justifyContent: "center" }}>
+        <svg width="20" height="36" viewBox="0 0 20 36">
+          <line x1="10" y1="0" x2="10" y2="28" stroke={C.arrow} strokeWidth="2" />
+          <polygon points="4,26 16,26 10,36" fill={C.arrow} />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function HArrow({ yOffset = 0 }: { yOffset?: number }) {
+  return (
+    <div style={{
+      width: 48, minWidth: 48, display: "flex", alignItems: "center",
+      paddingTop: yOffset,
+    }}>
+      <svg width="48" height="20" viewBox="0 0 48 20">
+        <line x1="0" y1="10" x2="38" y2="10" stroke={C.arrow} strokeWidth="2" />
+        <polygon points="36,5 48,10 36,15" fill={C.arrow} />
+      </svg>
+    </div>
+  );
+}
+
+function FlowBox({
+  color, children, minH = 90,
+}: { color: typeof C.id; children: React.ReactNode; minH?: number }) {
+  return (
+    <div style={{
+      width: 320, minWidth: 320, minHeight: minH,
+      background: color.bg,
+      border: `1.6px solid ${color.border}`,
+      borderRadius: 10,
+      boxShadow: "0 2px 10px rgba(0,0,0,0.07)",
+      padding: "16px 20px",
+      position: "relative",
+      display: "flex", flexDirection: "column", justifyContent: "center",
+    }}>
+      <div style={{
+        position: "absolute", top: 2, left: 2, right: 2, height: 6,
+        background: color.border, borderRadius: "8px 8px 0 0", opacity: 0.13,
+      }} />
+      {children}
+    </div>
+  );
+}
+
+function SideBox({ color, children }: { color: typeof C.excl; children: React.ReactNode }) {
+  return (
+    <div style={{
+      minWidth: 260, maxWidth: 320, flex: "1 1 280px",
+      background: color.bg,
+      border: `1.6px solid ${color.border}`,
+      borderRadius: 10,
+      boxShadow: "0 2px 10px rgba(0,0,0,0.07)",
+      padding: "14px 16px 10px",
+      position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", top: 2, left: 2, right: 2, height: 6,
+        background: color.border, borderRadius: "8px 8px 0 0", opacity: 0.13,
+      }} />
+      {children}
+    </div>
+  );
+}
+
+// Editable reason row
+function ReasonRow({
+  code, count, color, onSaveCount,
+}: { code: string | null; count: number; color: string; onSaveCount: (v: number) => void }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "3px 0", gap: 8,
+    }}>
+      <span style={{ fontSize: 10.5, color: "#374151", lineHeight: 1.3 }}>
+        {fmtReason(code)}
+      </span>
+      <span style={{ fontSize: 10.5, fontWeight: 700, color, whiteSpace: "nowrap", flexShrink: 0 }}>
+        <EN value={count} color={color} size={10.5} onSave={onSaveCount} />
+      </span>
+    </div>
+  );
+}
+
+// ── SVG export helpers (separate from display) ────────────────────────────────
+const SVG_PHASE_W = 128, SVG_PHASE_X = 10, SVG_MAIN_X = 166, SVG_MAIN_W = 330;
+const SVG_SIDE_GAP = 38, SVG_SIDE_X = SVG_MAIN_X + SVG_MAIN_W + SVG_SIDE_GAP, SVG_SIDE_W = 296;
+const SVG_W = SVG_SIDE_X + SVG_SIDE_W + 20;
+const SVG_ROW_GAP = 42, SVG_MAIN_MIN_H = 92, SVG_SIDE_MIN_H = 92, SVG_LINE_H = 16, SVG_REASON_TOP = 48;
+const SVG_BOX_RX = 10;
+const SVG_ARROW_COLOR = "#94a3b8";
+const mainCx = SVG_MAIN_X + SVG_MAIN_W / 2;
+const sideCx  = SVG_SIDE_X + SVG_SIDE_W / 2;
+
+function svgSideH(reasons: { reason_code: string | null; count: number }[]) {
+  return Math.max(SVG_SIDE_MIN_H, SVG_REASON_TOP + reasons.length * SVG_LINE_H + 10);
+}
+
+function buildExportSVG(data: {
+  grouped: { name: string; count: number }[];
+  totalIdentified: number; duplicatesRemoved: number; afterDedup: number;
+  taScreened: number; taExcluded: number; taNotScreened: number; taUncertain: number;
+  ftScreened: number; ftIncluded: number; ftExcluded: number; ftAwaiting: number;
+  extracted: number;
+  taReasons: { reason_code: string | null; count: number }[];
+  ftReasons: { reason_code: string | null; count: number }[];
+}): string {
+  const { grouped, totalIdentified, duplicatesRemoved, afterDedup,
+    taScreened, taExcluded, taNotScreened,
+    ftScreened, ftIncluded, ftExcluded, ftAwaiting, extracted,
+    taReasons, ftReasons } = data;
+
+  const ID_H = Math.max(SVG_MAIN_MIN_H, 58 + grouped.length * 18 + (grouped.length > 1 ? 26 : 0));
+  const TA_SIDE_H = svgSideH(taReasons), FT_SIDE_H = svgSideH(ftReasons);
+  const TA_MAIN_H = Math.max(SVG_MAIN_MIN_H, TA_SIDE_H), FT_MAIN_H = Math.max(SVG_MAIN_MIN_H, FT_SIDE_H);
+  const IN_H = 96;
+
+  const R: Record<string, number> = { id: 50 };
+  R.dd  = R.id + ID_H + SVG_ROW_GAP;
+  R.ta  = R.dd + Math.max(SVG_MAIN_MIN_H, SVG_SIDE_MIN_H) + SVG_ROW_GAP;
+  R.ft  = R.ta + Math.max(TA_MAIN_H, TA_SIDE_H) + SVG_ROW_GAP;
+  R.inc = R.ft + Math.max(FT_MAIN_H, FT_SIDE_H) + SVG_ROW_GAP;
+  const H = R.inc + IN_H + 52;
+
+  const phases = [
+    { label: "Identification", y: R.id,  h: ID_H },
+    { label: "Deduplication",  y: R.dd,  h: Math.max(SVG_MAIN_MIN_H, SVG_SIDE_MIN_H) },
+    { label: "Screening",      y: R.ta,  h: Math.max(TA_MAIN_H, TA_SIDE_H) },
+    { label: "Eligibility",    y: R.ft,  h: Math.max(FT_MAIN_H, FT_SIDE_H) },
+    { label: "Included",       y: R.inc, h: IN_H },
+  ];
+
+  const railTop = R.id - 6, railBot = R.inc + IN_H + 6;
+
+  const box = (x: number, y: number, w: number, h: number, fill: string, stroke: string) =>
+    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${SVG_BOX_RX}" fill="${fill}" stroke="${stroke}" stroke-width="1.6" filter="url(#sh)"/>
+     <rect x="${x+2}" y="${y+2}" width="${w-4}" height="6" rx="4" fill="${stroke}" opacity="0.14"/>`;
+
+  const bigN = (x: number, y: number, v: number, color: string, sz = 20) =>
+    `<text x="${x}" y="${y}" text-anchor="middle">
+       <tspan font-size="${sz*0.58}" font-weight="500" fill="${color}" opacity="0.55">n = </tspan>
+       <tspan font-size="${sz}" font-weight="800" fill="${color}">${v.toLocaleString()}</tspan>
+     </text>`;
+
+  const t = (x: number, y: number, anchor: string, sz: number, fw: string, fill: string, txt: string) =>
+    `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="${sz}" font-weight="${fw}" fill="${fill}">${txt}</text>`;
+
+  const downarrow = (x: number, y1: number, y2: number) =>
+    `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2-8}" stroke="${SVG_ARROW_COLOR}" stroke-width="2" marker-end="url(#ah)"/>`;
+
+  const rightarrow = (x1: number, x2: number, y: number) =>
+    `<line x1="${x1}" y1="${y}" x2="${x2-8}" y2="${y}" stroke="${SVG_ARROW_COLOR}" stroke-width="2" marker-end="url(#ah)"/>`;
+
+  const reasonRows = (reasons: { reason_code: string | null; count: number }[], boxY: number) => {
+    if (!reasons.length) return "";
+    let out = `<line x1="${SVG_SIDE_X+10}" y1="${boxY+SVG_REASON_TOP-8}" x2="${SVG_SIDE_X+SVG_SIDE_W-10}" y2="${boxY+SVG_REASON_TOP-8}" stroke="#fca5a5" stroke-width="0.8" stroke-dasharray="3 3"/>`;
+    reasons.forEach((r, i) => {
+      const ry = boxY + SVG_REASON_TOP + i * SVG_LINE_H;
+      if (i % 2 === 0) out += `<rect x="${SVG_SIDE_X+4}" y="${ry-11}" width="${SVG_SIDE_W-8}" height="${SVG_LINE_H}" rx="2" fill="#fef2f2" opacity="0.7"/>`;
+      out += t(SVG_SIDE_X+10, ry, "start", 9.5, "400", "#374151", fmtReason(r.reason_code));
+      out += t(SVG_SIDE_X+SVG_SIDE_W-10, ry, "end", 9.5, "700", "#be123c", r.count.toLocaleString());
+    });
+    return out;
+  };
+
+  return `<svg width="${SVG_W}" height="${H}" viewBox="0 0 ${SVG_W} ${H}"
+    xmlns="http://www.w3.org/2000/svg"
+    style="font-family:'Inter',system-ui,sans-serif;background:white">
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 9 3, 0 6" fill="${SVG_ARROW_COLOR}"/>
+    </marker>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="128%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3.5" flood-color="#00000016"/>
+    </filter>
+  </defs>
+
+  <rect x="${SVG_PHASE_X}" y="${railTop}" width="${SVG_PHASE_W}" height="${railBot-railTop}" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+  ${phases.map((p, i) => `
+    ${i > 0 ? `<line x1="${SVG_PHASE_X+10}" y1="${p.y}" x2="${SVG_PHASE_X+SVG_PHASE_W-10}" y2="${p.y}" stroke="#e2e8f0" stroke-width="0.8"/>` : ""}
+    ${t(SVG_PHASE_X + SVG_PHASE_W/2, p.y + p.h/2 + 4, "middle", 10.5, "700", "#475569", p.label)}
+  `).join("")}
+
+  ${box(SVG_MAIN_X, R.id, SVG_MAIN_W, ID_H, "#eff6ff", "#2563eb")}
+  ${t(mainCx, R.id+24, "middle", 12.5, "700", "#1e40af", "Records identified in databases")}
+  ${grouped.map((s, i) => t(mainCx, R.id+42+i*18, "middle", 11, "400", "#1d4ed8", `${s.name}    n = ${s.count.toLocaleString()}`)).join("")}
+  ${grouped.length > 1 ? `
+    <line x1="${SVG_MAIN_X+20}" y1="${R.id+42+grouped.length*18-10}" x2="${SVG_MAIN_X+SVG_MAIN_W-20}" y2="${R.id+42+grouped.length*18-10}" stroke="#2563eb" stroke-width="0.6" opacity="0.4"/>
+    ${t(mainCx, R.id+42+grouped.length*18+5, "middle", 11.5, "800", "#1e40af", `Total  n = ${totalIdentified.toLocaleString()}`)}
+  ` : ""}
+
+  ${downarrow(mainCx, R.id + ID_H, R.dd)}
+
+  ${box(SVG_MAIN_X, R.dd, SVG_MAIN_W, SVG_MAIN_MIN_H, "#f5f3ff", "#7c3aed")}
+  ${t(mainCx, R.dd+28, "middle", 12, "700", "#4c1d95", "Records after removing duplicates")}
+  ${bigN(mainCx, R.dd+66, afterDedup, "#7c3aed", 22)}
+
+  ${rightarrow(SVG_MAIN_X+SVG_MAIN_W, SVG_SIDE_X, R.dd+SVG_MAIN_MIN_H/2)}
+  ${box(SVG_SIDE_X, R.dd, SVG_SIDE_W, SVG_SIDE_MIN_H, "#fff1f2", "#e11d48")}
+  ${t(sideCx, R.dd+28, "middle", 12, "700", "#9f1239", "Duplicates removed")}
+  ${bigN(sideCx, R.dd+66, duplicatesRemoved, "#e11d48", 22)}
+
+  ${downarrow(mainCx, R.dd+SVG_MAIN_MIN_H, R.ta)}
+
+  ${box(SVG_MAIN_X, R.ta, SVG_MAIN_W, TA_MAIN_H, "#ecfdf5", "#059669")}
+  ${t(mainCx, R.ta+28, "middle", 12, "700", "#064e3b", "Records screened")}
+  ${t(mainCx, R.ta+44, "middle", 10, "400", "#64748b", "(title &amp; abstract)")}
+  ${bigN(mainCx, R.ta+70, taScreened, "#059669", 22)}
+  ${taNotScreened > 0 ? t(mainCx, R.ta+88, "middle", 9.5, "400", "#64748b", `awaiting screening: n = ${taNotScreened.toLocaleString()}`) : ""}
+
+  ${rightarrow(SVG_MAIN_X+SVG_MAIN_W, SVG_SIDE_X, R.ta+svgSideH(taReasons)/2)}
+  ${box(SVG_SIDE_X, R.ta, SVG_SIDE_W, svgSideH(taReasons), "#fff1f2", "#e11d48")}
+  ${t(sideCx, R.ta+22, "middle", 12, "700", "#9f1239", "Records excluded (TA)")}
+  ${bigN(sideCx, R.ta+42, taExcluded, "#e11d48", 14)}
+  ${reasonRows(taReasons, R.ta)}
+
+  ${downarrow(mainCx, R.ta+TA_MAIN_H, R.ft)}
+
+  ${box(SVG_MAIN_X, R.ft, SVG_MAIN_W, FT_MAIN_H, "#ecfdf5", "#059669")}
+  ${t(mainCx, R.ft+28, "middle", 12, "700", "#064e3b", "Full-text articles assessed")}
+  ${t(mainCx, R.ft+44, "middle", 10, "400", "#64748b", "(eligibility)")}
+  ${bigN(mainCx, R.ft+70, ftScreened, "#059669", 22)}
+  ${ftAwaiting > 0 ? t(mainCx, R.ft+88, "middle", 9.5, "400", "#64748b", `awaiting review: n = ${ftAwaiting.toLocaleString()}`) : ""}
+
+  ${rightarrow(SVG_MAIN_X+SVG_MAIN_W, SVG_SIDE_X, R.ft+svgSideH(ftReasons)/2)}
+  ${box(SVG_SIDE_X, R.ft, SVG_SIDE_W, svgSideH(ftReasons), "#fff1f2", "#e11d48")}
+  ${t(sideCx, R.ft+22, "middle", 12, "700", "#9f1239", "Articles excluded (FT)")}
+  ${bigN(sideCx, R.ft+42, ftExcluded, "#e11d48", 14)}
+  ${reasonRows(ftReasons, R.ft)}
+
+  ${downarrow(mainCx, R.ft+FT_MAIN_H, R.inc)}
+
+  ${box(SVG_MAIN_X, R.inc, SVG_MAIN_W, IN_H, "#f0fdf4", "#16a34a")}
+  ${t(mainCx, R.inc+26, "middle", 12.5, "700", "#14532d", "Studies included in review")}
+  ${bigN(mainCx, R.inc+64, ftIncluded, "#16a34a", 26)}
+  ${extracted > 0 ? t(mainCx, R.inc+84, "middle", 9.5, "400", "#64748b", `data extracted: n = ${extracted.toLocaleString()}`) : ""}
+</svg>`;
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function PrismaPage() {
   const { id: projectId } = useParams<{ id: string }>();
-  const svgRef = useRef<SVGSVGElement>(null);
+  const diagramRef = useRef<HTMLDivElement>(null);
+
+  const [overrides, setOverrides] = useState<Record<string, number>>({});
+  const [reasonOverrides, setReasonOverrides] = useState<Record<string, number>>({});
+
+  const ov = useCallback((key: string, def: number) => overrides[key] ?? def, [overrides]);
+  const setOv = useCallback((key: string) => (v: number) => setOverrides(o => ({ ...o, [key]: v })), []);
 
   const { data: sources = [], isLoading: srcLoading } = useQuery({
     queryKey: ["screening-sources", projectId],
@@ -161,93 +382,54 @@ export default function PrismaPage() {
     prisma?.by_source ?? indivSources.map((s) => ({ name: s.name, count: s.record_count })),
   );
 
-  // Counts
-  const totalIdentified  = prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0);
-  const duplicatesRemoved = prisma?.duplicates_removed ?? 0;
-  const afterDedup       = prisma?.total_unique ?? (allSource?.record_count ?? 0);
-  const taScreened       = allSource?.ta_screened ?? 0;
-  const taIncluded       = allSource?.ta_included ?? 0;
-  const taExcluded       = allSource?.ta_excluded ?? (taScreened - taIncluded);
-  const taUncertain      = allSource?.ta_uncertain ?? 0;
-  const taNotScreened    = Math.max(0, afterDedup - taScreened);
-  const ftScreened       = allSource?.ft_screened ?? 0;
-  const ftIncluded       = allSource?.ft_included ?? 0;
-  const ftExcluded       = ftScreened - ftIncluded;
-  const ftAwaiting       = Math.max(0, taIncluded - ftScreened);
-  const extracted        = allSource?.extracted_count ?? 0;
-  const taReasons        = prisma?.ta_exclude_reasons ?? [];
-  const ftReasons        = prisma?.ft_exclude_reasons ?? [];
+  const totalIdentified  = ov("total_identified",  prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0));
+  const duplicatesRemoved = ov("duplicates_removed", prisma?.duplicates_removed ?? 0);
+  const afterDedup        = ov("after_dedup",        prisma?.total_unique ?? (allSource?.record_count ?? 0));
+  const taScreened        = ov("ta_screened",        allSource?.ta_screened ?? 0);
+  const taIncluded        = allSource?.ta_included ?? 0;
+  const taExcluded        = ov("ta_excluded",        allSource?.ta_excluded ?? (taScreened - taIncluded));
+  const taUncertain       = ov("ta_uncertain",       allSource?.ta_uncertain ?? 0);
+  const taNotScreened     = ov("ta_not_screened",    Math.max(0, afterDedup - taScreened));
+  const ftScreened        = ov("ft_screened",        allSource?.ft_screened ?? 0);
+  const ftIncluded        = ov("ft_included",        allSource?.ft_included ?? 0);
+  const ftExcluded        = ov("ft_excluded",        ftScreened - ftIncluded);
+  const ftAwaiting        = ov("ft_awaiting",        Math.max(0, taIncluded - ftScreened));
+  const extracted         = ov("extracted",          allSource?.extracted_count ?? 0);
 
-  // Row heights — main boxes grow to match their side box when the side box is taller
-  // +26 when there is a "Total" line (separator line + text + bottom padding)
-  const ID_H       = Math.max(MAIN_MIN_H, 58 + grouped.length * 18 + (grouped.length > 1 ? 26 : 0));
-  const DD_MAIN_H  = MAIN_MIN_H;
-  const DD_SIDE_H  = SIDE_MIN_H;
-  const TA_SIDE_H  = sideH(taReasons);
-  const TA_MAIN_H  = Math.max(MAIN_MIN_H, TA_SIDE_H);
-  const FT_SIDE_H  = sideH(ftReasons);
-  const FT_MAIN_H  = Math.max(MAIN_MIN_H, FT_SIDE_H);
-  const IN_H       = 96;
+  const taReasonsBase = prisma?.ta_exclude_reasons ?? [];
+  const ftReasonsBase = prisma?.ft_exclude_reasons ?? [];
 
-  // Y positions
-  const R: Record<string, number> = { id: 50 };
-  R.dd  = R.id + ID_H + ROW_GAP;
-  R.ta  = R.dd + Math.max(DD_MAIN_H, DD_SIDE_H) + ROW_GAP;
-  R.ft  = R.ta + Math.max(TA_MAIN_H, TA_SIDE_H) + ROW_GAP;
-  R.inc = R.ft + Math.max(FT_MAIN_H, FT_SIDE_H) + ROW_GAP;
-  const H = R.inc + IN_H + 52;
-
-  // Phase rail spans the full diagram height
-  const railTop = R.id - 6;
-  const railBot = R.inc + IN_H + 6;
-
-  // Phase label segments with dividers
-  const phases = [
-    { label: "Identification", y: R.id,  h: ID_H },
-    { label: "Deduplication",  y: R.dd,  h: Math.max(DD_MAIN_H, DD_SIDE_H) },
-    { label: "Screening",      y: R.ta,  h: Math.max(TA_MAIN_H, TA_SIDE_H) },
-    { label: "Eligibility",    y: R.ft,  h: Math.max(FT_MAIN_H, FT_SIDE_H) },
-    { label: "Included",       y: R.inc, h: IN_H },
-  ];
+  const taReasons = taReasonsBase.map((r, i) => ({
+    ...r, count: reasonOverrides[`ta_${i}`] ?? r.count,
+  }));
+  const ftReasons = ftReasonsBase.map((r, i) => ({
+    ...r, count: reasonOverrides[`ft_${i}`] ?? r.count,
+  }));
 
   function downloadJPG() {
-    const svgEl = svgRef.current;
-    if (!svgEl) return;
-    const scale = 2; // 2× for crisp output
-    const svgW  = Number(svgEl.getAttribute("width"));
-    const svgH  = Number(svgEl.getAttribute("height"));
-
-    // Clone and add a white background rect so the JPEG has no transparency artifacts
-    const clone = svgEl.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bg.setAttribute("x", "0"); bg.setAttribute("y", "0");
-    bg.setAttribute("width", String(svgW)); bg.setAttribute("height", String(svgH));
-    bg.setAttribute("fill", "white");
-    clone.insertBefore(bg, clone.firstChild);
-
-    const svgStr = new XMLSerializer().serializeToString(clone);
-    const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(svgBlob);
-
+    const svg = buildExportSVG({
+      grouped, totalIdentified, duplicatesRemoved, afterDedup,
+      taScreened, taExcluded, taNotScreened, taUncertain,
+      ftScreened, ftIncluded, ftExcluded, ftAwaiting, extracted,
+      taReasons, ftReasons,
+    });
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
     const canvas = document.createElement("canvas");
-    canvas.width  = svgW * scale;
-    canvas.height = svgH * scale;
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    const scale = 2;
+    canvas.width = (SVG_SIDE_X + SVG_SIDE_W + 20) * scale;
     const img = new Image();
     img.onload = () => {
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0);
+      canvas.height = img.naturalHeight * scale / img.naturalWidth * canvas.width;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      canvas.toBlob((blob) => {
-        if (!blob) return;
+      canvas.toBlob(b => {
+        if (!b) return;
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "prisma-diagram.jpg";
-        a.click();
+        a.href = URL.createObjectURL(b); a.download = "prisma-diagram.jpg"; a.click();
         URL.revokeObjectURL(a.href);
       }, "image/jpeg", 0.95);
     };
@@ -255,195 +437,188 @@ export default function PrismaPage() {
   }
 
   if (srcLoading || prismaLoading) {
-    return <div style={{ padding: "2rem", color: C.muted }}>Loading…</div>;
+    return <div style={{ padding: "2rem", color: "#94a3b8" }}>Loading…</div>;
   }
+
+  // ── Shared box styles ──────────────────────────────────────────────────────
+  const boxTitle = (color: string, text: string) => (
+    <div style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color, marginBottom: 2 }}>
+      {text}
+    </div>
+  );
+  const boxSub = (text: string) => (
+    <div style={{ textAlign: "center", fontSize: 10.5, color: "#64748b", marginBottom: 2 }}>{text}</div>
+  );
 
   return (
     <div style={{ padding: "2rem" }}>
       <header className="page-header">
         <div className="page-title">
           <h1>PRISMA Flow Diagram</h1>
-          <span className="subtitle">Preferred Reporting Items for Systematic Reviews and Meta-Analyses · 2020</span>
+          <span className="subtitle">
+            Preferred Reporting Items for Systematic Reviews and Meta-Analyses · 2020
+            &nbsp;·&nbsp;
+            <span style={{ color: "#6366f1", fontWeight: 500 }}>Click any number to edit</span>
+          </span>
         </div>
         <button className="btn-primary" onClick={downloadJPG}>Download JPG</button>
       </header>
 
-      <div style={{
-        overflowX: "auto",
-        background: "#fff",
-        border: "1px solid #e5e7eb",
-        borderRadius: "0.75rem",
-        boxShadow: "0 2px 12px rgba(0,0,0,.07)",
-        display: "inline-block",
-        padding: "10px",
-      }}>
-        <svg
-          ref={svgRef}
-          width={W} height={H}
-          viewBox={`0 0 ${W} ${H}`}
-          xmlns="http://www.w3.org/2000/svg"
-          style={{ display: "block", fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}
-        >
-          <defs>
-            <marker id="ah" markerWidth={9} markerHeight={6} refX={8} refY={3} orient="auto">
-              <polygon points="0 0, 9 3, 0 6" fill={C.arrow} />
-            </marker>
-            <filter id="shadow" x="-10%" y="-10%" width="120%" height="128%">
-              <feDropShadow dx={0} dy={2} stdDeviation={3.5} floodColor="#00000016" />
-            </filter>
-          </defs>
+      <div
+        ref={diagramRef}
+        style={{
+          background: "#fff",
+          border: "1px solid #e5e7eb",
+          borderRadius: "0.75rem",
+          boxShadow: "0 2px 12px rgba(0,0,0,.07)",
+          padding: "28px 28px 28px 16px",
+          display: "inline-block",
+          minWidth: 680,
+        }}
+      >
+        {/* ── ROW 1 — Identification ─────────────────────────────────────── */}
+        <div style={{ display: "flex", gap: 0, alignItems: "stretch" }}>
+          <PhaseBadge label="Identification" />
+          <div style={{ width: 48 }} />
+          <FlowBox color={C.id} minH={90}>
+            {boxTitle(C.id.title, "Records identified in databases")}
+            <div style={{ marginTop: 8 }}>
+              {grouped.map((s) => (
+                <div key={s.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.id.body, padding: "2px 8px" }}>
+                  <span>{s.name}</span>
+                  <span style={{ fontWeight: 700 }}>n = {s.count.toLocaleString()}</span>
+                </div>
+              ))}
+              {grouped.length > 1 && (
+                <>
+                  <div style={{ borderTop: `1px solid ${C.id.border}44`, margin: "6px 8px 4px" }} />
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800, color: C.id.title, padding: "0 8px" }}>
+                    <span>Total</span>
+                    <span>n = <EN value={totalIdentified} color={C.id.title} size={12} onSave={setOv("total_identified")} /></span>
+                  </div>
+                </>
+              )}
+            </div>
+          </FlowBox>
+        </div>
 
-          {/* ── Phase label rail (one unified sidebar) ───────────────── */}
-          <rect
-            x={PHASE_X} y={railTop}
-            width={PHASE_W} height={railBot - railTop}
-            rx={8} fill="#f8fafc" stroke="#e2e8f0" strokeWidth={1}
-          />
-          {phases.map(({ label, y, h }, i) => {
-            const midY = y + h / 2;
-            return (
-              <g key={label}>
-                {/* divider between phases */}
-                {i > 0 && (
-                  <line
-                    x1={PHASE_X + 10} y1={y}
-                    x2={PHASE_X + PHASE_W - 10} y2={y}
-                    stroke="#e2e8f0" strokeWidth={0.8}
-                  />
-                )}
-                <text
-                  x={PHASE_X + PHASE_W / 2} y={midY + 4}
-                  textAnchor="middle" fontSize={10.5} fontWeight="700"
-                  fill={C.phase} letterSpacing="0.2"
-                >
-                  {label}
-                </text>
-              </g>
-            );
-          })}
+        <VArrow />
 
-          {/* ══ ROW 1 — Identification ══════════════════════════════ */}
-          <Box x={MAIN_X} y={R.id} w={MAIN_W} h={ID_H} fill={C.id.fill} stroke={C.id.stroke}>
-            <text x={mainCx} y={R.id + 24} textAnchor="middle" fontSize={12.5} fontWeight="700" fill={C.id.head}>
-              Records identified in databases
-            </text>
-            {grouped.map((s, i) => (
-              <text key={s.name} x={mainCx} y={R.id + 42 + i * 18} textAnchor="middle" fontSize={11} fill={C.id.body}>
-                {s.name}
-                <tspan fontWeight="700">  n = {s.count.toLocaleString()}</tspan>
-              </text>
-            ))}
-            {grouped.length > 1 && (
-              <>
-                <line
-                  x1={MAIN_X + 20} y1={R.id + 42 + grouped.length * 18 - 10}
-                  x2={MAIN_X + MAIN_W - 20} y2={R.id + 42 + grouped.length * 18 - 10}
-                  stroke={C.id.stroke} strokeWidth={0.6} opacity={0.4}
-                />
-                <text x={mainCx} y={R.id + 42 + grouped.length * 18 + 5} textAnchor="middle" fontSize={11.5} fontWeight="800" fill={C.id.head}>
-                  Total  n = {totalIdentified.toLocaleString()}
-                </text>
-              </>
-            )}
-          </Box>
+        {/* ── ROW 2 — Deduplication ──────────────────────────────────────── */}
+        <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
+          <PhaseBadge label="Deduplication" />
+          <div style={{ width: 48 }} />
+          <FlowBox color={C.dedup}>
+            {boxTitle(C.dedup.title, "Records after removing duplicates")}
+            <NLine value={afterDedup} color={C.dedup.border} size={24} onSave={setOv("after_dedup")} />
+          </FlowBox>
+          <HArrow />
+          <SideBox color={C.excl}>
+            {boxTitle(C.excl.title, "Duplicates removed")}
+            <NLine value={duplicatesRemoved} color={C.excl.border} size={24} onSave={setOv("duplicates_removed")} />
+          </SideBox>
+        </div>
 
-          <DownArrow x={mainCx} y1={R.id + ID_H} y2={R.dd} />
+        <VArrow />
 
-          {/* ══ ROW 2 — Deduplication ═══════════════════════════════ */}
-          <Box x={MAIN_X} y={R.dd} w={MAIN_W} h={DD_MAIN_H} fill={C.dedup.fill} stroke={C.dedup.stroke}>
-            <text x={mainCx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.dedup.head}>
-              Records after removing duplicates
-            </text>
-            <BigN x={mainCx} y={R.dd + 66} value={afterDedup} color={C.dedup.stroke} size={22} />
-          </Box>
-
-          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.dd + DD_MAIN_H / 2} />
-          <Box x={SIDE_X} y={R.dd} w={SIDE_W} h={DD_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sideCx} y={R.dd + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
-              Duplicates removed
-            </text>
-            <BigN x={sideCx} y={R.dd + 66} value={duplicatesRemoved} color={C.excl.stroke} size={22} />
-          </Box>
-
-          <DownArrow x={mainCx} y1={R.dd + DD_MAIN_H} y2={R.ta} />
-
-          {/* ══ ROW 3 — Title & Abstract Screening ══════════════════ */}
-          <Box x={MAIN_X} y={R.ta} w={MAIN_W} h={TA_MAIN_H} fill={C.screen.fill} stroke={C.screen.stroke}>
-            <text x={mainCx} y={R.ta + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
-              Records screened
-            </text>
-            <text x={mainCx} y={R.ta + 44} textAnchor="middle" fontSize={10} fill={C.muted}>
-              (title &amp; abstract)
-            </text>
-            <BigN x={mainCx} y={R.ta + 70} value={taScreened} color={C.screen.stroke} size={22} />
+        {/* ── ROW 3 — Title & Abstract Screening ────────────────────────── */}
+        <div style={{ display: "flex", gap: 0, alignItems: "flex-start" }}>
+          <div style={{ paddingTop: 20 }}><PhaseBadge label="Screening" /></div>
+          <div style={{ width: 48 }} />
+          <FlowBox color={C.screen}>
+            {boxTitle(C.screen.title, "Records screened")}
+            {boxSub("(title & abstract)")}
+            <NLine value={taScreened} color={C.screen.border} size={24} onSave={setOv("ta_screened")} />
             {taNotScreened > 0 && (
-              <text x={mainCx} y={R.ta + 88} textAnchor="middle" fontSize={9.5} fill={C.muted}>
-                awaiting screening: n = {taNotScreened.toLocaleString()}
-              </text>
+              <div style={{ textAlign: "center", fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                awaiting screening: n = <EN value={taNotScreened} color="#64748b" size={10} onSave={setOv("ta_not_screened")} />
+              </div>
             )}
             {taUncertain > 0 && (
-              <text x={mainCx} y={R.ta + (taNotScreened > 0 ? 102 : 88)} textAnchor="middle" fontSize={9.5} fill="#92400e">
-                uncertain: n = {taUncertain.toLocaleString()}
-              </text>
+              <div style={{ textAlign: "center", fontSize: 10, color: "#92400e", marginTop: 2 }}>
+                uncertain: n = <EN value={taUncertain} color="#92400e" size={10} onSave={setOv("ta_uncertain")} />
+              </div>
             )}
-          </Box>
+          </FlowBox>
+          <HArrow yOffset={20} />
+          <SideBox color={C.excl}>
+            {boxTitle(C.excl.title, "Records excluded (TA)")}
+            <div style={{ textAlign: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, color: C.excl.body, opacity: 0.6 }}>n = </span>
+              <EN value={taExcluded} color={C.excl.border} size={14} onSave={setOv("ta_excluded")} />
+            </div>
+            {taReasons.length > 0 && (
+              <>
+                <div style={{ borderTop: `1px dashed #fca5a5`, margin: "6px 0 4px" }} />
+                {taReasons.map((r, i) => (
+                  <ReasonRow
+                    key={i} code={r.reason_code} count={r.count} color={C.excl.border}
+                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [`ta_${i}`]: v }))}
+                  />
+                ))}
+              </>
+            )}
+          </SideBox>
+        </div>
 
-          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ta + TA_SIDE_H / 2} />
-          <Box x={SIDE_X} y={R.ta} w={SIDE_W} h={TA_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sideCx} y={R.ta + 22} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
-              Records excluded (TA)
-            </text>
-            <BigN x={sideCx} y={R.ta + 42} value={taExcluded} color={C.excl.stroke} size={14} />
-            <ReasonRows reasons={taReasons} boxY={R.ta} />
-          </Box>
+        <VArrow />
 
-          <DownArrow x={mainCx} y1={R.ta + TA_MAIN_H} y2={R.ft} />
-
-          {/* ══ ROW 4 — Full-text Eligibility ═══════════════════════ */}
-          <Box x={MAIN_X} y={R.ft} w={MAIN_W} h={FT_MAIN_H} fill={C.screen.fill} stroke={C.screen.stroke}>
-            <text x={mainCx} y={R.ft + 28} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.screen.head}>
-              Full-text articles assessed
-            </text>
-            <text x={mainCx} y={R.ft + 44} textAnchor="middle" fontSize={10} fill={C.muted}>
-              (eligibility)
-            </text>
-            <BigN x={mainCx} y={R.ft + 70} value={ftScreened} color={C.screen.stroke} size={22} />
+        {/* ── ROW 4 — Full-text Eligibility ──────────────────────────────── */}
+        <div style={{ display: "flex", gap: 0, alignItems: "flex-start" }}>
+          <div style={{ paddingTop: 20 }}><PhaseBadge label="Eligibility" /></div>
+          <div style={{ width: 48 }} />
+          <FlowBox color={C.screen}>
+            {boxTitle(C.screen.title, "Full-text articles assessed")}
+            {boxSub("(eligibility)")}
+            <NLine value={ftScreened} color={C.screen.border} size={24} onSave={setOv("ft_screened")} />
             {ftAwaiting > 0 && (
-              <text x={mainCx} y={R.ft + 88} textAnchor="middle" fontSize={9.5} fill={C.muted}>
-                awaiting review: n = {ftAwaiting.toLocaleString()}
-              </text>
+              <div style={{ textAlign: "center", fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                awaiting review: n = <EN value={ftAwaiting} color="#64748b" size={10} onSave={setOv("ft_awaiting")} />
+              </div>
             )}
-          </Box>
+          </FlowBox>
+          <HArrow yOffset={20} />
+          <SideBox color={C.excl}>
+            {boxTitle(C.excl.title, "Articles excluded (FT)")}
+            <div style={{ textAlign: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, color: C.excl.body, opacity: 0.6 }}>n = </span>
+              <EN value={ftExcluded} color={C.excl.border} size={14} onSave={setOv("ft_excluded")} />
+            </div>
+            {ftReasons.length > 0 && (
+              <>
+                <div style={{ borderTop: `1px dashed #fca5a5`, margin: "6px 0 4px" }} />
+                {ftReasons.map((r, i) => (
+                  <ReasonRow
+                    key={i} code={r.reason_code} count={r.count} color={C.excl.border}
+                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [`ft_${i}`]: v }))}
+                  />
+                ))}
+              </>
+            )}
+          </SideBox>
+        </div>
 
-          <RightArrow x1={MAIN_X + MAIN_W} x2={SIDE_X} y={R.ft + FT_SIDE_H / 2} />
-          <Box x={SIDE_X} y={R.ft} w={SIDE_W} h={FT_SIDE_H} fill={C.excl.fill} stroke={C.excl.stroke}>
-            <text x={sideCx} y={R.ft + 22} textAnchor="middle" fontSize={12} fontWeight="700" fill={C.excl.head}>
-              Articles excluded (FT)
-            </text>
-            <BigN x={sideCx} y={R.ft + 42} value={ftExcluded} color={C.excl.stroke} size={14} />
-            <ReasonRows reasons={ftReasons} boxY={R.ft} />
-          </Box>
+        <VArrow />
 
-          <DownArrow x={mainCx} y1={R.ft + FT_MAIN_H} y2={R.inc} />
-
-          {/* ══ ROW 5 — Included ════════════════════════════════════ */}
-          <Box x={MAIN_X} y={R.inc} w={MAIN_W} h={IN_H} fill={C.incl.fill} stroke={C.incl.stroke}>
-            <text x={mainCx} y={R.inc + 26} textAnchor="middle" fontSize={12.5} fontWeight="700" fill={C.incl.head}>
-              Studies included in review
-            </text>
-            <BigN x={mainCx} y={R.inc + 64} value={ftIncluded} color={C.incl.stroke} size={26} />
+        {/* ── ROW 5 — Included ───────────────────────────────────────────── */}
+        <div style={{ display: "flex", gap: 0, alignItems: "center" }}>
+          <PhaseBadge label="Included" />
+          <div style={{ width: 48 }} />
+          <FlowBox color={C.incl} minH={96}>
+            {boxTitle(C.incl.title, "Studies included in review")}
+            <NLine value={ftIncluded} color={C.incl.border} size={28} onSave={setOv("ft_included")} />
             {extracted > 0 && (
-              <text x={mainCx} y={R.inc + 84} textAnchor="middle" fontSize={9.5} fill={C.muted}>
-                data extracted: n = {extracted.toLocaleString()}
-              </text>
+              <div style={{ textAlign: "center", fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                data extracted: n = <EN value={extracted} color="#64748b" size={10} onSave={setOv("extracted")} />
+              </div>
             )}
-          </Box>
-        </svg>
+          </FlowBox>
+        </div>
       </div>
 
       <p style={{ fontSize: "0.78rem", color: "#94a3b8", marginTop: "1rem", maxWidth: 680 }}>
-        Counts reflect current screening progress. "Duplicates removed" reflects within-source
-        deduplication; cross-source overlaps are managed via the Overlap system.
+        Counts reflect current screening progress. Click any <strong style={{ color: "#6366f1" }}>n = </strong>
+        value to override it for export. Edits are session-only and reset on refresh.
       </p>
     </div>
   );

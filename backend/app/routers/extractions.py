@@ -202,7 +202,10 @@ async def list_extractions(
     role = await require_project_role(db, project_id, current_user.id, allowed=ANY_ROLE)
 
     if role in ADMIN_ROLE:
-        effective_reviewer_id: Optional[uuid.UUID] = reviewer_id
+        # When no reviewer_id is given, default to the current user's own extractions.
+        # Without this, the LEFT JOIN would match every reviewer's row for the same
+        # paper (one per reviewer since migration 045), producing duplicates.
+        effective_reviewer_id: Optional[uuid.UUID] = reviewer_id if reviewer_id is not None else current_user.id
         allowed_record_ids: Optional[set] = None
     else:
         effective_reviewer_id = current_user.id
