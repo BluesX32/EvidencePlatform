@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Upload, BookOpen, GitMerge, CheckSquare,
   FlaskConical, Tag, Network, Bot, LogOut, FolderOpen, ChevronLeft,
   Users, Scale, HelpCircle, KeyRound, ChevronsUpDown, Pencil, Check, X, Keyboard,
-  Menu, PanelLeftClose, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash, Eye, FileText,
+  Menu, PanelLeftClose, Search, SearchCode, Layers, BarChart2, GripVertical, Cloud, ShieldCheck, Settings, Hash, Eye, FileText,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
@@ -28,6 +28,7 @@ import OnboardingTour from "./OnboardingTour";
 const PROJECT_NAV = [
   { path: "",                   icon: LayoutDashboard, label: "Overview",        section: "overview"      },
   { path: "/import",            icon: Upload,          label: "Import",          section: "import"        },
+  { path: "/search",            icon: Search,          label: "PubMed Search",   section: "search"        },
   { path: "/records",           icon: BookOpen,        label: "Records",         section: "records"       },
   { path: "/overlap",           icon: GitMerge,        label: "Overlap",         section: "overlap"       },
   { path: "/screen",            icon: CheckSquare,     label: "Screening",       section: "screening"     },

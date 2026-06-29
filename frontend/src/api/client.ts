@@ -2279,3 +2279,43 @@ export const aiApi = {
   getSynthesisDraft: (projectId: string) =>
     api.get<{ report: string }>(`/projects/${projectId}/llm-screening/synthesis-draft`),
 };
+
+// ── Search API ────────────────────────────────────────────────────────────────
+
+export interface PubMedPreviewRecord {
+  pmid: string;
+  title: string;
+  year: string;
+  authors: string;
+  source: string;
+}
+
+export interface SearchStrategyResponse {
+  query: string;
+  explanation: string;
+  pico: { population?: string; intervention?: string; comparison?: string; outcome?: string };
+  suggested_filters: string[];
+}
+
+export interface SearchExecuteResponse {
+  total: number;
+  preview: PubMedPreviewRecord[];
+  pmids: string[];
+}
+
+export const searchApi = {
+  generateStrategy: (projectId: string, params: { research_question: string; model?: string }) =>
+    api.post<SearchStrategyResponse>(`/projects/${projectId}/search/strategy`, params),
+
+  execute: (projectId: string, params: { query: string; filters?: string[]; max_results?: number }) =>
+    api.post<SearchExecuteResponse>(`/projects/${projectId}/search/execute`, params),
+
+  importRecords: (
+    projectId: string,
+    params: { query: string; filters?: string[]; max_results?: number; source_name?: string },
+  ) =>
+    api.post<{ import_job_id: string; source_id: string; estimated_records: number }>(
+      `/projects/${projectId}/search/import`,
+      params,
+    ),
+};
