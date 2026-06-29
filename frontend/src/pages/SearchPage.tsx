@@ -122,15 +122,22 @@ export default function SearchPage() {
   const [sourceName, setSourceName] = useState("");
   const [importDone, setImportDone] = useState<{ jobId: string; count: number } | null>(null);
 
+  const [strategyError, setStrategyError] = useState<string | null>(null);
+
   // Step 1: generate strategy
   const strategyMut = useMutation({
     mutationFn: () => searchApi.generateStrategy(projectId!, { research_question: question }),
     onSuccess: (res) => {
+      setStrategyError(null);
       const s = res.data;
       setStrategy(s);
       setQuery(s.query);
       setActiveFilters(s.suggested_filters ?? []);
       setStep(2);
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setStrategyError(detail || "Generation failed — check server logs");
     },
   });
 
@@ -219,7 +226,7 @@ export default function SearchPage() {
                   </button>
                   {strategyMut.isError && (
                     <span style={{ fontSize: "0.8rem", color: "var(--danger)", display: "flex", alignItems: "center", gap: 4 }}>
-                      <AlertTriangle size={13} /> Failed — check API key
+                      <AlertTriangle size={13} /> {strategyError || "Failed"}
                     </span>
                   )}
                 </div>
