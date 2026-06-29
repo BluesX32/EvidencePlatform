@@ -41,13 +41,17 @@ def _ncbi_params(**kw: str) -> dict:
 async def generate_search_strategy(
     research_question: str,
     model: str = "claude-haiku-4-5-20251001",
+    api_key: Optional[str] = None,
 ) -> dict:
     """
     Returns {"query": str, "explanation": str, "pico": dict}.
     """
     import anthropic
 
-    client = anthropic.AsyncAnthropic()
+    resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not resolved_key:
+        raise ValueError("No Anthropic API key — add one in Settings")
+    client = anthropic.AsyncAnthropic(api_key=resolved_key)
     prompt = f"""You are an expert medical librarian. A researcher wants to search PubMed for papers relevant to this research question:
 
 "{research_question}"

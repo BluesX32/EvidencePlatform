@@ -1669,6 +1669,15 @@ class AutoExtractRequest(BaseModel):
     model: str = "claude-haiku-4-5-20251001"
 
 
+def _resolve_anthropic_key(user: User) -> Optional[str]:
+    """Check user profile first, then fall back to environment variable."""
+    profile_keys = user.api_keys or {}
+    return (
+        profile_keys.get("anthropic")
+        or os.environ.get("ANTHROPIC_API_KEY")
+    )
+
+
 @router.post("/projects/{project_id}/llm-screening/auto-extract")
 async def auto_extract_paper(
     project_id: str,
@@ -1729,7 +1738,7 @@ async def auto_extract_paper(
             pass  # fall back to abstract-only extraction
 
     llm_config = project.llm_config or {}
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _resolve_anthropic_key(user)
     result = await svc._extract_one_record(
         record=record,
         full_text=full_text,
@@ -1825,9 +1834,9 @@ async def auto_concept_extract(
         lines.append(f"- **{f.get('label', f.get('id'))}** ({f.get('field_type', 'metadata')})")
     lines.append("\nUse the submit_concepts tool. For each field, list ALL values you can identify from the paper.")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _resolve_anthropic_key(user)
     if not api_key:
-        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+        raise HTTPException(500, "No Anthropic API key — add one in Settings")
 
     client = _anthropic.AsyncAnthropic(api_key=api_key)
     try:
@@ -1908,9 +1917,9 @@ Based on the criteria and the paper content, which decision is better supported?
 Respond with a JSON object with two keys: "decision" ("include" or "exclude") and "rationale" (1-2 sentences).
 Return ONLY the JSON, no other text."""
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _resolve_anthropic_key(user)
     if not api_key:
-        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+        raise HTTPException(500, "No Anthropic API key — add one in Settings")
 
     client = _anthropic.AsyncAnthropic(api_key=api_key)
     try:
@@ -2032,9 +2041,9 @@ Write a comprehensive evidence synthesis report in markdown with the following s
 
 Be specific, cite paper titles where relevant, and write in an academic tone."""
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _resolve_anthropic_key(user)
     if not api_key:
-        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+        raise HTTPException(500, "No Anthropic API key — add one in Settings")
 
     client = _anthropic.AsyncAnthropic(api_key=api_key)
     try:

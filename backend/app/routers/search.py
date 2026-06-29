@@ -9,6 +9,7 @@ Three endpoints:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import List, Optional
 
@@ -79,6 +80,11 @@ class ImportResponse(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+def _resolve_anthropic_key(user: User) -> Optional[str]:
+    profile_keys = user.api_keys or {}
+    return profile_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY")
+
+
 @router.post("/{project_id}/search/strategy", response_model=StrategyResponse)
 async def generate_strategy(
     project_id: uuid.UUID,
@@ -87,9 +93,12 @@ async def generate_strategy(
     user: User = Depends(get_current_user),
 ):
     await require_project_role(db, project_id, user.id, allowed=ADMIN_ROLE)
+    api_key = _resolve_anthropic_key(user)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No Anthropic API key — add one in Settings")
     try:
         result = await pubmed_service.generate_search_strategy(
-            body.research_question, model=body.model
+            body.research_question, model=body.model, api_key=api_key
         )
     except Exception as exc:
         logger.exception("Strategy generation failed")
