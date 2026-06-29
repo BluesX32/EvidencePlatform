@@ -19,7 +19,7 @@ function renderMarkdown(text: string): string {
 }
 
 export default function ReportPage() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [focus, setFocus] = useState("");
   const [maxPapers, setMaxPapers] = useState(30);

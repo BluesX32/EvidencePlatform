@@ -109,7 +109,7 @@ function PreviewTable({ results }: { results: SearchExecuteResponse }) {
 type Step = 1 | 2 | 3;
 
 export default function SearchPage() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { id: projectId } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
   const [step, setStep] = useState<Step>(1);
