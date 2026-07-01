@@ -25,7 +25,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://evidence:evidence@db:5432/evidenceplatform
       SECRET_KEY: ${SECRET_KEY:-change-me-use-a-strong-random-key}
-      ACCESS_TOKEN_EXPIRE_HOURS: ${ACCESS_TOKEN_EXPIRE_HOURS:-24}
+      ACCESS_TOKEN_EXPIRE_HOURS: ${ACCESS_TOKEN_EXPIRE_HOURS:-168}
       # All browser traffic goes through the Vite proxy so CORS is only needed
       # for direct API access (e.g. Swagger UI).  The frontend URL is enough.
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173}

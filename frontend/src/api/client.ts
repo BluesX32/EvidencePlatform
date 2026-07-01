@@ -15,11 +15,15 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// On 401, clear token and redirect to login.
+// On 401, clear token and redirect to login — but only if the request actually
+// carried a token (prevents redirect loops when the token is already absent).
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    if (
+      err.response?.status === 401 &&
+      err.config?.headers?.Authorization
+    ) {
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = "/login";
     }
@@ -30,6 +34,26 @@ api.interceptors.response.use(
 export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token);
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
+
+/**
+ * Validate the stored token against the server on page load.
+ * Returns true if valid (or no token stored), false if the server rejected it.
+ * Call this once in App on mount so stale tokens are caught before any page query fires.
+ */
+export async function validateStoredToken(): Promise<boolean> {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) return true; // nothing to validate
+  try {
+    await api.get("/auth/me");
+    return true;
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response?.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      return false;
+    }
+    return true; // network error / 5xx — don't log the user out
+  }
+}
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 

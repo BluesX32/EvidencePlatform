@@ -1,7 +1,7 @@
-import { lazy, Suspense, type ReactNode, Component, type ErrorInfo } from "react";
+import { lazy, Suspense, type ReactNode, Component, type ErrorInfo, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { getToken } from "./api/client";
+import { getToken, validateStoredToken } from "./api/client";
 
 // ---------------------------------------------------------------------------
 // ErrorBoundary — catches any unhandled render error and shows a recovery UI
@@ -76,8 +76,25 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
+// On mount, silently validate the stored JWT with the server.
+// This catches expired tokens and stale keys before any page query fires.
+function useTokenCheck() {
+  const [checked, setChecked] = useState(false);
+  useEffect(() => {
+    validateStoredToken().finally(() => setChecked(true));
+  }, []);
+  return checked;
+}
+
 function RequireAuth({ children }: { children: ReactNode }) {
   return getToken() ? children : <Navigate to="/login" replace />;
+}
+
+// Wrapper that runs the token check once at the root level.
+function AuthGate({ children }: { children: ReactNode }) {
+  const checked = useTokenCheck();
+  if (!checked) return null; // brief flash prevented by fast /auth/me call
+  return <>{children}</>;
 }
 
 /** Wraps a page in AppShell (sidebar layout) with an error boundary. */
@@ -96,6 +113,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ReviewerViewProvider>
       <BrowserRouter>
+      <AuthGate>
         <Suspense fallback={null}>
           <Routes>
             {/* Public */}
@@ -132,6 +150,7 @@ export default function App() {
             <Route path="/projects/:id/reviewer/:reviewerId" element={<WithShell><ReviewerViewPage /></WithShell>} />
           </Routes>
         </Suspense>
+      </AuthGate>
       </BrowserRouter>
       </ReviewerViewProvider>
     </QueryClientProvider>
