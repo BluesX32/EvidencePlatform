@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { BookOpen } from "lucide-react";
 import { recordsApi, sourcesApi } from "../api/client";
 import RecordsTable, { type ColumnVisibility, DEFAULT_COLUMNS } from "../components/RecordsTable";
+import EmptyState from "../components/EmptyState";
 
 // ── URL helpers ──────────────────────────────────────────────────────────────
 
@@ -166,7 +168,7 @@ export default function RecordsPage() {
   if (ftStatus) chips.push({ label: `FT: ${ftStatus}`, onRemove: () => setSearchParams(p => setParam(p, "ft_status", undefined)) });
   if (hasExtraction !== undefined) chips.push({ label: hasExtraction ? "Has extraction" : "No extraction", onRemove: () => setSearchParams(p => setParam(p, "has_extraction", undefined)) });
 
-  const hasActiveFilters = chips.length > 0;
+  const hasActiveFilters = chips.length > 0 || !!q;
 
   const labelStyle: React.CSSProperties = { fontSize: "0.82rem", fontWeight: 600, color: "var(--text-secondary)" };
 
@@ -295,6 +297,18 @@ export default function RecordsPage() {
         columns={columns}
         onColumnsChange={handleColumnsChange}
         onDelete={id => deleteMutation.mutate(id)}
+        emptyState={hasActiveFilters ? undefined : (
+          <EmptyState
+            icon={<BookOpen size={36} />}
+            title="No records yet"
+            hint="Import citations from RIS/BibTeX files, or run a PubMed search to start building your corpus."
+            action={
+              <Link to={`/projects/${projectId}/import`} className="btn-primary btn-sm">
+                Import records
+              </Link>
+            }
+          />
+        )}
       />
 
       {/* ── Pagination ──────────────────────────────────────────────────────── */}

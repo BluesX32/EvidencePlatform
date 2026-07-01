@@ -64,6 +64,7 @@ import AIPilotPage from "./pages/AIPilotPage";
 import ReviewerViewPage from "./pages/ReviewerViewPage";
 import AppShell from "./components/AppShell";
 import { FeedbackProvider } from "./components/Feedback";
+import { SkeletonRows } from "./components/Skeleton";
 import { ReviewerViewProvider } from "./context/ReviewerViewContext";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -139,14 +140,14 @@ export default function App() {
             <Route path="/projects/:id/citations"           element={<WithShell><CitationSourcingPage /></WithShell>} />
             <Route path="/projects/:id/citations/:searchId" element={<WithShell><CitationSourcingPage /></WithShell>} />
             <Route path="/projects/:id/labels"       element={<WithShell><LabelsPage /></WithShell>} />
-            <Route path="/projects/:id/ontology"     element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><OntologyPage /></Suspense></WithShell>} />
+            <Route path="/projects/:id/ontology"     element={<WithShell><Suspense fallback={<SkeletonRows rows={8} style={{ padding: "2rem" }} />}><OntologyPage /></Suspense></WithShell>} />
             <Route path="/projects/:id/concept-taxonomy" element={<WithShell><ConceptTaxonomyPage /></WithShell>} />
             <Route path="/projects/:id/thematic"         element={<WithShell><ThematicAnalysis /></WithShell>} />
             <Route path="/projects/:id/prisma"           element={<WithShell><PrismaPage /></WithShell>} />
             <Route path="/projects/:id/report"           element={<WithShell><ReportPage /></WithShell>} />
             <Route path="/projects/:id/search"           element={<WithShell><SearchPage /></WithShell>} />
             <Route path="/projects/:id/ai-pilot"         element={<WithShell><AIPilotPage /></WithShell>} />
-            <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<p style={{padding:"2rem",color:"#888"}}>Loading…</p>}><LLMScreeningPage /></Suspense></WithShell>} />
+            <Route path="/projects/:id/llm-screening" element={<WithShell><Suspense fallback={<SkeletonRows rows={8} style={{ padding: "2rem" }} />}><LLMScreeningPage /></Suspense></WithShell>} />
             <Route path="/projects/:projectId/team"      element={<WithShell><TeamPage /></WithShell>} />
             <Route path="/projects/:projectId/consensus" element={<WithShell><ConsensusPage /></WithShell>} />
             <Route path="/projects/:id/reviewer/:reviewerId" element={<WithShell><ReviewerViewPage /></WithShell>} />

@@ -16,6 +16,9 @@ import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
 import ConceptExtractionForm from "../components/ConceptExtractionForm";
 import { useReviewerView } from "../context/ReviewerViewContext";
+import { FlaskConical } from "lucide-react";
+import { SkeletonRows } from "../components/Skeleton";
+import EmptyState from "../components/EmptyState";
 
 // ---------------------------------------------------------------------------
 // Constants (same vocabulary as ScreeningWorkspace)
@@ -1234,20 +1237,18 @@ export default function ExtractionLibrary() {
 
         {/* ── Table ───────────────────────────────────────────────────────── */}
         {isLoading ? (
-          <p style={{ color: "#888" }}>Loading…</p>
+          <SkeletonRows rows={8} />
         ) : orderedItems.length === 0 ? (
-          <div
-            style={{
-              textAlign: "center", padding: "3rem 2rem",
-              background: "#f8f9fa", border: "1px solid #dadce0",
-              borderRadius: "0.75rem", color: "#5f6368",
-            }}
-          >
-            <p style={{ marginBottom: "1rem" }}>No extractions yet.</p>
-            <Link to={`/projects/${projectId}`} className="btn-secondary">
-              ← Back to project
-            </Link>
-          </div>
+          <EmptyState
+            icon={<FlaskConical size={36} />}
+            title="No extractions yet"
+            hint="Extractions are captured during Full-Text screening. Screen a paper and save its extraction form to see it here."
+            action={
+              <Link to={`/projects/${projectId}/screen`} className="btn-primary btn-sm">
+                Go to Screening
+              </Link>
+            }
+          />
         ) : visible.length === 0 ? (
           <p style={{ color: "#5f6368" }}>No articles match the current filters.</p>
         ) : (

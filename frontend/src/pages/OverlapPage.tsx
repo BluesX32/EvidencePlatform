@@ -12,6 +12,9 @@ import {
 } from "../api/client";
 import OverlapMatrix from "../components/OverlapMatrix";
 import EulerDiagram, { SOURCE_COLORS } from "../components/EulerDiagram";
+import { GitMerge } from "lucide-react";
+import { SkeletonRows } from "../components/Skeleton";
+import EmptyState from "../components/EmptyState";
 
 // ── Human-readable match evidence labels ─────────────────────────────────────
 
@@ -359,22 +362,19 @@ export default function OverlapPage() {
         )}
 
         {!data && !isLoading && !error && (
-          <div
-            style={{
-              background: "#f8f9fa",
-              border: "1px solid #dadce0",
-              borderRadius: "0.5rem",
-              padding: "1rem",
-              marginBottom: "1.5rem",
-              color: "#5f6368",
-            }}
-          >
-            No overlap data yet. Run overlap detection from the Project page to
-            populate this report.
-          </div>
+          <EmptyState
+            icon={<GitMerge size={36} />}
+            title="No overlap data yet"
+            hint="Run overlap detection to find records shared between sources."
+            action={
+              <Link to={`/projects/${projectId}`} className="btn-primary btn-sm">
+                Run detection from Overview
+              </Link>
+            }
+          />
         )}
 
-        {isLoading && <p>Loading…</p>}
+        {isLoading && <SkeletonRows rows={7} />}
         {error && <p className="error">Failed to load overlap data.</p>}
 
         {data && (

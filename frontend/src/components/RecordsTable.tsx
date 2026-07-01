@@ -1,6 +1,9 @@
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Trash2, SearchX } from "lucide-react";
 import type { RecordItem } from "../api/client";
+import { SkeletonRows } from "./Skeleton";
+import EmptyState from "./EmptyState";
 
 const BASIS_LABELS: Record<string, string> = {
   doi: "DOI",
@@ -162,6 +165,8 @@ interface Props {
   columns?: ColumnVisibility;
   onColumnsChange?: (c: ColumnVisibility) => void;
   onDelete?: (id: string) => void;
+  /** Shown when there are no records and no filters are active (e.g. an "Import" call to action). */
+  emptyState?: ReactNode;
 }
 
 export default function RecordsTable({
@@ -172,17 +177,24 @@ export default function RecordsTable({
   columns = DEFAULT_COLUMNS,
   onColumnsChange,
   onDelete,
+  emptyState,
 }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showColPicker, setShowColPicker] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (isLoading && records.length === 0) {
-    return <p>Loading records…</p>;
+    return <SkeletonRows rows={8} />;
   }
 
   if (!isLoading && records.length === 0) {
-    return <p className="muted">No records match your search.</p>;
+    return emptyState ?? (
+      <EmptyState
+        icon={<SearchX size={36} />}
+        title="No records match your filters"
+        hint="Try a different search term, or clear the active filters."
+      />
+    );
   }
 
   const optionalColCount =

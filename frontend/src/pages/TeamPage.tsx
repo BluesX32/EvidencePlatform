@@ -17,6 +17,7 @@ import {
 import { teamApi, consensusApi, recordsApi } from "../api/client";
 import { useReviewerView } from "../context/ReviewerViewContext";
 import { useToast } from "../components/Feedback";
+import { SkeletonRows } from "../components/Skeleton";
 import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, RecordItem } from "../api/client";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -459,7 +460,7 @@ function AssignPapersModal({
 
         <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 1.25rem" }}>
           {isLoading ? (
-            <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>Loading…</div>
+            <SkeletonRows rows={6} style={{ padding: "0.5rem 0" }} />
           ) : filtered.length === 0 ? (
             <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)" }}>
               {papers.length === 0
@@ -750,7 +751,7 @@ export default function TeamPage() {
         )}
 
         {membersLoading ? (
-          <div style={{ padding: 24, color: "var(--text-muted)", textAlign: "center" }}>Loading…</div>
+          <SkeletonRows rows={4} style={{ padding: "1rem 1.25rem" }} />
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
