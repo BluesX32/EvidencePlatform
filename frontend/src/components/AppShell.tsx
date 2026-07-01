@@ -24,27 +24,31 @@ import { useReviewerView } from "../context/ReviewerViewContext";
 import OnboardingTour from "./OnboardingTour";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
+// Grouped by workflow stage so the sidebar mirrors the evidence synthesis
+// pipeline: collect → screen → analyze → synthesize.
 
 const PROJECT_NAV = [
-  { path: "",                   icon: LayoutDashboard, label: "Overview",        section: "overview"      },
-  { path: "/import",            icon: Upload,          label: "Import",          section: "import"        },
-  { path: "/search",            icon: Search,          label: "PubMed Search",   section: "search"        },
-  { path: "/records",           icon: BookOpen,        label: "Records",         section: "records"       },
-  { path: "/overlap",           icon: GitMerge,        label: "Overlap",         section: "overlap"       },
-  { path: "/screen",            icon: CheckSquare,     label: "Screening",       section: "screening"     },
-  { path: "/extractions",       icon: FlaskConical,    label: "Extractions",     section: "extractions"   },
-  { path: "/prisma",            icon: BarChart2,       label: "PRISMA",          section: "prisma"        },
-  { path: "/citations",         icon: SearchCode,      label: "Citation Search", section: "citations"     },
-  { path: "/labels",            icon: Tag,             label: "Labels",          section: "labels"        },
-  { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts",        section: "concepts"      },
-  { path: "/thematic",          icon: Hash,            label: "Thematic",        section: "thematic"      },
-  { path: "/report",            icon: FileText,        label: "Synthesis",       section: "report"        },
-  { path: "/ontology",          icon: Network,         label: "Ontology",        section: "ontology"      },
-  { path: "/ai-pilot",           icon: Cpu,             label: "AI Pilot",        section: "ai_pilot"      },
-  { path: "/llm-screening",     icon: Bot,             label: "LLM Screening",   section: "llm_screening" },
-  { path: "/team",              icon: Users,           label: "Team",            section: "team"          },
-  { path: "/consensus",         icon: Scale,           label: "Consensus",       section: "consensus"     },
+  { path: "",                   icon: LayoutDashboard, label: "Overview",        section: "overview",      group: null          },
+  { path: "/import",            icon: Upload,          label: "Import",          section: "import",        group: "Collect"     },
+  { path: "/search",            icon: Search,          label: "PubMed Search",   section: "search",        group: "Collect"     },
+  { path: "/records",           icon: BookOpen,        label: "Records",         section: "records",       group: "Collect"     },
+  { path: "/overlap",           icon: GitMerge,        label: "Overlap",         section: "overlap",       group: "Collect"     },
+  { path: "/screen",            icon: CheckSquare,     label: "Screening",       section: "screening",     group: "Screen"      },
+  { path: "/llm-screening",     icon: Bot,             label: "LLM Screening",   section: "llm_screening", group: "Screen"      },
+  { path: "/consensus",         icon: Scale,           label: "Consensus",       section: "consensus",     group: "Screen"      },
+  { path: "/prisma",            icon: BarChart2,       label: "PRISMA",          section: "prisma",        group: "Screen"      },
+  { path: "/extractions",       icon: FlaskConical,    label: "Extractions",     section: "extractions",   group: "Analyze"     },
+  { path: "/labels",            icon: Tag,             label: "Labels",          section: "labels",        group: "Analyze"     },
+  { path: "/concept-taxonomy",  icon: Layers,          label: "Concepts",        section: "concepts",      group: "Analyze"     },
+  { path: "/thematic",          icon: Hash,            label: "Thematic",        section: "thematic",      group: "Analyze"     },
+  { path: "/ontology",          icon: Network,         label: "Ontology",        section: "ontology",      group: "Analyze"     },
+  { path: "/report",            icon: FileText,        label: "Synthesis",       section: "report",        group: "Synthesize"  },
+  { path: "/citations",         icon: SearchCode,      label: "Citation Search", section: "citations",     group: "Synthesize"  },
+  { path: "/ai-pilot",          icon: Cpu,             label: "AI Pilot",        section: "ai_pilot",      group: "Project"     },
+  { path: "/team",              icon: Users,           label: "Team",            section: "team",          group: "Project"     },
 ];
+
+const NAV_GROUP_ORDER: (string | null)[] = [null, "Collect", "Screen", "Analyze", "Synthesize", "Project"];
 
 const NAV_PATHS = PROJECT_NAV.map(n => n.path);
 const NAV_ORDER_KEY = "ep_nav_order";
@@ -565,36 +569,45 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // Draggable nav order (persisted to localStorage)
+  // Draggable nav order (persisted to localStorage) — reordering is
+  // constrained to within a workflow group.
   const [navOrder, setNavOrder] = useState<string[]>(loadNavOrder);
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [dragPath, setDragPath] = useState<string | null>(null);
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null);
 
   const orderedNav = navOrder
     .map(p => PROJECT_NAV.find(n => n.path === p))
     .filter((n): n is (typeof PROJECT_NAV)[number] => !!n)
     .filter(n => !allowedSections || allowedSections.has(n.section));
 
-  function navDragStart(_e: React.DragEvent, idx: number) {
-    setDragIdx(idx);
+  const navGroups = NAV_GROUP_ORDER
+    .map(group => ({ group, items: orderedNav.filter(n => n.group === group) }))
+    .filter(g => g.items.length > 0);
+
+  function sameGroup(a: string, b: string) {
+    return PROJECT_NAV.find(n => n.path === a)?.group === PROJECT_NAV.find(n => n.path === b)?.group;
   }
-  function navDragOver(e: React.DragEvent, idx: number) {
+
+  function navDragStart(_e: React.DragEvent, path: string) {
+    setDragPath(path);
+  }
+  function navDragOver(e: React.DragEvent, path: string) {
     e.preventDefault();
-    if (dragIdx !== null && dragIdx !== idx) setDragOverIdx(idx);
+    if (dragPath !== null && dragPath !== path && sameGroup(dragPath, path)) setDragOverPath(path);
   }
-  function navDrop(_e: React.DragEvent, idx: number) {
-    if (dragIdx === null || dragIdx === idx) return;
+  function navDrop(_e: React.DragEvent, path: string) {
+    if (dragPath === null || dragPath === path || !sameGroup(dragPath, path)) return;
     const next = [...navOrder];
-    const [moved] = next.splice(dragIdx, 1);
-    next.splice(idx, 0, moved);
+    const [moved] = next.splice(next.indexOf(dragPath), 1);
+    next.splice(next.indexOf(path), 0, moved);
     setNavOrder(next);
     localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(next));
-    setDragIdx(null);
-    setDragOverIdx(null);
+    setDragPath(null);
+    setDragOverPath(null);
   }
   function navDragEnd() {
-    setDragIdx(null);
-    setDragOverIdx(null);
+    setDragPath(null);
+    setDragOverPath(null);
   }
 
   useEffect(() => {
@@ -744,48 +757,53 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="sidebar-divider" />
 
             <nav className="sidebar-nav">
-              {orderedNav.map(({ path, icon: Icon, label, section }, idx) => {
-                const basePath = `/projects/${projectId}${path}`;
-                let fullPath = basePath;
-                if (path === "/screen" && projectId) {
-                  const saved = localStorage.getItem(`ep_screening_last_${projectId}`);
-                  if (saved) fullPath = `${basePath}?${saved}`;
-                }
-                // In reviewer canvas mode, Extractions link carries the reviewer filter
-                if (path === "/extractions" && activeReviewerView) {
-                  fullPath = `${basePath}?reviewerId=${activeReviewerView.reviewerId}&reviewerName=${encodeURIComponent(activeReviewerView.reviewerName)}`;
-                }
-                const isActive =
-                  path === ""
-                    ? location.pathname === `/projects/${projectId}`
-                    : location.pathname.startsWith(basePath);
-                const isDragging = dragIdx === idx;
-                const isOver = dragOverIdx === idx;
-                return (
-                  <div
-                    key={path}
-                    className={`sidebar-nav-item${isDragging ? " is-dragging" : ""}${isOver ? " is-drag-over" : ""}`}
-                    draggable={!isMobile && !collapsed}
-                    onDragStart={e => navDragStart(e, idx)}
-                    onDragOver={e => navDragOver(e, idx)}
-                    onDrop={e => navDrop(e, idx)}
-                    onDragEnd={navDragEnd}
-                  >
-                    <Link
-                      to={fullPath}
-                      className={`sidebar-link${isActive ? " active" : ""}`}
-                      onClick={() => { if (isMobile) setMobileOpen(false); }}
-                      data-tour={section}
-                    >
-                      <span className="drag-grip sidebar-label">
-                        <GripVertical size={11} />
-                      </span>
-                      <span className="sidebar-icon"><Icon size={15} /></span>
-                      <span className="sidebar-label">{label}</span>
-                    </Link>
-                  </div>
-                );
-              })}
+              {navGroups.map(({ group, items }) => (
+                <div key={group ?? "main"} className="sidebar-group">
+                  {group && <div className="sidebar-group-label">{group}</div>}
+                  {items.map(({ path, icon: Icon, label, section }) => {
+                    const basePath = `/projects/${projectId}${path}`;
+                    let fullPath = basePath;
+                    if (path === "/screen" && projectId) {
+                      const saved = localStorage.getItem(`ep_screening_last_${projectId}`);
+                      if (saved) fullPath = `${basePath}?${saved}`;
+                    }
+                    // In reviewer canvas mode, Extractions link carries the reviewer filter
+                    if (path === "/extractions" && activeReviewerView) {
+                      fullPath = `${basePath}?reviewerId=${activeReviewerView.reviewerId}&reviewerName=${encodeURIComponent(activeReviewerView.reviewerName)}`;
+                    }
+                    const isActive =
+                      path === ""
+                        ? location.pathname === `/projects/${projectId}`
+                        : location.pathname.startsWith(basePath);
+                    const isDragging = dragPath === path;
+                    const isOver = dragOverPath === path;
+                    return (
+                      <div
+                        key={path}
+                        className={`sidebar-nav-item${isDragging ? " is-dragging" : ""}${isOver ? " is-drag-over" : ""}`}
+                        draggable={!isMobile && !collapsed}
+                        onDragStart={e => navDragStart(e, path)}
+                        onDragOver={e => navDragOver(e, path)}
+                        onDrop={e => navDrop(e, path)}
+                        onDragEnd={navDragEnd}
+                      >
+                        <Link
+                          to={fullPath}
+                          className={`sidebar-link${isActive ? " active" : ""}`}
+                          onClick={() => { if (isMobile) setMobileOpen(false); }}
+                          data-tour={section}
+                        >
+                          <span className="drag-grip sidebar-label">
+                            <GripVertical size={11} />
+                          </span>
+                          <span className="sidebar-icon"><Icon size={15} /></span>
+                          <span className="sidebar-label">{label}</span>
+                        </Link>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </nav>
           </>
         ) : (

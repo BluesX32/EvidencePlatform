@@ -286,6 +286,31 @@ p  { margin: 0 0 .75rem; }
   padding: .25rem .75rem .5rem;
 }
 
+/* Workflow-stage groups within the project nav */
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-group + .sidebar-group {
+  margin-top: .55rem;
+}
+.sidebar-group-label {
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: #64748b;
+  padding: .3rem .65rem .15rem;
+  white-space: nowrap;
+}
+.sidebar--collapsed .sidebar-group-label { display: none; }
+.sidebar--collapsed .sidebar-group + .sidebar-group {
+  margin-top: .45rem;
+  padding-top: .45rem;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+
 .sidebar-link {
   display: flex;
   align-items: center;
