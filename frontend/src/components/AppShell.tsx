@@ -22,6 +22,7 @@ import { useNavigate } from "react-router-dom";
 import { projectsApi, authApi, teamApi, clearToken, type UserProfile } from "../api/client";
 import { useReviewerView } from "../context/ReviewerViewContext";
 import OnboardingTour from "./OnboardingTour";
+import CommandPalette from "./CommandPalette";
 
 // ── Nav items ─────────────────────────────────────────────────────────────
 // Grouped by workflow stage so the sidebar mirrors the evidence synthesis
@@ -70,6 +71,7 @@ function loadNavOrder(): string[] {
 // ── Keyboard shortcuts modal ──────────────────────────────────────────────
 
 const SHORTCUTS = [
+  { keys: ["⌘", "K"],  action: "Open command palette"         },
   { keys: ["⌘", "↵"],  action: "Save note in PDF viewer"      },
   { keys: ["←", "→"],  action: "Previous / next screening item" },
   { keys: ["I"],        action: "Include (TA / FT screen)"     },
@@ -541,6 +543,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Onboarding tour — shown on first visit (or after "Tutorial" in profile menu)
   const [showTour, setShowTour] = useState(() => !localStorage.getItem("ep_tour_done"));
 
+  // Command palette (⌘K / Ctrl+K)
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(v => !v);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => projectsApi.get(projectId!).then(r => r.data),
@@ -847,6 +862,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* ── Onboarding tour overlay ──────────────────────────────────────── */}
       {showTour && <OnboardingTour onDone={() => setShowTour(false)} />}
+
+      {/* ── Command palette (⌘K) ─────────────────────────────────────────── */}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          projectId={projectId}
+          navItems={orderedNav}
+        />
+      )}
     </div>
   );
 }
