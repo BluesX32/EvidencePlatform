@@ -8,6 +8,7 @@ import ConceptExtractionForm from "../components/ConceptExtractionForm";
 import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
+import { useToast, useConfirm } from "../components/Feedback";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1698,6 +1699,7 @@ function ScreeningPanel({
   seed?: number;
 }) {
   const queryClient = useQueryClient();
+  const confirmDialog = useConfirm();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -1952,8 +1954,14 @@ function ScreeningPanel({
           </button>
           {/* Escape hatch: change FT decision to exclude without losing the item */}
           <button
-            onClick={() => {
-              if (!window.confirm("Exclude this paper at Full-Text stage and return to screening?")) return;
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: "Exclude at Full-Text stage?",
+                message: "This paper will be excluded and you will return to screening.",
+                confirmLabel: "Exclude",
+                danger: true,
+              });
+              if (!ok) return;
               decide("exclude");
               setExtractPhase(false);
             }}
@@ -2665,6 +2673,7 @@ function MixedPanel({
   seed?: number;
 }) {
   const queryClient = useQueryClient();
+  const confirmDialog = useConfirm();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -3057,9 +3066,14 @@ function MixedPanel({
               📄 {pdfOpen ? "Hide PDF" : "View PDF"}
             </button>
             <button
-              onClick={() => {
-                if (!window.confirm("Exclude this paper at Full-Text stage and return to screening?")) return;
-                handleFT("exclude");
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: "Exclude at Full-Text stage?",
+                  message: "This paper will be excluded and you will return to screening.",
+                  confirmLabel: "Exclude",
+                  danger: true,
+                });
+                if (ok) handleFT("exclude");
               }}
               disabled={decideMutation.isPending}
               style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 600, padding: "0.18rem 0.65rem", borderRadius: "1rem", border: "1px solid #fca5a5", background: "#fff", color: "#991b1b", cursor: "pointer" }}
@@ -3118,6 +3132,7 @@ function ExtractionPanel({
   randomize?: boolean;
   seed?: number;
 }) {
+  const confirmDialog = useConfirm();
   const [item, setItem] = useState<ScreeningNextItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<ExtractionJson>(EMPTY_EXTRACTION);
@@ -3343,8 +3358,14 @@ function ExtractionPanel({
           📄 {pdfOpen ? "Hide PDF" : "View PDF"}
         </button>
         <button
-          onClick={() => {
-            if (!window.confirm("Exclude this paper at Full-Text stage and move to the next?")) return;
+          onClick={async () => {
+            const ok = await confirmDialog({
+              title: "Exclude at Full-Text stage?",
+              message: "This paper will be excluded and you will move to the next one.",
+              confirmLabel: "Exclude",
+              danger: true,
+            });
+            if (!ok) return;
             ftExcludeMutation.mutate({ record_id: item!.record_id ?? null, cluster_id: item!.cluster_id ?? null });
           }}
           disabled={ftExcludeMutation.isPending}
@@ -3544,6 +3565,7 @@ function SessionLogPanel({
   entries: TimingEntry[];
   onClear: () => void;
 }) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [importResult, setImportResult] = useState<{ entries: TimingEntry[]; errors: string[] } | null>(null);
   const [importStats, setImportStats] = useState<ReturnType<typeof computeStats> | null>(null);
@@ -3574,7 +3596,7 @@ function SessionLogPanel({
       const date = new Date().toISOString().slice(0, 10);
       downloadTextFile(csv, `screening_all_decisions_${projectId.slice(0, 8)}_${date}.csv`);
     } catch {
-      alert("Failed to fetch decisions from server.");
+      toast("Failed to fetch decisions from server.", "error");
     } finally {
       setApiExportLoading(false);
     }

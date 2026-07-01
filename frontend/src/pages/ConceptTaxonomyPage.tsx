@@ -20,6 +20,7 @@ import {
   type ConceptTaxonomyNode,
 } from "../api/client";
 import { useReviewerView } from "../context/ReviewerViewContext";
+import { useToast } from "../components/Feedback";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -220,6 +221,7 @@ function MergeModal({ selected, entries, projectId, fieldType, onClose, onDone }
   const selectedEntries = entries.filter(e => selected.has(e.key));
   const [canonicalName, setCanonicalName] = useState(selectedEntries[0]?.value ?? "");
   const qc = useQueryClient();
+  const toast = useToast();
 
   const mergeMut = useMutation({
     mutationFn: () => {
@@ -239,7 +241,7 @@ function MergeModal({ selected, entries, projectId, fieldType, onClose, onDone }
       qc.invalidateQueries({ queryKey: ["concept-taxonomy-nodes", projectId] });
       onDone();
     },
-    onError: () => alert("Merge failed — please try again."),
+    onError: () => toast("Merge failed — please try again.", "error"),
   });
 
   const color = TAB_COLORS[fieldType];
@@ -307,6 +309,7 @@ function ParentPicker({ entry, allEntries, projectId, fieldType, onClose }: {
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [_parentKey, _setParentKey] = useState(entry.node?.parent_id ?? "");
 
   const candidates = allEntries.filter(e =>
@@ -353,7 +356,7 @@ function ParentPicker({ entry, allEntries, projectId, fieldType, onClose }: {
     },
     onError: (err: any) => {
       const msg = err?.response?.data?.detail ?? "Failed to set parent";
-      alert(msg);
+      toast(msg, "error");
     },
   });
 
@@ -529,6 +532,7 @@ function PushPanel({ projectId, tab, selected, allEntries, onSuccess }: {
   projectId: string; tab: ConceptFieldType; selected: Set<string>;
   allEntries: ViewEntry[]; onSuccess: () => void;
 }) {
+  const toast = useToast();
   const [namespace, setNamespace] = useState(NAMESPACE_DEFAULTS[tab] ?? "concept");
   const [parentId, setParentId] = useState<string>("");
 
@@ -548,9 +552,9 @@ function PushPanel({ projectId, tab, selected, allEntries, onSuccess }: {
     onSuccess: res => {
       const { created, skipped } = res.data;
       onSuccess();
-      alert(`Pushed to ontology: ${created} created, ${skipped} already existed.`);
+      toast(`Pushed to ontology: ${created} created, ${skipped} already existed.`, "success");
     },
-    onError: () => alert("Failed to push to ontology — please try again."),
+    onError: () => toast("Failed to push to ontology — please try again.", "error"),
   });
 
   const selectedEntries = allEntries.filter(e => selected.has(e.key));
@@ -610,13 +614,14 @@ function PushPanel({ projectId, tab, selected, allEntries, onSuccess }: {
 export default function ConceptTaxonomyPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const toast = useToast();
   const { reviewerView } = useReviewerView();
   const activeReviewerView = reviewerView && reviewerView.projectId === projectId ? reviewerView : null;
   const asReviewerId = activeReviewerView?.reviewerId ?? null;
 
   const [activeTab, setActiveTab] = useState<ConceptFieldType>("entity");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkConceptModel, setBulkConceptModel] = useState("anthropic/claude-haiku-4-5");
+  const [bulkConceptModel] = useState("anthropic/claude-haiku-4-5");
 
   const bulkConceptStatus = useQuery({
     queryKey: ["bulk-concepts-status", projectId],
@@ -723,7 +728,7 @@ export default function ConceptTaxonomyPage() {
     },
     onError: (err: any) => {
       const msg = err?.response?.data?.detail ?? "Failed to set parent";
-      alert(msg);
+      toast(msg, "error");
     },
   });
 

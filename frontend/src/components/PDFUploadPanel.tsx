@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fulltextApi } from "../api/client";
 import type { FulltextPdfMeta, ScreeningNextItem } from "../api/client";
+import { useConfirm } from "./Feedback";
 
 export function PDFUploadPanel({
   projectId,
@@ -11,6 +12,7 @@ export function PDFUploadPanel({
   item: ScreeningNextItem;
 }) {
   const qc = useQueryClient();
+  const confirmDialog = useConfirm();
   const itemKey = item.record_id ?? item.cluster_id;
   const [uploading, setUploading] = useState(false);
 
@@ -114,7 +116,10 @@ export function PDFUploadPanel({
             <input type="file" accept="application/pdf,.pdf" style={{ display: "none" }} onChange={handleUpload} disabled={uploading} />
           </label>
           <button
-            onClick={() => { if (window.confirm("Remove uploaded PDF?")) deleteMut.mutate(meta.id); }}
+            onClick={async () => {
+              const ok = await confirmDialog({ title: "Remove uploaded PDF?", confirmLabel: "Remove", danger: true });
+              if (ok) deleteMut.mutate(meta.id);
+            }}
             disabled={deleteMut.isPending}
             style={{ ...pillStyle, border: "1px solid #fecaca", color: "#dc2626" }}
           >

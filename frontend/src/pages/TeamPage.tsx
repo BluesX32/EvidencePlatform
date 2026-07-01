@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { teamApi, consensusApi, recordsApi } from "../api/client";
 import { useReviewerView } from "../context/ReviewerViewContext";
+import { useToast } from "../components/Feedback";
 import type { TeamMember, ProjectInvitation, ReviewerStats, InviteResult, RecordItem } from "../api/client";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -530,6 +531,7 @@ export default function TeamPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const toast = useToast();
   const { enterReviewerView } = useReviewerView();
 
   const [inviteEmail, setInviteEmail] = useState("");
@@ -585,13 +587,13 @@ export default function TeamPage() {
   const revokeMut = useMutation({
     mutationFn: (invId: string) => teamApi.revokeInvitation(projectId!, invId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["team-invitations", projectId] }),
-    onError: (e: unknown) => alert("Failed to revoke invitation: " + (e as { message?: string })?.message),
+    onError: (e: unknown) => toast("Failed to revoke invitation: " + (e as { message?: string })?.message, "error"),
   });
 
   const removeMut = useMutation({
     mutationFn: (userId: string) => teamApi.removeMember(projectId!, userId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["team-members", projectId] }),
-    onError: (e: unknown) => alert("Failed to remove member: " + (e as { message?: string })?.message),
+    onError: (e: unknown) => toast("Failed to remove member: " + (e as { message?: string })?.message, "error"),
   });
 
   const roleMut = useMutation({

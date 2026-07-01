@@ -1063,6 +1063,53 @@ select {
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* ── Toasts ──────────────────────────────────────────────────────────────── */
+.toast-stack {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  max-width: 420px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: .6rem;
+  padding: .7rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  font-size: .88rem;
+  animation: toast-in .18s ease;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.toast--success { background: var(--success-light); border-color: var(--success-border); color: var(--success); }
+.toast--error   { background: var(--danger-light);  border-color: var(--danger-border);  color: var(--danger); }
+.toast--info    { background: var(--info-light);    border-color: var(--brand-border);   color: var(--info); }
+
+.toast-icon { flex-shrink: 0; display: flex; margin-top: .1rem; }
+.toast-message { flex: 1; line-height: 1.45; }
+.toast-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: .6;
+  font-size: .9rem;
+  line-height: 1;
+  padding: .1rem;
+}
+.toast-dismiss:hover { opacity: 1; }
+
 /* ── Onboarding tour ─────────────────────────────────────────────────────── */
 .tour-card {
   padding: 0;

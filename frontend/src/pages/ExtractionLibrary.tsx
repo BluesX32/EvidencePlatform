@@ -997,7 +997,7 @@ export default function ExtractionLibrary() {
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showChart, setShowChart] = useState(true);
-  const [bulkExtractModel, setBulkExtractModel] = useState("anthropic/claude-haiku-4-5");
+  const [bulkExtractModel] = useState("anthropic/claude-haiku-4-5");
   const [orderedItems, setOrderedItems] = useState<ExtractionLibraryItem[]>([]);
   const dragIdx = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);

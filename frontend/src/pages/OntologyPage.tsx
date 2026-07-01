@@ -24,6 +24,7 @@ import {
   type OntologyNamespace,
 } from "../api/client";
 import { NS_COLORS } from "../components/OntologyTree";
+import { useToast, useConfirm } from "../components/Feedback";
 import OntologyCanvas2D from "../components/OntologyCanvas2D";
 import Graph3DCanvas from "../components/Graph3DCanvas";
 import type { G3DNode, G3DLink } from "../components/Graph3DCanvas";
@@ -63,6 +64,8 @@ const EDGE_COLOR = "#f97316";
 export default function OntologyPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const toast = useToast();
+  const confirmDialog = useConfirm();
 
   // ── View + search state ──────────────────────────────────────────────────
   const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
@@ -248,7 +251,7 @@ export default function OntologyPage() {
 
   const syncMut = useMutation({
     mutationFn: () => ontologyApi.syncLevels(projectId!, { namespace: "entity" }),
-    onSuccess: (res) => { invalidate(); alert(`Sync complete: ${res.data.created} created, ${res.data.skipped} already present.`); },
+    onSuccess: (res) => { invalidate(); toast(`Sync complete: ${res.data.created} created, ${res.data.skipped} already present.`, "success"); },
   });
 
   // ── Edge mutations ────────────────────────────────────────────────────────
@@ -306,10 +309,14 @@ export default function OntologyPage() {
     updateEdgeMut.mutate({ id: selectedEdgeId, body: { label: editEdgeLabel || null, clear_label: !editEdgeLabel, color: editEdgeColor || null, clear_color: !editEdgeColor } });
   };
 
-  const handleDeleteEdge = (edge: OntologyEdge) => {
-    if (confirm(`Delete relationship "${edge.label || "→"}" from "${nodeNameMap.get(edge.source_id)}" to "${nodeNameMap.get(edge.target_id)}"?`)) {
-      deleteEdgeMut.mutate(edge.id);
-    }
+  const handleDeleteEdge = async (edge: OntologyEdge) => {
+    const ok = await confirmDialog({
+      title: "Delete relationship?",
+      message: `"${edge.label || "→"}" from "${nodeNameMap.get(edge.source_id)}" to "${nodeNameMap.get(edge.target_id)}" will be removed.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (ok) deleteEdgeMut.mutate(edge.id);
   };
 
   const handleAddEdgeSubmit = () => {
@@ -363,10 +370,14 @@ export default function OntologyPage() {
     }
   }, [graphData.nodes, nodes, handleReparent]);
 
-  const handleDelete = (node: OntologyNode) => {
-    if (confirm(`Delete "${node.name}"? Its children will be promoted to the parent level.`)) {
-      deleteMut.mutate(node.id);
-    }
+  const handleDelete = async (node: OntologyNode) => {
+    const ok = await confirmDialog({
+      title: `Delete "${node.name}"?`,
+      message: "Its children will be promoted to the parent level.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (ok) deleteMut.mutate(node.id);
   };
 
   const handleExport = async () => {

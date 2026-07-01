@@ -7,7 +7,7 @@ import {
   Layers, MessageSquare, BarChart3, ChevronRight,
   Sparkles, RefreshCw,
 } from "lucide-react";
-import { aiPilotApi, type AiPilotStatus } from "../api/client";
+import { aiPilotApi } from "../api/client";
 
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4-5", label: "Claude Haiku (fast, via OpenRouter)" },

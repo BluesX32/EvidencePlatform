@@ -10,6 +10,7 @@
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useConfirm } from "../components/Feedback";
 import {
   AlertCircle,
   Bot,
@@ -2537,6 +2538,7 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, on
 export default function LLMScreeningPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const confirmDialog = useConfirm();
 
   type Tab = "run" | "prompt" | "results" | "compare";
   const [activeTab, setActiveTab] = useState<Tab>("run");
@@ -2709,7 +2711,13 @@ export default function LLMScreeningPage() {
   };
 
   const handleDelete = async (runId: string) => {
-    if (!window.confirm("Delete this run and all its screening results? This cannot be undone.")) return;
+    const ok = await confirmDialog({
+      title: "Delete this run?",
+      message: "All its screening results will be deleted. This cannot be undone.",
+      confirmLabel: "Delete run",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await llmScreeningApi.deleteRun(projectId!, runId);
       if (selectedRun?.id === runId) setSelectedRun(null);

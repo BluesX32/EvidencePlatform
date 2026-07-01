@@ -18,6 +18,7 @@ import {
 import type { ImportJob, OverlapConfig, ProjectCriteria, CriterionItem, ExtractionTemplateRow, ExtractionCellType, ProjectLabel, OntologyNode, ScreeningSource, ConceptTemplateField, ConceptFieldType, ConceptInputType } from "../api/client";
 import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
+import { useToast } from "../components/Feedback";
 import CreateSubProjectModal from "../components/CreateSubProjectModal";
 
 // ---------------------------------------------------------------------------
@@ -349,44 +350,6 @@ function FieldChip({
   );
 }
 
-// Simple auto-dismiss toast
-function Toast({ message, type, onDismiss }: { message: string; type: "success" | "error"; onDismiss: () => void }) {
-  useEffect(() => {
-    const t = setTimeout(onDismiss, 6000);
-    return () => clearTimeout(t);
-  }, [onDismiss]);
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: "1.5rem",
-        right: "1.5rem",
-        zIndex: 1000,
-        background: type === "success" ? "#e6f4ea" : "#fce8e6",
-        border: `1px solid ${type === "success" ? "#b7dfc4" : "#f28b82"}`,
-        borderRadius: "0.5rem",
-        padding: "0.75rem 1.25rem",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-        maxWidth: 420,
-        fontSize: "0.88rem",
-        color: type === "success" ? "#188038" : "#c5221f",
-        display: "flex",
-        alignItems: "center",
-        gap: "0.75rem",
-      }}
-    >
-      <span style={{ flex: 1 }}>{message}</span>
-      <button
-        onClick={onDismiss}
-        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1rem", lineHeight: 1, color: "inherit", padding: 0 }}
-      >
-        ✕
-      </button>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // CollapsibleSection — accordion panel with persistent open/close state
 // ---------------------------------------------------------------------------
@@ -486,8 +449,7 @@ export default function ProjectPage() {
   const [newStrategyName, setNewStrategyName] = useState("");
   const [overlapError, setOverlapError] = useState<string | null>(null);
 
-  // Toast
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const toast = useToast();
 
   // Screening modal
   const [showScreeningModal, setShowScreeningModal] = useState(false);
@@ -624,7 +586,7 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["strategies-active", id] });
       setNewStrategyName("");
       setOverlapError(null);
-      setToast({ message: "Strategy saved and activated.", type: "success" });
+      toast("Strategy saved and activated.", "success");
     },
     onError: (err: any) => {
       const detail = err.response?.data?.detail ?? "Failed to create strategy";
@@ -639,10 +601,7 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       queryClient.invalidateQueries({ queryKey: ["overlap", id] });
       setOverlapError(null);
-      setToast({
-        message: "Overlap detection started. Results will appear on the Overlap Resolution page once complete.",
-        type: "success",
-      });
+      toast("Overlap detection started. Results will appear on the Overlap Resolution page once complete.", "success");
     },
     onError: (err: any) => {
       const detail =
@@ -661,10 +620,10 @@ export default function ProjectPage() {
     mutationFn: (c: ProjectCriteria) => projectsApi.updateCriteria(id!, c),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
-      setToast({ message: "Criteria saved.", type: "success" });
+      toast("Criteria saved.", "success");
     },
     onError: () => {
-      setToast({ message: "Failed to save criteria.", type: "error" });
+      toast("Failed to save criteria.", "error");
     },
   });
 
@@ -679,9 +638,9 @@ export default function ProjectPage() {
         exclusion: toItems(draft.criteria.exclusion),
       });
       setShowAiDraftPanel(false);
-      setToast({ message: "AI draft applied — review and save below.", type: "success" });
+      toast("AI draft applied — review and save below.", "success");
     },
-    onError: () => setToast({ message: "AI draft failed — check API key.", type: "error" }),
+    onError: () => toast("AI draft failed — check API key.", "error"),
   });
 
   const templateMutation = useMutation({
@@ -689,10 +648,10 @@ export default function ProjectPage() {
       projectsApi.updateExtractionTemplate(id!, rows),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
-      setToast({ message: "Extraction template saved.", type: "success" });
+      toast("Extraction template saved.", "success");
     },
     onError: () => {
-      setToast({ message: "Failed to save template.", type: "error" });
+      toast("Failed to save template.", "error");
     },
   });
 
@@ -701,10 +660,10 @@ export default function ProjectPage() {
       projectsApi.updateConceptTemplate(id!, fields, ai_instructions || undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
-      setToast({ message: "Concept template saved.", type: "success" });
+      toast("Concept template saved.", "success");
     },
     onError: () => {
-      setToast({ message: "Failed to save concept template.", type: "error" });
+      toast("Failed to save concept template.", "error");
     },
   });
 
@@ -727,10 +686,10 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["sources", id] });
       queryClient.invalidateQueries({ queryKey: ["records", id] });
       queryClient.invalidateQueries({ queryKey: ["project", id] });
-      setToast({ message: "Corpus deleted. Exclusively-owned records have been removed.", type: "success" });
+      toast("Corpus deleted. Exclusively-owned records have been removed.", "success");
     },
     onError: () => {
-      setToast({ message: "Failed to delete corpus.", type: "error" });
+      toast("Failed to delete corpus.", "error");
     },
   });
 
@@ -742,10 +701,10 @@ export default function ProjectPage() {
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       setConfirmDeleteSubProject(null);
-      setToast({ message: "Sub-project deleted.", type: "success" });
+      toast("Sub-project deleted.", "success");
     },
     onError: () => {
-      setToast({ message: "Failed to delete sub-project.", type: "error" });
+      toast("Failed to delete sub-project.", "error");
     },
   });
 
@@ -753,9 +712,9 @@ export default function ProjectPage() {
     try {
       await projectsApi.setSharedWithTeam(subProjectId, !currentShared);
       queryClient.invalidateQueries({ queryKey: ["project", id] });
-      setToast({ message: currentShared ? "Sub-project unshared." : "Sub-project shared with team.", type: "success" });
+      toast(currentShared ? "Sub-project unshared." : "Sub-project shared with team.", "success");
     } catch {
-      setToast({ message: "Failed to update sharing.", type: "error" });
+      toast("Failed to update sharing.", "error");
     }
   }
 
@@ -834,14 +793,6 @@ export default function ProjectPage() {
           onClose={() => setShowScreeningModal(false)}
         />
       )}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onDismiss={() => setToast(null)}
-        />
-      )}
-
       <header className="page-header">
         <Link to="/projects" className="back-link">← Projects</Link>
         {project?.parent_project_id && project.sample_info && (
@@ -1640,7 +1591,7 @@ export default function ProjectPage() {
                       setTemplateRows((prev) => [...prev, ...parsed]);
                       setTemplatePasteText("");
                       setTemplatePasteOpen(false);
-                      setToast({ message: `${parsed.length} row${parsed.length > 1 ? "s" : ""} imported from table.`, type: "success" });
+                      toast(`${parsed.length} row${parsed.length > 1 ? "s" : ""} imported from table.`, "success");
                     } else {
                       // Nothing parsed — show raw text so user can see what was pasted
                       setTemplatePasteText(text);
@@ -1660,7 +1611,7 @@ export default function ProjectPage() {
                           setTemplateRows((prev) => [...prev, ...parsed]);
                           setTemplatePasteText("");
                           setTemplatePasteOpen(false);
-                          setToast({ message: `${parsed.length} row${parsed.length > 1 ? "s" : ""} imported.`, type: "success" });
+                          toast(`${parsed.length} row${parsed.length > 1 ? "s" : ""} imported.`, "success");
                         }
                       }}
                     >

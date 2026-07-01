@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { labelsApi, type ProjectLabel } from "../api/client";
+import { useConfirm } from "./Feedback";
 
 // ── Preset color palette ────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ interface Props {
 
 export default function LabelManager({ projectId }: Props) {
   const qc = useQueryClient();
+  const confirmDialog = useConfirm();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(PALETTE[0]);
@@ -187,10 +189,14 @@ export default function LabelManager({ projectId }: Props) {
                     Edit
                   </button>
                   <button
-                    onClick={() => {
-                      if (confirm(`Delete label "${lbl.name}"? This will remove it from all articles.`)) {
-                        deleteMut.mutate(lbl.id);
-                      }
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: `Delete label "${lbl.name}"?`,
+                        message: "This will remove it from all articles.",
+                        confirmLabel: "Delete",
+                        danger: true,
+                      });
+                      if (ok) deleteMut.mutate(lbl.id);
                     }}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#ef4444", fontSize: 12 }}
                   >

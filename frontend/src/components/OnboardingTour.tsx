@@ -196,7 +196,6 @@ function ImportIllust({ focus }: { focus: number }) {
 }
 
 function OverlapIllust({ focus }: { focus: number }) {
-  const c = "#7c3aed";
   const circles: [number, number, string, string][] = [
     [68, 70, "#3b82f6", "PubMed"],
     [138, 70, "#059669", "Embase"],
@@ -242,7 +241,6 @@ function OverlapIllust({ focus }: { focus: number }) {
 }
 
 function ScreeningIllust({ focus }: { focus: number }) {
-  const c = "#059669";
   return (
     <Shell navIdx={3}>
       <text x="0" y="12" fill="#1e293b" fontSize="10" fontFamily={SANS} fontWeight="700">Screening Workspace</text>
@@ -297,7 +295,7 @@ function ExtractionIllust({ focus }: { focus: number }) {
   const c = "#0891b2";
   const cols = ["Study", "Population", "Intervention", "Outcome"];
   const colW = [52, 58, 72, 68];
-  const colX = colW.reduce((acc, w, i) => { acc.push(i === 0 ? 0 : acc[i - 1] + colW[i - 1] + 3); return acc; }, [] as number[]);
+  const colX = colW.reduce((acc, _w, i) => { acc.push(i === 0 ? 0 : acc[i - 1] + colW[i - 1] + 3); return acc; }, [] as number[]);
   return (
     <Shell navIdx={4}>
       {/* search bar – focus 2 */}
@@ -354,7 +352,6 @@ function ExtractionIllust({ focus }: { focus: number }) {
 }
 
 function CitationIllust({ focus }: { focus: number }) {
-  const ctr = { x: 127, y: 85 };
   const leftNodes = [[60, 55], [40, 90], [65, 120]];
   const rightNodes = [[195, 50], [215, 85], [195, 120], [175, 105]];
   const centerNodes = [[100, 70], [127, 85], [155, 75], [115, 105]];
@@ -403,7 +400,6 @@ function CitationIllust({ focus }: { focus: number }) {
 }
 
 function LabelsIllust({ focus }: { focus: number }) {
-  const c = "#e11d48";
   const labelColors = ["#6366f1", "#f59e0b", "#10b981"];
   const labelNames = ["RCT", "Policy", "Low quality"];
   return (
@@ -552,7 +548,6 @@ function AIPilotIllust({ focus }: { focus: number }) {
 }
 
 function TeamIllust({ focus }: { focus: number }) {
-  const c = "#475569";
   return (
     <Shell navIdx={9}>
       <text x="0" y="12" fill="#1e293b" fontSize="10" fontFamily={SANS} fontWeight="700">Team Collaboration</text>

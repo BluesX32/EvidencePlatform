@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useConfirm } from "../components/Feedback";
 import {
   thematicApi,
   extractionLibraryApi,
@@ -361,6 +362,7 @@ function CodeDetail({
   aiAssigning?: boolean;
 }) {
   const qc = useQueryClient();
+  const confirmDialog = useConfirm();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(code.name);
   const [editDesc, setEditDesc] = useState(code.description ?? "");
@@ -497,10 +499,14 @@ function CodeDetail({
               className="btn-ghost"
               style={{ fontSize: "0.75rem", color: "#ef4444" }}
               disabled={deleteMut.isPending}
-              onClick={() => {
-                if (window.confirm(`Delete code "${code.name}"? This removes all its evidence links.`)) {
-                  deleteMut.mutate();
-                }
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: `Delete code "${code.name}"?`,
+                  message: "This removes all its evidence links.",
+                  confirmLabel: "Delete",
+                  danger: true,
+                });
+                if (ok) deleteMut.mutate();
               }}
             >
               Delete
@@ -718,6 +724,7 @@ function ThemeSection({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const qc = useQueryClient();
+  const confirmDialog = useConfirm();
 
   const renameMut = useMutation({
     mutationFn: (name: string) => thematicApi.updateTheme(projectId, theme.id, { name }),
@@ -774,10 +781,14 @@ function ThemeSection({
           +
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Delete theme "${theme.name}"? Its codes will become ungrouped.`)) {
-              onDeleteTheme(theme.id);
-            }
+          onClick={async () => {
+            const ok = await confirmDialog({
+              title: `Delete theme "${theme.name}"?`,
+              message: "Its codes will become ungrouped.",
+              confirmLabel: "Delete",
+              danger: true,
+            });
+            if (ok) onDeleteTheme(theme.id);
           }}
           style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.7rem", color: "#94a3b8", padding: "0 2px" }}
           title="Delete theme"

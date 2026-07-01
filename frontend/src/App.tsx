@@ -63,6 +63,7 @@ import SearchPage from "./pages/SearchPage";
 import AIPilotPage from "./pages/AIPilotPage";
 import ReviewerViewPage from "./pages/ReviewerViewPage";
 import AppShell from "./components/AppShell";
+import { FeedbackProvider } from "./components/Feedback";
 import { ReviewerViewProvider } from "./context/ReviewerViewContext";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -111,6 +112,7 @@ function WithShell({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <FeedbackProvider>
       <ReviewerViewProvider>
       <BrowserRouter>
       <AuthGate>
@@ -153,6 +155,7 @@ export default function App() {
       </AuthGate>
       </BrowserRouter>
       </ReviewerViewProvider>
+      </FeedbackProvider>
     </QueryClientProvider>
   );
 }
