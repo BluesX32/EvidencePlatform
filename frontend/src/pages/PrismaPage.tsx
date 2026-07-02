@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { CheckSquare, ArrowRight } from "lucide-react";
 import { projectsApi, screeningApi } from "../api/client";
 
 // ── Color palette ─────────────────────────────────────────────────────────────
@@ -396,6 +397,14 @@ export default function PrismaPage() {
   const ftAwaiting        = ov("ft_awaiting",        Math.max(0, taIncluded - ftScreened));
   const extracted         = ov("extracted",          allSource?.extracted_count ?? 0);
 
+  // Per-source screening backlog — answers "where are the awaiting papers?"
+  // Records can belong to several sources, so these can sum to more than the
+  // unique total shown in the diagram.
+  const sourceBacklog = indivSources
+    .map(s => ({ id: s.id, name: s.name, remaining: Math.max(0, s.record_count - s.ta_screened) }))
+    .filter(s => s.remaining > 0)
+    .sort((a, b) => b.remaining - a.remaining);
+
   const taReasonsBase = prisma?.ta_exclude_reasons ?? [];
   const ftReasonsBase = prisma?.ft_exclude_reasons ?? [];
 
@@ -464,6 +473,7 @@ export default function PrismaPage() {
         <button className="btn-primary" onClick={downloadJPG}>Download JPG</button>
       </header>
 
+      <div style={{ display: "flex", gap: "1.5rem", alignItems: "flex-start", flexWrap: "wrap" }}>
       <div
         ref={diagramRef}
         style={{
@@ -614,6 +624,84 @@ export default function PrismaPage() {
             )}
           </FlowBox>
         </div>
+      </div>
+
+      {/* ── "Where are the remaining papers?" — actionable backlog panel ── */}
+      {(taNotScreened > 0 || ftAwaiting > 0) && (
+        <aside style={{
+          background: "var(--surface)", border: "1px solid var(--border)",
+          borderRadius: "0.75rem", boxShadow: "var(--shadow-sm)",
+          padding: "1.1rem 1.25rem", width: 300, flexShrink: 0,
+          fontSize: "0.85rem",
+        }}>
+          <h3 style={{ margin: "0 0 0.75rem", fontSize: "0.92rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            <CheckSquare size={15} style={{ color: "var(--brand)" }} /> Where are the remaining papers?
+          </h3>
+
+          {taNotScreened > 0 && (
+            <div style={{ marginBottom: ftAwaiting > 0 ? "1rem" : 0 }}>
+              <p style={{ margin: "0 0 0.5rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                <strong style={{ color: "var(--text)", fontSize: "1.05rem" }}>{taNotScreened.toLocaleString()}</strong>{" "}
+                unique records are waiting in the <strong>Screening queue</strong> (title &amp; abstract stage).
+              </p>
+              <Link
+                to={`/projects/${projectId}/screen?bucket=ta_unscreened&source=all&strategy=sequential`}
+                className="btn-primary btn-sm"
+                style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+              >
+                Screen them now <ArrowRight size={13} />
+              </Link>
+
+              {sourceBacklog.length > 0 && (
+                <div style={{ marginTop: "0.85rem" }}>
+                  <div style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+                    By source
+                  </div>
+                  {sourceBacklog.map(s => (
+                    <Link
+                      key={s.id}
+                      to={`/projects/${projectId}/screen?bucket=ta_unscreened&source=${s.id}&strategy=sequential`}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "0.3rem 0.45rem", borderRadius: "0.375rem",
+                        color: "var(--text-secondary)", textDecoration: "none", fontSize: "0.82rem",
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                      <span style={{ fontWeight: 700, color: "var(--warning)", flexShrink: 0, marginLeft: "0.5rem" }}>
+                        {s.remaining.toLocaleString()}
+                      </span>
+                    </Link>
+                  ))}
+                  {sourceBacklog.length > 1 && (
+                    <p style={{ margin: "0.4rem 0 0", fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.45 }}>
+                      Records can appear in several sources, so these may sum to more than the unique total.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {ftAwaiting > 0 && (
+            <div style={{ borderTop: taNotScreened > 0 ? "1px solid var(--border)" : "none", paddingTop: taNotScreened > 0 ? "0.85rem" : 0 }}>
+              <p style={{ margin: "0 0 0.5rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                <strong style={{ color: "var(--text)", fontSize: "1.05rem" }}>{ftAwaiting.toLocaleString()}</strong>{" "}
+                TA-included records await <strong>full-text review</strong>.
+              </p>
+              <Link
+                to={`/projects/${projectId}/screen?bucket=ft_pending&source=all&strategy=sequential`}
+                className="btn-secondary btn-sm"
+                style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+              >
+                Review full texts <ArrowRight size={13} />
+              </Link>
+            </div>
+          )}
+        </aside>
+      )}
       </div>
 
       <p style={{ fontSize: "0.78rem", color: "#94a3b8", marginTop: "1rem", maxWidth: 680 }}>

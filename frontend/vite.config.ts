@@ -21,7 +21,16 @@ export default defineConfig({
     // cross-origin requests.  Works for local dev and Docker/AWS alike.
     proxy: {
       '/auth':     { target: apiTarget, changeOrigin: true },
-      '/projects': { target: apiTarget, changeOrigin: true },
+      '/projects': {
+        target: apiTarget,
+        changeOrigin: true,
+        // Browser page loads (F5 / direct URL) on /projects/... routes must
+        // reach the SPA, not the backend. API calls accept JSON; documents
+        // accept text/html — serve those index.html instead of proxying.
+        bypass: (req) => {
+          if (req.headers.accept?.includes('text/html')) return '/index.html'
+        },
+      },
       '/health':   { target: apiTarget, changeOrigin: true },
     },
   },
