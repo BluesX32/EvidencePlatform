@@ -1540,6 +1540,8 @@ export interface LlmRunResponse {
   // Two-phase fields (migration 038)
   source_run_id: string | null;
   abstract_only_count: number;
+  /** Results where a human recorded accept/reject/merge. */
+  reviewed_count: number;
 }
 
 export interface MatchedCode {

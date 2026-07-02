@@ -1314,6 +1314,24 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
         <span><strong style={{ color: "#c5221f" }}>{run.excluded_count}</strong> <span style={{ color: "#5f6368" }}>excluded</span></span>
         <span><strong style={{ color: "#b06000" }}>{run.uncertain_count}</strong> <span style={{ color: "#5f6368" }}>uncertain</span></span>
         {run.new_concepts_count > 0 && <span><strong style={{ color: "#6366f1" }}>{run.new_concepts_count}</strong> <span style={{ color: "#5f6368" }}>new concepts</span></span>}
+        {run.processed_records > 0 && (
+          <span
+            title="AI decisions a human has accepted, rejected, or merged. Aim for full coverage before relying on this run."
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem" }}
+          >
+            <strong style={{ color: run.reviewed_count >= run.processed_records ? "var(--success)" : "var(--warning)" }}>
+              {run.reviewed_count}/{run.processed_records}
+            </strong>
+            <span style={{ color: "#5f6368" }}>human-reviewed</span>
+            <span style={{ width: 56, height: 5, borderRadius: 3, background: "var(--border)", overflow: "hidden", display: "inline-block" }}>
+              <span style={{
+                display: "block", height: "100%",
+                width: `${Math.min(100, (run.reviewed_count / run.processed_records) * 100)}%`,
+                background: run.reviewed_count >= run.processed_records ? "var(--success)" : "var(--warning)",
+              }} />
+            </span>
+          </span>
+        )}
         {run.stopped_at_saturation && <span style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.82rem" }}>⬡ Stopped at saturation</span>}
         <span style={{ marginLeft: "auto", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} · {(run.input_tokens + run.output_tokens).toLocaleString()} tokens</span>
       </div>

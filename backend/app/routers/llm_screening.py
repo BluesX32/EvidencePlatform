@@ -85,6 +85,9 @@ async def _live_counts(
                         else_=0,
                     )
                 ).label("abstract_only"),
+                sqlfunc.sum(
+                    case((LlmScreeningResult.review_action.isnot(None), 1), else_=0)
+                ).label("reviewed"),
             )
             .where(LlmScreeningResult.run_id.in_(run_ids))
             .group_by(LlmScreeningResult.run_id)
@@ -98,6 +101,7 @@ async def _live_counts(
             "excluded":     int(row.excluded or 0),
             "uncertain":    int(row.uncertain or 0),
             "abstract_only": int(row.abstract_only or 0),
+            "reviewed":     int(row.reviewed or 0),
         }
     return result
 
@@ -225,6 +229,8 @@ class LlmRunResponse(BaseModel):
     # Two-phase fields (migration 038)
     source_run_id: Optional[str]
     abstract_only_count: int
+    # Human-review coverage: results where a human recorded accept/reject/merge
+    reviewed_count: int
 
 
 class LlmResultResponse(BaseModel):
@@ -311,6 +317,7 @@ def _run_to_response(
     # Use the larger of the two so we don't show 0 for runs completed before live counts.
     abstract_only_live = live["abstract_only"] if live else 0
     abstract_only = max(abstract_only_live, run.abstract_only_count or 0)
+    reviewed = live["reviewed"] if live else 0
 
     return LlmRunResponse(
         id=str(run.id),
@@ -343,6 +350,7 @@ def _run_to_response(
         agent_pipeline=run.agent_pipeline,
         source_run_id=str(run.source_run_id) if run.source_run_id else None,
         abstract_only_count=abstract_only,
+        reviewed_count=reviewed,
     )
 
 
