@@ -384,8 +384,14 @@ export default function PrismaPage() {
   );
 
   const totalIdentified  = ov("total_identified",  prisma?.total_identified ?? grouped.reduce((a, s) => a + s.count, 0));
-  const duplicatesRemoved = ov("duplicates_removed", prisma?.duplicates_removed ?? 0);
-  const afterDedup        = ov("after_dedup",        prisma?.total_unique ?? (allSource?.record_count ?? 0));
+  // "After dedup" must count SCREENING UNITS (cross-source overlap clusters +
+  // standalone records = allSource.record_count), the same unit ta_screened
+  // uses. prisma.total_unique counts individual records, so cluster members
+  // beyond the representative would show up as phantom "awaiting screening"
+  // even at 100% progress. Cluster grouping is deduplication — count it here.
+  const screeningUnits    = allSource?.record_count ?? prisma?.total_unique ?? 0;
+  const afterDedup        = ov("after_dedup",        screeningUnits);
+  const duplicatesRemoved = ov("duplicates_removed", Math.max(0, totalIdentified - screeningUnits));
   const taScreened        = ov("ta_screened",        allSource?.ta_screened ?? 0);
   const taIncluded        = allSource?.ta_included ?? 0;
   const taExcluded        = ov("ta_excluded",        allSource?.ta_excluded ?? (taScreened - taIncluded));
@@ -526,6 +532,11 @@ export default function PrismaPage() {
           <SideBox color={C.excl}>
             {boxTitle(C.excl.title, "Duplicates removed")}
             <NLine value={duplicatesRemoved} color={C.excl.border} size={24} onSave={setOv("duplicates_removed")} />
+            {(prisma?.duplicates_removed ?? 0) > 0 && (prisma?.total_unique ?? 0) > screeningUnits && (
+              <div style={{ textAlign: "center", fontSize: 9.5, color: "#9f1239", opacity: 0.75, marginTop: 2 }}>
+                exact: {prisma!.duplicates_removed.toLocaleString()} · overlap-matched: {((prisma!.total_unique ?? 0) - screeningUnits).toLocaleString()}
+              </div>
+            )}
           </SideBox>
         </div>
 
@@ -642,7 +653,7 @@ export default function PrismaPage() {
             <div style={{ marginBottom: ftAwaiting > 0 ? "1rem" : 0 }}>
               <p style={{ margin: "0 0 0.5rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
                 <strong style={{ color: "var(--text)", fontSize: "1.05rem" }}>{taNotScreened.toLocaleString()}</strong>{" "}
-                unique records are waiting in the <strong>Screening queue</strong> (title &amp; abstract stage).
+                records are waiting in the <strong>Screening queue</strong> (title &amp; abstract stage).
               </p>
               <Link
                 to={`/projects/${projectId}/screen?bucket=ta_unscreened&source=all&strategy=sequential`}
