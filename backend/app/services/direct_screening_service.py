@@ -163,8 +163,11 @@ async def get_project_sources_with_stats(
                 if row.source_id in source_slots:
                     source_slots[row.source_id].add(slot)
 
-    # 4. Get decision counts (all decisions for this project, keyed by slot)
-    #    For simplicity: count at project level (not per-reviewer)
+    # 4. Get decisions (all decisions for this project, keyed by slot),
+    #    ordered so the LATEST decision per slot+stage wins. A slot whose
+    #    decision was revised (include → exclude, two reviewers, etc.) must
+    #    count in exactly one bucket, otherwise included+excluded can exceed
+    #    screened and the PRISMA funnel stops reconciling.
     sd_result = await db.execute(
         select(
             ScreeningDecision.record_id,
@@ -173,41 +176,43 @@ async def get_project_sources_with_stats(
             ScreeningDecision.decision,
         )
         .where(ScreeningDecision.project_id == project_id)
+        .order_by(ScreeningDecision.created_at)
     )
     sd_rows = sd_result.all()
 
-    # Aggregate per slot.
+    # Resolve latest decision per slot per stage.
     # IMPORTANT: normalize record_id-based decisions through record_to_slot so
     # that a decision stored as "record:Y" when the record was standalone still
     # matches as "cluster:X" if overlap detection later grouped it into a
     # cross-source cluster (and vice-versa).
-    ta_screened_slots: set = set()
-    ta_included_slots: set = set()
-    ta_excluded_slots: set = set()
-    ta_uncertain_slots: set = set()
-    ft_screened_slots: set = set()
-    ft_included_slots: set = set()
-    ft_excluded_slots: set = set()
-
+    ta_latest: Dict[str, str] = {}
+    ft_latest: Dict[str, str] = {}
     for row in sd_rows:
         if row.record_id is not None:
             slot = record_to_slot.get(row.record_id, f"record:{row.record_id}")
         else:
             slot = f"cluster:{row.cluster_id}"
         if row.stage == "TA":
-            ta_screened_slots.add(slot)
-            if row.decision == "include":
-                ta_included_slots.add(slot)
-            elif row.decision == "exclude":
-                ta_excluded_slots.add(slot)
-            elif row.decision == "uncertain":
-                ta_uncertain_slots.add(slot)
+            ta_latest[slot] = row.decision
         elif row.stage == "FT":
-            ft_screened_slots.add(slot)
-            if row.decision == "include":
-                ft_included_slots.add(slot)
-            else:
-                ft_excluded_slots.add(slot)
+            ft_latest[slot] = row.decision
+
+    ta_screened_slots  = set(ta_latest)
+    ta_included_slots  = {s for s, d in ta_latest.items() if d == "include"}
+    ta_excluded_slots  = {s for s, d in ta_latest.items() if d == "exclude"}
+    ta_uncertain_slots = {s for s, d in ta_latest.items() if d == "uncertain"}
+
+    # FT decisions only count while the slot is still TA-included (or has no
+    # TA decision at all — pure full-text workflows). A paper assessed at full
+    # text and later knocked back to TA-excluded belongs in the TA-excluded
+    # box, not in "full-text assessed" — otherwise FT assessed can exceed TA
+    # included and the funnel breaks.
+    def _ft_active(slot: str) -> bool:
+        return slot not in ta_latest or ta_latest[slot] == "include"
+
+    ft_screened_slots = {s for s in ft_latest if _ft_active(s)}
+    ft_included_slots = {s for s, d in ft_latest.items() if d == "include" and _ft_active(s)}
+    ft_excluded_slots = {s for s, d in ft_latest.items() if d != "include" and _ft_active(s)}
 
     # 5. Get extraction counts
     er_result = await db.execute(
@@ -241,8 +246,9 @@ async def get_project_sources_with_stats(
         ta_u = len(slots & ta_uncertain_slots)
         ft_s = len(slots & ft_screened_slots)
         ft_i = len(slots & ft_included_slots)
-        # FT-excluded papers don't count toward extracted_count even if extraction data exists
-        ex   = len(slots & (extracted_slots - ft_excluded_slots))
+        # Papers no longer in the funnel (FT-excluded, TA-excluded, TA-uncertain)
+        # don't count toward extracted_count even if extraction data exists
+        ex   = len(slots & (extracted_slots - ft_excluded_slots - ta_excluded_slots - ta_uncertain_slots))
         return {
             "record_count": len(slots),
             "ta_screened": ta_s,
