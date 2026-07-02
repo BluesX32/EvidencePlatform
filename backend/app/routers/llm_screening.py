@@ -29,7 +29,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import Integer, case, func as sqlfunc, select
+from sqlalchemy import Integer, case, func as sqlfunc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -1245,6 +1245,36 @@ async def send_to_consensus(
             continue
         # Normalise to include/exclude
         decision = "include" if llm_decision == "include" else "exclude"
+
+        # AI assists, never decides: skip records where a HUMAN has already
+        # recorded a decision at this stage — directly or on the record's
+        # cross-source cluster. Synthetic decisions must never override
+        # human judgment.
+        human_decision = (
+            await db.execute(
+                select(ScreeningDecision.id)
+                .where(
+                    ScreeningDecision.project_id == project.id,
+                    ScreeningDecision.stage == body.stage,
+                    ScreeningDecision.reviewer_id.isnot(None),
+                    or_(
+                        ScreeningDecision.record_id == rid,
+                        ScreeningDecision.cluster_id.in_(
+                            select(OverlapClusterMember.cluster_id)
+                            .join(RecordSource, RecordSource.id == OverlapClusterMember.record_source_id)
+                            .join(OverlapCluster, OverlapCluster.id == OverlapClusterMember.cluster_id)
+                            .where(
+                                RecordSource.record_id == rid,
+                                OverlapCluster.scope == "cross_source",
+                            )
+                        ),
+                    ),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if human_decision is not None:
+            continue
 
         # Check no duplicate (same record, same stage, reviewer_id IS NULL already)
         existing = (

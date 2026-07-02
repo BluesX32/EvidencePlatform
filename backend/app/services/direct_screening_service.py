@@ -174,28 +174,42 @@ async def get_project_sources_with_stats(
             ScreeningDecision.cluster_id,
             ScreeningDecision.stage,
             ScreeningDecision.decision,
+            ScreeningDecision.reviewer_id,
         )
         .where(ScreeningDecision.project_id == project_id)
         .order_by(ScreeningDecision.created_at)
     )
     sd_rows = sd_result.all()
 
-    # Resolve latest decision per slot per stage.
+    # Resolve latest decision per slot per stage, with HUMAN decisions
+    # outranking synthetic ones (reviewer_id IS NULL = applied from an LLM
+    # run). A machine decision may fill a gap but never override a human.
     # IMPORTANT: normalize record_id-based decisions through record_to_slot so
     # that a decision stored as "record:Y" when the record was standalone still
     # matches as "cluster:X" if overlap detection later grouped it into a
     # cross-source cluster (and vice-versa).
     ta_latest: Dict[str, str] = {}
     ft_latest: Dict[str, str] = {}
+    ta_human_slots: set = set()
+    ft_human_slots: set = set()
     for row in sd_rows:
         if row.record_id is not None:
             slot = record_to_slot.get(row.record_id, f"record:{row.record_id}")
         else:
             slot = f"cluster:{row.cluster_id}"
+        is_human = row.reviewer_id is not None
         if row.stage == "TA":
-            ta_latest[slot] = row.decision
+            if is_human:
+                ta_latest[slot] = row.decision
+                ta_human_slots.add(slot)
+            elif slot not in ta_human_slots:
+                ta_latest[slot] = row.decision
         elif row.stage == "FT":
-            ft_latest[slot] = row.decision
+            if is_human:
+                ft_latest[slot] = row.decision
+                ft_human_slots.add(slot)
+            elif slot not in ft_human_slots:
+                ft_latest[slot] = row.decision
 
     ta_screened_slots  = set(ta_latest)
     ta_included_slots  = {s for s, d in ta_latest.items() if d == "include"}
