@@ -2498,6 +2498,7 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, on
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Exclude</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Abstract Only</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>New Concepts</th>
+            <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }} title="AI decisions a human has accepted, rejected, or merged">Reviewed</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: 600 }}>Cost</th>
             <th style={{ padding: "0.5rem 0.75rem", textAlign: "center", fontWeight: 600 }}></th>
           </tr>
@@ -2558,6 +2559,9 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, on
                   {run.abstract_only_count > 0 ? run.abstract_only_count : "—"}
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", color: "#6366f1", fontWeight: 600 }}>{run.new_concepts_count > 0 ? `+${run.new_concepts_count}` : "—"}</td>
+                <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.8rem", fontWeight: 600, color: run.processed_records === 0 || run.reviewed_count === 0 ? "#9aa0a6" : run.reviewed_count >= run.processed_records ? "var(--success)" : "var(--warning)" }}>
+                  {run.processed_records > 0 ? `${run.reviewed_count}/${run.processed_records}` : "—"}
+                </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.82rem", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}</td>
                 <td style={{ padding: "0.55rem 0.5rem", textAlign: "center", whiteSpace: "nowrap" }}>
                   {isEffectivelyCompleted(run) && run.processed_records > 0 && (
