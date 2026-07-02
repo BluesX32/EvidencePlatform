@@ -78,6 +78,30 @@ body {
 a { color: var(--brand); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+::selection { background: var(--brand-light); color: var(--brand-dark); }
+
+/* Subtle scrollbars that match the surface they live on */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Respect users who prefer less motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 h1, h2, h3, h4 { margin: 0 0 .6rem; line-height: 1.25; font-weight: 700; }
 h1 { font-size: 1.7rem; letter-spacing: -.02em; }
 h2 { font-size: 1.3rem; letter-spacing: -.01em; }
@@ -1034,6 +1058,46 @@ select {
 .empty-state h3 { color: var(--text-secondary); font-size: 1rem; margin-bottom: .35rem; }
 .empty-state p { font-size: .875rem; max-width: 320px; margin: 0 auto .75rem; }
 .empty-state-icon svg { opacity: .9; }
+
+/* ── AI provenance ───────────────────────────────────────────────────────── */
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .28rem;
+  padding: .12rem .5rem;
+  border-radius: var(--radius-full);
+  background: #ede9fe;
+  border: 1px solid #ddd6fe;
+  color: #6d28d9;
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.ai-badge-model {
+  font-weight: 500;
+  font-family: monospace;
+  font-size: .68rem;
+  color: #7c3aed;
+  border-left: 1px solid #ddd6fe;
+  padding-left: .35rem;
+}
+
+.review-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  padding: .12rem .5rem;
+  border-radius: var(--radius-full);
+  font-size: .72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.review-chip--pending  { background: var(--warning-light); border: 1px solid var(--warning-border); color: var(--warning); }
+.review-chip--accepted { background: var(--success-light); border: 1px solid var(--success-border); color: var(--success); }
+.review-chip--rejected { background: var(--danger-light);  border: 1px solid var(--danger-border);  color: var(--danger); }
+.review-chip--merged   { background: var(--info-light);    border: 1px solid var(--brand-border);   color: var(--info); }
 
 /* ── Loading skeletons ───────────────────────────────────────────────────── */
 .skeleton {

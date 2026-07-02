@@ -10,7 +10,8 @@
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useConfirm } from "../components/Feedback";
+import { useConfirm, useToast } from "../components/Feedback";
+import { AiBadge, ReviewChip } from "../components/AiProvenance";
 import {
   AlertCircle,
   Bot,
@@ -600,16 +601,27 @@ export function ReviewActions({ result, projectId, runId, onReviewed }: { result
 
 // ── Result Row ────────────────────────────────────────────────────────────────
 
-function ResultRow({ result, projectId: _projectId, runId: _runId, extractionTemplate, onReviewed: _onReviewed }: {
+function ResultRow({ result, projectId, runId, extractionTemplate, onReviewed }: {
   result: LlmResultResponse;
   projectId: string;
   runId: string;
   extractionTemplate?: { rows: Array<{ id: string; domain?: string; item: string }> } | null;
   onReviewed: () => void;
 }) {
+  const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   const isNew = (result.new_concepts?.length ?? 0) > 0;
   const hasExtraction = result.extracted_json && Object.keys(result.extracted_json).length > 0;
+
+  const reviewMut = useMutation({
+    mutationFn: (action: "accepted" | "rejected") =>
+      llmScreeningApi.reviewResult(projectId, runId, result.id, action),
+    onSuccess: (_res, action) => {
+      toast(`AI decision ${action} — recorded with your reviewer ID.`, "success");
+      onReviewed();
+    },
+    onError: () => toast("Failed to record review — please try again.", "error"),
+  });
 
   return (
     <>
@@ -629,10 +641,36 @@ function ResultRow({ result, projectId: _projectId, runId: _runId, extractionTem
           {hasExtraction ? <span style={{ color: "#188038", fontSize: "0.78rem" }}>✓</span> : <span style={{ color: "#9aa0a6", fontSize: "0.78rem" }}>—</span>}
         </td>
         <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.78rem", color: "#5f6368" }}>{result.full_text_source ?? "abstract"}</td>
+        <td style={{ padding: "0.5rem 0.75rem", whiteSpace: "nowrap" }} onClick={e => e.stopPropagation()}>
+          {result.review_action ? (
+            <ReviewChip reviewedAt={result.reviewed_at} action={result.review_action} />
+          ) : (
+            <span style={{ display: "inline-flex", gap: "0.3rem" }}>
+              <button
+                onClick={() => reviewMut.mutate("accepted")}
+                disabled={reviewMut.isPending}
+                className="btn-ghost btn-sm"
+                title="Accept this AI decision (recorded with your reviewer ID)"
+                style={{ color: "var(--success)", padding: "0.15rem 0.5rem", fontSize: "0.75rem" }}
+              >
+                ✓ Accept
+              </button>
+              <button
+                onClick={() => reviewMut.mutate("rejected")}
+                disabled={reviewMut.isPending}
+                className="btn-ghost btn-sm"
+                title="Reject this AI decision (recorded with your reviewer ID)"
+                style={{ color: "var(--danger)", padding: "0.15rem 0.5rem", fontSize: "0.75rem" }}
+              >
+                ✕ Reject
+              </button>
+            </span>
+          )}
+        </td>
       </tr>
       {expanded && (
         <tr style={{ background: "#f8f9fa" }}>
-          <td colSpan={7} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
+          <td colSpan={8} style={{ padding: "0.75rem 1rem", fontSize: "0.83rem" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
               {result.ta_reason && <div><strong style={{ color: "#3c4043" }}>TA reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ta_reason}</p></div>}
               {result.ft_reason && <div><strong style={{ color: "#3c4043" }}>FT reason:</strong><p style={{ marginTop: "0.25rem", color: "#5f6368" }}>{result.ft_reason}</p></div>}
@@ -1240,7 +1278,9 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
   return (
     <section>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-        <h3 style={{ margin: 0 }}>Results — {MODEL_BY_ID[run.model]?.label ?? run.model}</h3>
+        <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          Results <AiBadge model={run.model} />
+        </h3>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           {DECISION_FILTER_OPTIONS.map((opt) => (
             <button key={opt.value} onClick={() => { setDecisionFilter(opt.value); setPage(1); }}
@@ -1307,6 +1347,7 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>New Concepts</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Extracted</th>
                   <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Full Text</th>
+                  <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>Review</th>
                 </tr>
               </thead>
               <tbody>

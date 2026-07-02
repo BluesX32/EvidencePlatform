@@ -9,6 +9,7 @@ import { PDFFetchButton } from "../components/PDFFetchButton";
 import { PDFViewerPanel } from "../components/PDFViewerPanel";
 import { PDFUploadPanel } from "../components/PDFUploadPanel";
 import { useToast, useConfirm } from "../components/Feedback";
+import { AiBadge } from "../components/AiProvenance";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -820,7 +821,7 @@ function LlmScreeningNotePanel({ note }: { note: LlmScreeningNote }) {
         }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          🤖 LLM Pre-screening Note
+          <AiBadge /> LLM Pre-screening Note
           {taLabel && (
             <span style={{ background: "#fff", border: "1px solid #e8d5b7", borderRadius: "0.3rem", padding: "0.05rem 0.4rem", fontSize: "0.72rem", color: decisionColor(note.ta_decision), fontWeight: 700 }}>
               TA: {taLabel}
@@ -849,7 +850,7 @@ function LlmScreeningNotePanel({ note }: { note: LlmScreeningNote }) {
             </div>
           )}
           {note.model && (
-            <div style={{ fontSize: "0.74rem", color: "#b45309" }}>Model: {note.model}</div>
+            <div><AiBadge model={note.model} /></div>
           )}
         </div>
       )}

@@ -8,6 +8,7 @@ import {
   Sparkles, RefreshCw,
 } from "lucide-react";
 import { aiPilotApi } from "../api/client";
+import { AiBadge } from "../components/AiProvenance";
 
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4-5", label: "Claude Haiku (fast, via OpenRouter)" },
@@ -225,7 +226,10 @@ export default function AIPilotPage() {
       <header className="page-header">
         <div className="page-title">
           <Link to={`/projects/${projectId}`} className="back-link">← Project</Link>
-          <h1><Cpu size={18} style={{ verticalAlign: "middle", marginRight: 6 }} />AI Pilot</h1>
+          <h1>
+            <Cpu size={18} style={{ verticalAlign: "middle", marginRight: 6 }} />AI Pilot{" "}
+            <AiBadge model={model} />
+          </h1>
           <span className="subtitle">AI-assisted pipeline — every step, human reviews the output</span>
         </div>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
