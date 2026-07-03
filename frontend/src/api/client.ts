@@ -340,6 +340,15 @@ export interface PrismaStats {
   ft_exclude_reasons: { reason_code: string | null; count: number }[];
 }
 
+export interface PrismaExclusionPaper {
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string;
+  notes: string | null;
+  origin: string;
+  decided_at: string;
+}
+
 export const projectsApi = {
   list: () => api.get<ProjectListItem[]>("/projects"),
   get: (id: string) => api.get<ProjectDetail>(`/projects/${id}`),
@@ -381,6 +390,11 @@ export const projectsApi = {
     api.delete(`/projects/${id}`),
   getPrismaStats: (id: string) =>
     api.get<PrismaStats>(`/projects/${id}/prisma-stats`),
+  getPrismaExclusions: (id: string, stage: "TA" | "FT", reasonCode: string | null) =>
+    api.get<{ stage: string; reason_code: string | null; papers: PrismaExclusionPaper[] }>(
+      `/projects/${id}/prisma-exclusions`,
+      { params: reasonCode === null ? { stage, no_reason: true } : { stage, reason_code: reasonCode } },
+    ),
 };
 
 // ── Concept extraction API ────────────────────────────────────────────────────

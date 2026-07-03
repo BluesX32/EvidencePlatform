@@ -33,7 +33,7 @@ const X = {
 const SVG_W = X.side + X.sideW + 28;
 const ROW_GAP = 34, MIN_H = 80, LINE_H = 16;
 
-type Reason = { reason_code: string | null; count: number };
+type Reason = { reason_code: string | null; count: number; label?: string };
 
 export function buildExportSVG(data: {
   grouped: { name: string; count: number }[];
@@ -118,7 +118,7 @@ export function buildExportSVG(data: {
     let out = `<line x1="${X.side + 12}" y1="${headY}" x2="${X.side + X.sideW - 12}" y2="${headY}" stroke="${INK.faint}" stroke-width="1"/>`;
     rs.forEach((r, i) => {
       const ry = headY + 15 + i * LINE_H;
-      out += itemRow(X.side + 14, X.side + X.sideW - 14, ry, fmtReason(r.reason_code), r.count);
+      out += itemRow(X.side + 14, X.side + X.sideW - 14, ry, r.label ?? fmtReason(r.reason_code), r.count);
     });
     return out;
   };

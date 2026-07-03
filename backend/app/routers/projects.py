@@ -669,3 +669,64 @@ async def get_prisma_stats(
         "ta_exclude_reasons": ta_exclude_reasons,
         "ft_exclude_reasons": ft_exclude_reasons,
     }
+
+
+@router.get("/{project_id}/prisma-exclusions")
+async def get_prisma_exclusions(
+    project_id: uuid.UUID,
+    stage: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    reason_code: Optional[str] = None,
+    no_reason: bool = False,
+) -> dict:
+    """Papers behind one exclusion-reason row of the PRISMA diagram.
+
+    Same population as the prisma-stats reason counts: human decisions
+    (reviewer_id IS NOT NULL) for the given stage. Pass no_reason=true for
+    the "No reason recorded" row; otherwise reason_code selects the group.
+    """
+    from app.models.overlap_cluster_member import OverlapClusterMember
+
+    await _get_project_and_role(db, project_id, current_user.id)
+    if stage not in ("TA", "FT"):
+        raise HTTPException(status_code=422, detail="stage must be TA or FT")
+
+    q = select(ScreeningDecision).where(
+        ScreeningDecision.project_id == project_id,
+        ScreeningDecision.stage == stage,
+        ScreeningDecision.decision == "exclude",
+        ScreeningDecision.reviewer_id.isnot(None),
+    )
+    if no_reason:
+        q = q.where(ScreeningDecision.reason_code.is_(None))
+    else:
+        q = q.where(ScreeningDecision.reason_code == reason_code)
+
+    decisions = (await db.execute(q.order_by(ScreeningDecision.created_at))).scalars().all()
+
+    papers = []
+    for d in decisions:
+        if d.record_id is not None:
+            title = (await db.execute(
+                select(Record.title).where(Record.id == d.record_id)
+            )).scalar_one_or_none()
+        else:
+            # Cluster decision — use the representative member's title
+            title = (await db.execute(
+                select(Record.title)
+                .join(RecordSource, RecordSource.record_id == Record.id)
+                .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+                .where(OverlapClusterMember.cluster_id == d.cluster_id)
+                .limit(1)
+            )).scalar_one_or_none()
+        papers.append({
+            "record_id": str(d.record_id) if d.record_id else None,
+            "cluster_id": str(d.cluster_id) if d.cluster_id else None,
+            "title": title or "(title unavailable)",
+            "notes": d.notes,
+            "origin": d.origin,
+            "decided_at": d.created_at.isoformat(),
+        })
+
+    return {"stage": stage, "reason_code": None if no_reason else reason_code, "papers": papers}

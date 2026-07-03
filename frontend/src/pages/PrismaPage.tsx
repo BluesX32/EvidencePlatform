@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CheckSquare, ArrowRight, Download } from "lucide-react";
+import { CheckSquare, ArrowRight, Download, List, X } from "lucide-react";
 import { projectsApi, screeningApi } from "../api/client";
 import { INK, FONT, fmtReason, buildExportSVG } from "../utils/prismaExport";
 
@@ -165,6 +165,104 @@ function ProgressNote({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Inline-editable text label (session-only, mirrors EN for numbers)
+function ET({ value, size = 11, onSave }: { value: string; size?: number; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const commit = () => {
+    const t = draft.trim();
+    if (t) onSave(t);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+        style={{
+          fontSize: size, fontFamily: "inherit", color: INK.body,
+          border: "none", borderBottom: `1px solid ${INK.border}`,
+          background: "transparent", outline: "none", width: "100%", padding: 0,
+        }}
+      />
+    );
+  }
+  return (
+    <span
+      title="Click to edit label"
+      onClick={() => { setDraft(value); setEditing(true); }}
+      style={{ cursor: "text" }}
+    >
+      {value}
+    </span>
+  );
+}
+
+// One exclusion-reason line: editable label + count, with fold/restore controls
+type DisplayReason = {
+  key: string; label: string; count: number;
+  isOther?: boolean; reasonCode?: string | null;
+};
+
+function ReasonLine({
+  row, onSaveLabel, onSaveCount, onFold, onRestore, onViewPapers,
+}: {
+  row: DisplayReason;
+  onSaveLabel: (v: string) => void;
+  onSaveCount: (v: number) => void;
+  onFold?: () => void;
+  onRestore?: () => void;
+  onViewPapers?: () => void;
+}) {
+  const btnStyle: React.CSSProperties = {
+    border: "none", background: "none", cursor: "pointer", padding: "0 2px",
+    fontSize: 10, color: "#b3a88e", lineHeight: 1, flexShrink: 0,
+  };
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "2.5px 0", gap: 8,
+    }}>
+      {onFold && (
+        <button title="Fold this reason into 'Other'" onClick={onFold} style={btnStyle}
+          onMouseEnter={e => (e.currentTarget.style.color = INK.title)}
+          onMouseLeave={e => (e.currentTarget.style.color = "#b3a88e")}
+        >✕</button>
+      )}
+      {onRestore && (
+        <button title="Restore folded reasons" onClick={onRestore} style={btnStyle}
+          onMouseEnter={e => (e.currentTarget.style.color = INK.title)}
+          onMouseLeave={e => (e.currentTarget.style.color = "#b3a88e")}
+        >↺</button>
+      )}
+      {onViewPapers && (
+        <button title="Show the papers behind this reason" onClick={onViewPapers} style={btnStyle}
+          onMouseEnter={e => (e.currentTarget.style.color = INK.title)}
+          onMouseLeave={e => (e.currentTarget.style.color = "#b3a88e")}
+        ><List size={10} style={{ display: "block", transform: "translateY(1px)" }} /></button>
+      )}
+      <span style={{
+        fontSize: 11, color: INK.body, lineHeight: 1.35, flex: 1, minWidth: 0,
+        fontStyle: row.isOther ? "italic" : "normal",
+      }}>
+        <ET value={row.label} onSave={onSaveLabel} />
+      </span>
+      <span style={{
+        fontSize: 11, fontWeight: 700, color: INK.title,
+        whiteSpace: "nowrap", flexShrink: 0, fontVariantNumeric: "tabular-nums",
+      }}>
+        n = <EN value={row.count} size={11} onSave={onSaveCount} />
+      </span>
+    </div>
+  );
+}
+
 // Left-label / right-count line, used for source lists and exclusion reasons
 function ItemRow({
   label, count, onSaveCount, strong = false,
@@ -199,6 +297,11 @@ export default function PrismaPage() {
 
   const [overrides, setOverrides] = useState<Record<string, number>>({});
   const [reasonOverrides, setReasonOverrides] = useState<Record<string, number>>({});
+  const [reasonLabels, setReasonLabels] = useState<Record<string, string>>({});
+  const [folded, setFolded] = useState<Record<string, boolean>>({});
+  const [reasonView, setReasonView] = useState<
+    { stage: "TA" | "FT"; reasonCode: string | null; label: string } | null
+  >(null);
 
   const ov = useCallback((key: string, def: number) => overrides[key] ?? def, [overrides]);
   const setOv = useCallback((key: string) => (v: number) => setOverrides(o => ({ ...o, [key]: v })), []);
@@ -212,6 +315,13 @@ export default function PrismaPage() {
     queryKey: ["prisma-stats", projectId],
     queryFn: () => projectsApi.getPrismaStats(projectId!).then((r) => r.data),
     enabled: !!projectId,
+  });
+  const { data: reasonPapers, isLoading: papersLoading } = useQuery({
+    queryKey: ["prisma-exclusions", projectId, reasonView?.stage, reasonView?.reasonCode ?? "__none__"],
+    queryFn: () => projectsApi
+      .getPrismaExclusions(projectId!, reasonView!.stage, reasonView!.reasonCode)
+      .then((r) => r.data),
+    enabled: !!projectId && reasonView !== null,
   });
 
   const allSource    = sources.find((s) => s.id === "all");
@@ -254,19 +364,51 @@ export default function PrismaPage() {
   const taReasonsBase = prisma?.ta_exclude_reasons ?? [];
   const ftReasonsBase = prisma?.ft_exclude_reasons ?? [];
 
-  const taReasons = taReasonsBase.map((r, i) => ({
-    ...r, count: reasonOverrides[`ta_${i}`] ?? r.count,
-  }));
-  const ftReasons = ftReasonsBase.map((r, i) => ({
-    ...r, count: reasonOverrides[`ft_${i}`] ?? r.count,
-  }));
+  // Apply session edits: count overrides, renamed labels, and reasons folded
+  // into a single trailing "Other" row (count = sum of folded, overridable).
+  const buildDisplay = (
+    base: { reason_code: string | null; count: number }[], prefix: string,
+  ): DisplayReason[] => {
+    const out: DisplayReason[] = [];
+    let otherSum = 0;
+    let foldedCount = 0;
+    base.forEach((r, i) => {
+      const key = `${prefix}_${i}`;
+      const count = reasonOverrides[key] ?? r.count;
+      if (folded[key]) { otherSum += count; foldedCount++; return; }
+      out.push({
+        key, label: reasonLabels[key] ?? fmtReason(r.reason_code), count,
+        reasonCode: r.reason_code,
+      });
+    });
+    if (foldedCount > 0) {
+      const okey = `${prefix}_other`;
+      out.push({
+        key: okey,
+        label: reasonLabels[okey] ?? "Other",
+        count: reasonOverrides[okey] ?? otherSum,
+        isOther: true,
+      });
+    }
+    return out;
+  };
+
+  const taReasons = buildDisplay(taReasonsBase, "ta");
+  const ftReasons = buildDisplay(ftReasonsBase, "ft");
+
+  const restoreFolded = (prefix: string) => {
+    setFolded(f => Object.fromEntries(
+      Object.entries(f).filter(([k]) => !k.startsWith(`${prefix}_`)),
+    ));
+  };
 
   const exportSVG = () => buildExportSVG({
     grouped, totalIdentified, duplicatesRemoved, afterDedup,
     dupExact, dupOverlap,
     taScreened, taExcluded, taNotScreened, taUncertain,
     ftScreened, ftIncluded, ftExcluded, ftAwaiting, extracted,
-    taReasons, ftReasons,
+    taReasons: taReasons.map(r => ({ reason_code: null, count: r.count, label: r.label })),
+    ftReasons: ftReasons.map(r => ({ reason_code: null, count: r.count, label: r.label })),
   });
 
   function downloadSVG() {
@@ -427,10 +569,15 @@ export default function PrismaPage() {
             {taReasons.length > 0 && (
               <>
                 <div style={{ borderTop: `1px solid ${INK.faint}`, margin: "8px 0 4px" }} />
-                {taReasons.map((r, i) => (
-                  <ItemRow
-                    key={i} label={fmtReason(r.reason_code)} count={r.count}
-                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [`ta_${i}`]: v }))}
+                {taReasons.map(r => (
+                  <ReasonLine
+                    key={r.key} row={r}
+                    onSaveLabel={v => setReasonLabels(o => ({ ...o, [r.key]: v }))}
+                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [r.key]: v }))}
+                    onFold={r.isOther ? undefined : () => setFolded(f => ({ ...f, [r.key]: true }))}
+                    onRestore={r.isOther ? () => restoreFolded("ta") : undefined}
+                    onViewPapers={r.isOther ? undefined
+                      : () => setReasonView({ stage: "TA", reasonCode: r.reasonCode ?? null, label: r.label })}
                   />
                 ))}
               </>
@@ -460,10 +607,15 @@ export default function PrismaPage() {
             {ftReasons.length > 0 && (
               <>
                 <div style={{ borderTop: `1px solid ${INK.faint}`, margin: "8px 0 4px" }} />
-                {ftReasons.map((r, i) => (
-                  <ItemRow
-                    key={i} label={fmtReason(r.reason_code)} count={r.count}
-                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [`ft_${i}`]: v }))}
+                {ftReasons.map(r => (
+                  <ReasonLine
+                    key={r.key} row={r}
+                    onSaveLabel={v => setReasonLabels(o => ({ ...o, [r.key]: v }))}
+                    onSaveCount={v => setReasonOverrides(o => ({ ...o, [r.key]: v }))}
+                    onFold={r.isOther ? undefined : () => setFolded(f => ({ ...f, [r.key]: true }))}
+                    onRestore={r.isOther ? () => restoreFolded("ft") : undefined}
+                    onViewPapers={r.isOther ? undefined
+                      : () => setReasonView({ stage: "FT", reasonCode: r.reasonCode ?? null, label: r.label })}
                   />
                 ))}
               </>
@@ -565,9 +717,78 @@ export default function PrismaPage() {
 
       <p style={{ fontSize: "0.78rem", color: "#94a3b8", marginTop: "1rem", maxWidth: 680 }}>
         Counts reflect current screening progress. Click any <strong style={{ color: "#6366f1" }}>n = </strong>
-        value to override it for export. Edits are session-only and reset on refresh.
+        value or exclusion-reason label to edit it for export; click <strong>✕</strong> on a reason to fold it
+        into a single <em>Other</em> row (↺ restores); the list icon shows the papers behind a reason.
+        Edits are session-only and reset on refresh.
         Italic notes show in-progress status and appear in exports only while counts are outstanding.
       </p>
+
+      {/* ── Paper list for one exclusion reason ── */}
+      {reasonView && (
+        <div
+          onClick={() => setReasonView(null)}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(15,23,42,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "2rem",
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "#fff", borderRadius: 10, maxWidth: 660, width: "100%",
+              maxHeight: "75vh", display: "flex", flexDirection: "column",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
+            }}
+          >
+            <div style={{
+              padding: "1rem 1.25rem", borderBottom: "1px solid #e5e7eb",
+              display: "flex", alignItems: "baseline", gap: 10,
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+                  {reasonView.label}
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                  Excluded at {reasonView.stage === "TA" ? "title & abstract" : "full-text"} stage
+                  {reasonPapers ? ` · ${reasonPapers.papers.length} paper${reasonPapers.papers.length === 1 ? "" : "s"}` : ""}
+                </div>
+              </div>
+              <button
+                onClick={() => setReasonView(null)}
+                title="Close"
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", padding: "0.5rem 1.25rem 1rem" }}>
+              {papersLoading && (
+                <div style={{ padding: "1.5rem 0", color: "#94a3b8", fontSize: 13 }}>Loading…</div>
+              )}
+              {reasonPapers?.papers.map((p, i) => (
+                <div key={p.record_id ?? p.cluster_id ?? i} style={{
+                  padding: "0.65rem 0",
+                  borderTop: i > 0 ? "1px solid #f1f5f9" : "none",
+                }}>
+                  <div style={{ fontSize: 13, color: "#0f172a", lineHeight: 1.45 }}>{p.title}</div>
+                  <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <span>{new Date(p.decided_at).toLocaleDateString()}</span>
+                    {p.origin === "ai" && <span style={{ color: "#7c3aed", fontWeight: 600 }}>AI decision</span>}
+                    {p.notes && <span style={{ fontStyle: "italic" }}>note: {p.notes}</span>}
+                  </div>
+                </div>
+              ))}
+              {reasonPapers && reasonPapers.papers.length === 0 && (
+                <div style={{ padding: "1.5rem 0", color: "#94a3b8", fontSize: 13 }}>
+                  No papers found for this reason.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
