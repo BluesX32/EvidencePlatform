@@ -11,6 +11,7 @@ from app.routers import annotations, auth, citations, concept_extraction, concep
 from app.routers import screening
 from app.routers import llm_screening
 from app.routers import ai_pilot
+from app.routers import llm_usage
 
 
 @asynccontextmanager
@@ -70,6 +71,7 @@ app.include_router(teams.router)
 app.include_router(consensus.router)
 app.include_router(search.router)
 app.include_router(ai_pilot.router)
+app.include_router(llm_usage.router)
 
 
 @app.get("/health")

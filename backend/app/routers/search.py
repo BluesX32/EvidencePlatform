@@ -102,6 +102,7 @@ async def generate_strategy(
         result = await pubmed_service.generate_search_strategy(
             body.research_question, model=body.model,
             api_key=anthropic_key, openrouter_api_key=openrouter_key,
+            project_id=project_id, user_id=user.id,
         )
     except Exception as exc:
         logger.exception("Strategy generation failed")

@@ -45,7 +45,9 @@ from app.models.record_source import RecordSource
 from app.models.screening_decision import ScreeningDecision
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.services import llm_client
 from app.services import llm_screening_service as svc
+from app.services.llm_client import LlmLogContext, set_llm_log_context
 
 router = APIRouter(tags=["llm_screening"])
 
@@ -1725,39 +1727,32 @@ async def _simple_llm_call(
     system: str,
     prompt: str,
     max_tokens: int = 1024,
+    *,
+    feature: str,
+    project_id: Optional[uuid.UUID] = None,
 ) -> str:
-    """Call LLM using whichever key the user has configured. Returns text response."""
-    import anthropic as _anthropic
-
+    """Call LLM via the central gateway (audited to llm_calls). Returns text response."""
     anthropic_key = _resolve_anthropic_key(user)
     openrouter_key = _resolve_openrouter_key(user)
 
     if not anthropic_key and not openrouter_key:
         raise HTTPException(400, "No API key configured — add an Anthropic or OpenRouter key in Settings")
 
-    # Prefer Anthropic direct for Claude models; use OpenRouter as fallback
-    use_openrouter = openrouter_key and (not anthropic_key or not model.startswith("claude-"))
-
-    if use_openrouter:
-        from openai import AsyncOpenAI  # type: ignore
-        client = AsyncOpenAI(
-            api_key=openrouter_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
-        )
-        resp = await client.chat.completions.create(
-            model=model, max_tokens=max_tokens,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        )
-        return resp.choices[0].message.content or ""
-    else:
-        ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
-        resp = await ac.messages.create(
-            model=model, max_tokens=max_tokens,
+    try:
+        result = await llm_client.call_llm(
+            feature=feature,
+            model=model,
+            prompt=prompt,
             system=system,
-            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            anthropic_key=anthropic_key,
+            openrouter_key=openrouter_key,
+            project_id=project_id,
+            user_id=user.id,
         )
-        return resp.content[0].text
+    except ValueError as exc:  # no usable API key for this model
+        raise HTTPException(400, str(exc))
+    return result.text
 
 
 @router.post("/projects/{project_id}/llm-screening/auto-extract")
@@ -1820,6 +1815,11 @@ async def auto_extract_paper(
             pass  # fall back to abstract-only extraction
 
     llm_config = project.llm_config or {}
+    set_llm_log_context(LlmLogContext(
+        feature="extraction.auto_fill",
+        project_id=uuid.UUID(project_id),
+        user_id=user.id,
+    ))
     result = await svc._extract_one_record(
         record=record,
         full_text=full_text,
@@ -1930,17 +1930,43 @@ async def auto_concept_extract(
 
     use_openrouter = openrouter_key and (not anthropic_key or not body.model.startswith("claude-"))
 
+    import json as _json
+    import time as _time
+    _started = _time.monotonic()
+
+    async def _audit(status: str, in_tok: Optional[int], out_tok: Optional[int],
+                     result: Optional[dict], error: Optional[str]) -> None:
+        await llm_client.log_llm_call(
+            feature="concepts.auto_fill",
+            provider="openrouter" if use_openrouter else "anthropic",
+            model=body.model,
+            status=status,
+            error_message=error,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            latency_ms=int((_time.monotonic() - _started) * 1000),
+            system_prompt=system_prompt,
+            prompt="\n".join(lines),
+            response=_json.dumps(result, default=str) if result is not None else None,
+            project_id=uuid.UUID(project_id),
+            user_id=user.id,
+        )
+
     try:
         result: dict = {}
+        in_tok: Optional[int] = None
+        out_tok: Optional[int] = None
         if use_openrouter:
             from openai import AsyncOpenAI  # type: ignore
             oai_tools = [{"type": "function", "function": {"name": "submit_concepts", "description": "Submit extracted concept values", "parameters": {"type": "object", "properties": properties, "required": list(properties.keys())}}}]
             oa_client = AsyncOpenAI(api_key=openrouter_key, base_url="https://openrouter.ai/api/v1", default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"})
             or_resp = await oa_client.chat.completions.create(model=body.model, max_tokens=2000, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": "\n".join(lines)}], tools=oai_tools, tool_choice={"type": "function", "function": {"name": "submit_concepts"}})
-            import json as _json
             tc = or_resp.choices[0].message.tool_calls
             if tc:
                 result = _json.loads(tc[0].function.arguments)
+            if or_resp.usage:
+                in_tok = or_resp.usage.prompt_tokens
+                out_tok = or_resp.usage.completion_tokens
         else:
             ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
             resp = await ac.messages.create(model=body.model, max_tokens=2000, system=system_prompt, messages=[{"role": "user", "content": "\n".join(lines)}], tools=tool_schema, tool_choice={"type": "tool", "name": "submit_concepts"})
@@ -1948,10 +1974,14 @@ async def auto_concept_extract(
                 if block.type == "tool_use" and block.name == "submit_concepts":
                     result = block.input or {}
                     break
+            in_tok = resp.usage.input_tokens
+            out_tok = resp.usage.output_tokens
+        await _audit("ok", in_tok, out_tok, result, None)
         return {"cells": result}
     except HTTPException:
         raise
     except Exception as exc:
+        await _audit("error", None, None, None, str(exc))
         raise HTTPException(500, f"AI concept extraction failed: {exc}")
 
 
@@ -1982,8 +2012,6 @@ async def suggest_conflict_resolution(
     Returns {decision, rationale} — not binding. Shown in ConsensusPage as
     an AI suggestion that the adjudicator can accept or override.
     """
-    import anthropic as _anthropic
-
     await require_project_role(db, uuid.UUID(project_id), user.id, allowed=REVIEWER_ROLE)
     project = await ProjectRepo.get_by_id(db, uuid.UUID(project_id))
     if not project:
@@ -2018,6 +2046,7 @@ Return ONLY the JSON, no other text."""
             user, body.model,
             system="You are an expert systematic review methodologist. Respond only with valid JSON.",
             prompt=prompt, max_tokens=300,
+            feature="consensus.suggest", project_id=uuid.UUID(project_id),
         )
         import json as _json
         parsed = _json.loads(text.strip())
@@ -2049,7 +2078,6 @@ async def synthesize_evidence(
     pulls concept taxonomy, then calls Claude to produce a structured report.
     Returns markdown text that can be displayed in ReportPage.
     """
-    import anthropic as _anthropic
     from app.models.extraction_record import ExtractionRecord
     from sqlalchemy import text as sa_text
 
@@ -2137,6 +2165,7 @@ Be specific, cite paper titles where relevant, and write in an academic tone."""
             user, body.model,
             system="You are an expert systematic review author. Produce clear, structured, academic synthesis reports in markdown.",
             prompt=prompt, max_tokens=4000,
+            feature="report.synthesis", project_id=pid,
         )
         report_md = report_md.strip()
 

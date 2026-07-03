@@ -37,6 +37,7 @@ from app.models.project import Project
 from app.models.thematic_history import ThematicHistory
 from app.models.user import User
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE, ADMIN_ROLE
+from app.services.llm_client import call_llm
 
 router = APIRouter(tags=["thematic"])
 
@@ -693,7 +694,6 @@ async def ai_assign_code(
     if not anthropic_key and not openrouter_key:
         raise HTTPException(400, "No API key configured — add one in Settings")
 
-    use_openrouter = openrouter_key and (not anthropic_key or not body.model.startswith("claude-"))
     code_desc = code_node.name + (f": {code_node.description}" if code_node.description else "")
 
     new_assignments = 0
@@ -716,26 +716,18 @@ async def ai_assign_code(
         system = "You are a thematic analysis expert. Assess whether a qualitative code applies to a paper."
 
         try:
-            if use_openrouter:
-                from openai import AsyncOpenAI  # type: ignore
-                oa = AsyncOpenAI(
-                    api_key=openrouter_key,
-                    base_url="https://openrouter.ai/api/v1",
-                    default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
-                )
-                oar = await oa.chat.completions.create(
-                    model=body.model, max_tokens=200,
-                    messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                )
-                raw = oar.choices[0].message.content or ""
-            else:
-                import anthropic as _ant
-                ac = _ant.AsyncAnthropic(api_key=anthropic_key)
-                antr = await ac.messages.create(
-                    model=body.model, max_tokens=200, system=system,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                raw = antr.content[0].text.strip()
+            llm_result = await call_llm(
+                feature="thematic.ai_assign",
+                model=body.model,
+                prompt=prompt,
+                system=system,
+                max_tokens=200,
+                anthropic_key=anthropic_key,
+                openrouter_key=openrouter_key,
+                project_id=pid,
+                user_id=user.id,
+            )
+            raw = llm_result.text
 
             t = raw.strip()
             if t.startswith("```"):

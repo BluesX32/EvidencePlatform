@@ -40,8 +40,10 @@ from app.models.record_source import RecordSource
 from app.models.screening_decision import ScreeningDecision
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.services import llm_client
 from app.services import llm_screening_service as svc
 from app.services.consensus_service import detect_conflicts, adjudicate
+from app.services.llm_client import LlmLogContext, set_llm_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,7 @@ def _job_status(project_id: str, job_type: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# LLM call helpers (duplicated from llm_screening.py to avoid router coupling)
+# LLM call helper — thin wrapper over the central gateway (app.services.llm_client)
 # ---------------------------------------------------------------------------
 
 def _resolve_anthropic_key(user: User) -> Optional[str]:
@@ -83,33 +85,27 @@ async def _llm_call(
     system: str,
     prompt: str,
     max_tokens: int = 2048,
+    *,
+    feature: str,
+    project_id: Optional[uuid.UUID] = None,
+    user_id: Optional[uuid.UUID] = None,
 ) -> str:
-    """Call LLM via Anthropic or OpenRouter, return text."""
-    if not anthropic_key and not openrouter_key:
-        raise HTTPException(400, "No API key configured — add one in Settings")
-
-    use_openrouter = openrouter_key and (not anthropic_key or not model.startswith("claude-"))
-
-    if use_openrouter:
-        from openai import AsyncOpenAI  # type: ignore
-        client = AsyncOpenAI(
-            api_key=openrouter_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
+    """Call LLM via the central gateway (audited to llm_calls), return text."""
+    try:
+        result = await llm_client.call_llm(
+            feature=feature,
+            model=model,
+            prompt=prompt,
+            system=system,
+            max_tokens=max_tokens,
+            anthropic_key=anthropic_key,
+            openrouter_key=openrouter_key,
+            project_id=project_id,
+            user_id=user_id,
         )
-        resp = await client.chat.completions.create(
-            model=model, max_tokens=max_tokens,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        )
-        return resp.choices[0].message.content or ""
-    else:
-        import anthropic as _anthropic
-        ac = _anthropic.AsyncAnthropic(api_key=anthropic_key)
-        resp = await ac.messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text.strip()
+    except ValueError as exc:  # no usable API key for this model
+        raise HTTPException(400, str(exc))
+    return result.text
 
 
 def _parse_json_response(text: str) -> Any:
@@ -319,7 +315,10 @@ The extraction_template row ids must be unique strings like r1, r2, etc.
 The concept_template field ids must be unique strings like f1, f2, etc.
 """
     try:
-        raw = await _llm_call(anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=3000)
+        raw = await _llm_call(
+            anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=3000,
+            feature="ai_pilot.draft_setup", project_id=project_id, user_id=user.id,
+        )
         result = _parse_json_response(raw)
     except json.JSONDecodeError:
         raise HTTPException(502, "AI returned invalid JSON — please retry")
@@ -370,6 +369,9 @@ async def start_bulk_extraction(
     llm_config = project.llm_config or {}
 
     async def _run() -> None:
+        set_llm_log_context(LlmLogContext(
+            feature="ai_pilot.extract", project_id=project_id, user_id=user_id,
+        ))
         try:
             async with SessionLocal() as db2:
                 # FT-included items this reviewer hasn't extracted yet
@@ -507,6 +509,9 @@ async def start_bulk_concepts(
     system_prompt = f"{base_system}\n\n{ai_instructions}".strip() if ai_instructions else base_system
 
     async def _run() -> None:
+        set_llm_log_context(LlmLogContext(
+            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id,
+        ))
         try:
             async with SessionLocal() as db2:
                 included_q = select(
@@ -567,7 +572,10 @@ async def start_bulk_concepts(
                             + "\n}\nFor each field, list ALL values found as an array of strings. Empty array if none."
                         )
 
-                        raw = await _llm_call(anthropic_key, openrouter_key, body.model, system_prompt, prompt, max_tokens=1500)
+                        raw = await _llm_call(
+                            anthropic_key, openrouter_key, body.model, system_prompt, prompt, max_tokens=1500,
+                            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id,
+                        )
                         try:
                             cells = _parse_json_response(raw)
                         except Exception:
@@ -681,7 +689,10 @@ Return only valid JSON, no markdown fences."""
     system = "You are an expert qualitative researcher specialising in thematic synthesis of systematic review data."
 
     try:
-        raw = await _llm_call(anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=2000)
+        raw = await _llm_call(
+            anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=2000,
+            feature="ai_pilot.suggest_themes", project_id=project_id, user_id=user.id,
+        )
         result = _parse_json_response(raw)
     except json.JSONDecodeError:
         raise HTTPException(502, "AI returned invalid JSON — please retry")
@@ -734,7 +745,10 @@ async def ai_resolve_all(
                 "Should this paper be included or excluded? Return JSON with 'decision' and 'rationale'."
             )
 
-            raw = await _llm_call(anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=200)
+            raw = await _llm_call(
+                anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=200,
+                feature="ai_pilot.resolve_conflicts", project_id=project_id, user_id=user.id,
+            )
             parsed = _parse_json_response(raw)
             decision = parsed.get("decision", "").lower()
             rationale = parsed.get("rationale", "AI-assisted resolution")

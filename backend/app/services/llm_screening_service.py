@@ -49,62 +49,20 @@ from app.models.screening_decision import ScreeningDecision
 from app.models.screening_queue import ScreeningQueue
 from app.models.source import Source
 from app.models.user import User
+from app.services.llm_client import (
+    DEFAULT_MODEL as _DEFAULT_MODEL,
+    LlmLogContext,
+    cost_per_token as _cost_per_token,
+    get_llm_log_context,
+    log_llm_call,
+    set_llm_log_context,
+)
 from app.utils.fulltext_fetcher import get_full_text
 
 logger = logging.getLogger(__name__)
 
 CONCURRENT_REQUESTS = 8
 CONCURRENT_REQUESTS_FREE = 3  # conservative limit for free-tier OpenRouter models
-
-# ---------------------------------------------------------------------------
-# Pricing table (USD per token) — covers direct Anthropic + OpenRouter models
-# OpenRouter prices: https://openrouter.ai/models
-# ---------------------------------------------------------------------------
-
-_PRICING: dict[str, tuple[float, float]] = {
-    # ── Claude (Anthropic direct or via OpenRouter) ────────────────────────
-    "claude-haiku-4-5-20251001":          (0.80 / 1_000_000,   4.00 / 1_000_000),
-    "claude-sonnet-4-6":                  (3.00 / 1_000_000,  15.00 / 1_000_000),
-    "claude-opus-4-6":                    (15.00 / 1_000_000, 75.00 / 1_000_000),
-    # ── OpenAI via OpenRouter ─────────────────────────────────────────────
-    "openai/gpt-4o-mini":                 (0.15 / 1_000_000,   0.60 / 1_000_000),
-    "openai/gpt-4o":                      (2.50 / 1_000_000,  10.00 / 1_000_000),
-    "openai/o1-mini":                     (1.10 / 1_000_000,   4.40 / 1_000_000),
-    "openai/o3-mini":                     (1.10 / 1_000_000,   4.40 / 1_000_000),
-    "openai/gpt-5.3-chat":                (8.00 / 1_000_000,  24.00 / 1_000_000),
-    "openai/gpt-5.4":                     (10.00 / 1_000_000, 30.00 / 1_000_000),
-    "openai/gpt-5.4-pro":                 (117.00 / 1_000_000, 117.00 / 1_000_000),
-    # ── Google Gemini via OpenRouter ──────────────────────────────────────
-    "google/gemini-flash-1.5":            (0.075 / 1_000_000,  0.30 / 1_000_000),
-    "google/gemini-pro-1.5":              (1.25 / 1_000_000,   5.00 / 1_000_000),
-    "google/gemini-2.0-flash-001":        (0.10 / 1_000_000,   0.40 / 1_000_000),
-    "google/gemini-2.5-pro-preview":      (1.25 / 1_000_000,  10.00 / 1_000_000),
-    "google/gemini-3-flash-preview":      (0.15 / 1_000_000,   0.60 / 1_000_000),
-    "google/gemini-3.1-flash-lite-preview": (0.05 / 1_000_000, 0.20 / 1_000_000),
-    "google/gemini-3.1-pro-preview":      (8.00 / 1_000_000,  24.00 / 1_000_000),
-    # ── Meta Llama via OpenRouter ─────────────────────────────────────────
-    "meta-llama/llama-3.3-70b-instruct":  (0.12 / 1_000_000,  0.30 / 1_000_000),
-    "meta-llama/llama-3.1-405b-instruct": (2.70 / 1_000_000,  2.70 / 1_000_000),
-    "meta-llama/llama-4-scout":           (0.15 / 1_000_000,  0.60 / 1_000_000),
-    "meta-llama/llama-4-maverick":        (0.90 / 1_000_000,  2.70 / 1_000_000),
-    # ── Mistral via OpenRouter ─────────────────────────────────────────────
-    "mistralai/mistral-small":            (0.10 / 1_000_000,   0.30 / 1_000_000),
-    "mistralai/mistral-small-3.1":        (0.10 / 1_000_000,   0.30 / 1_000_000),
-    "mistralai/mistral-large":            (2.00 / 1_000_000,   6.00 / 1_000_000),
-    "mistralai/mistral-large-2512":       (1.35 / 1_000_000,   4.05 / 1_000_000),
-    "mistralai/ministral-8b-2512":        (0.28 / 1_000_000,   0.84 / 1_000_000),
-    # ── DeepSeek via OpenRouter ───────────────────────────────────────────
-    "deepseek/deepseek-chat":             (0.14 / 1_000_000,   0.28 / 1_000_000),
-    "deepseek/deepseek-r1":               (0.55 / 1_000_000,   2.19 / 1_000_000),
-    "deepseek/deepseek-v3.2":             (0.55 / 1_000_000,   1.65 / 1_000_000),
-    # ── Qwen (Alibaba) via OpenRouter ────────────────────────────────────
-    "qwen/qwen3.5-plus-02-15":            (0.50 / 1_000_000,   1.50 / 1_000_000),
-    "qwen/qwen3-max-thinking":            (1.80 / 1_000_000,   5.40 / 1_000_000),
-    # ── NVIDIA Nemotron (free) via OpenRouter ─────────────────────────────
-    "nvidia/nemotron-3-super-120b-a12b:free": (0.00 / 1_000_000, 0.00 / 1_000_000),
-    # ── Cohere via OpenRouter ─────────────────────────────────────────────
-    "cohere/command-a-03-2025":           (2.50 / 1_000_000,  10.00 / 1_000_000),
-}
 
 _MINUTES_PER_RECORD: dict[str, float] = {
     "claude-haiku-4-5-20251001":            0.008,
@@ -142,7 +100,6 @@ _MINUTES_PER_RECORD: dict[str, float] = {
     "cohere/command-a-03-2025":             0.012,
 }
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Run IDs for which a stop has been requested; checked inside each processing loop.
 _CANCEL_REQUESTS: set[uuid.UUID] = set()
@@ -264,11 +221,6 @@ DEFAULT_MULTI_PIPELINE: list[dict] = [
 def _norm_decision(val: Optional[str]) -> Optional[str]:
     """Normalize LLM decision strings to lowercase — guards against 'Include' vs 'include'."""
     return val.lower().strip() if val else None
-
-
-def _cost_per_token(model: str) -> tuple[float, float]:
-    """Return (input_price_per_token, output_price_per_token) in USD."""
-    return _PRICING.get(model, _PRICING[_DEFAULT_MODEL])
 
 
 def _detect_provider(model: str) -> str:
@@ -1044,6 +996,13 @@ async def _do_execute_run(
     pipeline: Optional[list] = None,
 ) -> None:
     # Mark as running
+    run_row = await db.get(LlmScreeningRun, run_id)
+    set_llm_log_context(LlmLogContext(
+        feature="screening.run",
+        project_id=project_id,
+        user_id=run_row.triggered_by if run_row else None,
+        run_id=run_id,
+    ))
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
@@ -1387,6 +1346,13 @@ async def _do_execute_run_saturation(
     Saturation = saturation_threshold consecutive records with no new concepts.
     Processes records in queue order (or seeded order) — NOT parallel.
     """
+    run_row = await db.get(LlmScreeningRun, run_id)
+    set_llm_log_context(LlmLogContext(
+        feature="screening.run",
+        project_id=project_id,
+        user_id=run_row.triggered_by if run_row else None,
+        run_id=run_id,
+    ))
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
@@ -1856,6 +1822,13 @@ async def _do_execute_run_ta_only(
     On completion, status = 'awaiting_fulltext' so the UI can prompt the user
     to supply PDFs before triggering the FT phase.
     """
+    run_row = await db.get(LlmScreeningRun, run_id)
+    set_llm_log_context(LlmLogContext(
+        feature="screening.run",
+        project_id=project_id,
+        user_id=run_row.triggered_by if run_row else None,
+        run_id=run_id,
+    ))
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
@@ -2142,6 +2115,13 @@ async def _do_execute_run_ft_only(
       - If full text found: makes FT include/exclude decision + runs extraction.
       - If still abstract_only: leaves ft_decision=null, increments abstract_only_count.
     """
+    run_row = await db.get(LlmScreeningRun, run_id)
+    set_llm_log_context(LlmLogContext(
+        feature="screening.run",
+        project_id=project_id,
+        user_id=run_row.triggered_by if run_row else None,
+        run_id=run_id,
+    ))
     await db.execute(
         update(LlmScreeningRun)
         .where(LlmScreeningRun.id == run_id)
@@ -3260,29 +3240,63 @@ async def _call_llm(
     openrouter_api_key: Optional[str] = None,
     system_prompt_override: Optional[str] = None,
     tool_schema_override: Optional[list] = None,
+    log_feature: str = "screening.run",
 ) -> dict[str, Any]:
     """Dispatch to the correct provider backend based on model name + env keys.
 
     Returns the tool input dict plus '_input_tokens' / '_output_tokens' keys.
     system_prompt_override replaces _SYSTEM_PROMPT when provided.
     tool_schema_override replaces _TOOL_SCHEMA/_OAI_TOOLS when provided.
+
+    Every call is audited to llm_calls. Batch pipelines attribute calls to
+    their project/run via set_llm_log_context(); log_feature is the fallback
+    tag when no context is set.
     """
     provider = _detect_provider(model)
-    if provider == "anthropic":
-        return await _call_anthropic(
-            model,
-            prompt,
-            api_key=anthropic_api_key,
-            system_prompt_override=system_prompt_override,
-            tool_schema_override=tool_schema_override,
+    ctx = get_llm_log_context()
+    feature = ctx.feature if ctx else log_feature
+    started = time.monotonic()
+
+    async def _audit(result: Optional[dict[str, Any]], error: Optional[str]) -> None:
+        await log_llm_call(
+            feature=feature,
+            provider=provider,
+            model=model,
+            status="ok" if error is None else "error",
+            error_message=error,
+            input_tokens=result.get("_input_tokens") if result else None,
+            output_tokens=result.get("_output_tokens") if result else None,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            system_prompt=system_prompt_override or _SYSTEM_PROMPT,
+            prompt=prompt,
+            response=json.dumps(
+                {k: v for k, v in result.items() if not k.startswith("_")},
+                default=str,
+            ) if result else None,
         )
-    return await _call_openrouter(
-        model,
-        prompt,
-        api_key=openrouter_api_key,
-        system_prompt_override=system_prompt_override,
-        tool_schema_override=tool_schema_override,
-    )
+
+    try:
+        if provider == "anthropic":
+            result = await _call_anthropic(
+                model,
+                prompt,
+                api_key=anthropic_api_key,
+                system_prompt_override=system_prompt_override,
+                tool_schema_override=tool_schema_override,
+            )
+        else:
+            result = await _call_openrouter(
+                model,
+                prompt,
+                api_key=openrouter_api_key,
+                system_prompt_override=system_prompt_override,
+                tool_schema_override=tool_schema_override,
+            )
+    except Exception as exc:
+        await _audit(None, str(exc))
+        raise
+    await _audit(result, None)
+    return result
 
 
 async def _call_anthropic(
@@ -3685,6 +3699,7 @@ async def _extract_one_record(
             openrouter_api_key=openrouter_api_key,
             system_prompt_override=extraction_system,
             tool_schema_override=tool_schema,
+            log_feature="extraction.auto_fill",
         )
         # Remove internal token-counting keys
         result.pop("_input_tokens", None)

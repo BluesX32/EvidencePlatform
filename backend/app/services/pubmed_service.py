@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from typing import Optional
 
 import httpx
@@ -43,12 +44,16 @@ async def generate_search_strategy(
     model: str = "anthropic/claude-haiku-4-5",
     api_key: Optional[str] = None,
     openrouter_api_key: Optional[str] = None,
+    project_id: Optional[uuid.UUID] = None,
+    user_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """
     Returns {"query": str, "explanation": str, "pico": dict}.
     Supports both Anthropic direct and OpenRouter.
     """
     import json
+
+    from app.services.llm_client import call_llm
 
     prompt = f"""You are an expert medical librarian. A researcher wants to search PubMed for papers relevant to this research question:
 
@@ -65,39 +70,18 @@ Return only valid JSON, no markdown fences."""
     resolved_anthropic = api_key or os.environ.get("ANTHROPIC_API_KEY")
     resolved_openrouter = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
 
-    use_openrouter = resolved_openrouter and (not resolved_anthropic or not model.startswith("claude-") or "/" in model)
-
-    if use_openrouter:
-        # Bare claude- model names (Anthropic native format) aren't valid on OpenRouter;
-        # convert to provider-prefixed format if no slash present
-        if model.startswith("claude-") and "/" not in model:
-            model = f"anthropic/{model.rsplit('-2025', 1)[0].rsplit('-2024', 1)[0]}"
-        from openai import AsyncOpenAI  # type: ignore
-        client = AsyncOpenAI(
-            api_key=resolved_openrouter,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={"HTTP-Referer": "https://evidence-platform", "X-Title": "EvidencePlatform"},
-        )
-        resp = await client.chat.completions.create(
-            model=model,
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": "You are an expert medical librarian. Return only valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        text = resp.choices[0].message.content or ""
-    elif resolved_anthropic:
-        import anthropic
-        ac = anthropic.AsyncAnthropic(api_key=resolved_anthropic)
-        message = await ac.messages.create(
-            model=model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = message.content[0].text.strip()
-    else:
-        raise ValueError("No API key configured — add an Anthropic or OpenRouter key in Settings")
+    result = await call_llm(
+        feature="search.strategy",
+        model=model,
+        prompt=prompt,
+        system="You are an expert medical librarian. Return only valid JSON.",
+        max_tokens=1024,
+        anthropic_key=resolved_anthropic,
+        openrouter_key=resolved_openrouter,
+        project_id=project_id,
+        user_id=user_id,
+    )
+    text = result.text
 
     if text.startswith("```"):
         text = text.split("```")[1]
