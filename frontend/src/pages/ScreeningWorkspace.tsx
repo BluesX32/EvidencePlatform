@@ -1245,6 +1245,7 @@ function HistoryNav({
   isFetching,
   onToggleList,
   listOpen,
+  canGoBack,
 }: {
   currentPos: number;
   maxPos: number;
@@ -1253,8 +1254,14 @@ function HistoryNav({
   isFetching: boolean;
   onToggleList?: () => void;
   listOpen?: boolean;
+  // Overrides the default "currentPos > 1" rule for enabling Prev. Needed once
+  // the queue is exhausted: the position marker sits ON the last decided item
+  // (not one past it), so even at position 1 — a single-record corpus — there
+  // is still something behind the done-card worth looking back at.
+  canGoBack?: boolean;
 }) {
   const isAtEnd = currentPos === maxPos;
+  const prevEnabled = (canGoBack ?? currentPos > 1) && !isFetching;
   const btnBase: React.CSSProperties = {
     padding: "0.25rem 0.7rem",
     borderRadius: "0.375rem",
@@ -1280,10 +1287,10 @@ function HistoryNav({
     >
       <button
         onClick={onPrev}
-        disabled={currentPos <= 1 || isFetching}
+        disabled={!prevEnabled}
         style={{
           ...btnBase,
-          opacity: currentPos <= 1 ? 0.35 : 1,
+          opacity: prevEnabled ? 1 : 0.35,
         }}
         title="Previous article in this session"
       >
@@ -1772,8 +1779,10 @@ function ScreeningPanel({
   // so the nav bar stays visible while the item is being fetched.
   async function navigateToPos(pos: number) {
     if (pos < 1 || maxPos === null || pos > maxPos) return;
-    if (pos === maxPos) {
-      // Back to the live item — no API call needed
+    // Back to the live item — no API call needed. Only valid while the live
+    // item is a real article: once the queue is exhausted the "live item" is
+    // the done card, and the last slot must be fetched like any other.
+    if (pos === maxPos && item && !item.done) {
       setBrowseItem(null);
       setDisplayPos(pos);
       itemStartedAt.current = Date.now();
@@ -1792,7 +1801,13 @@ function ScreeningPanel({
   }
 
   async function goToPrev() {
-    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
+    if (displayPos === null) return;
+    // From the end-of-queue card, "prev" is the last decided paper itself
+    if (!isBrowsingHistory && (!item || item.done)) {
+      await navigateToPos(displayPos);
+      return;
+    }
+    if (displayPos > 1) await navigateToPos(displayPos - 1);
   }
 
   async function goToNext() {
@@ -1893,6 +1908,13 @@ function ScreeningPanel({
     setForm((f) => { const arr = f[field]; return { ...f, [field]: arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value] }; });
   }
 
+  // Once the queue is exhausted, the position marker sits ON the last decided
+  // item rather than one past it — so Prev must stay enabled even at position
+  // 1 (a single-record corpus) to look back at it. See HistoryNav.canGoBack.
+  const isDoneState = !isBrowsingHistory && (!item || item.done);
+  const canGoBack = maxPos !== null && maxPos > 0
+    && (isDoneState || (displayPos !== null && displayPos > 1));
+
   // The nav bar is always rendered once we have a position — never hidden by loading.
   const nav = maxPos !== null ? (
     <HistoryNav
@@ -1903,6 +1925,20 @@ function ScreeningPanel({
       isFetching={loading || browseLoading}
       onToggleList={() => setShowQueueNav((v) => !v)}
       listOpen={showQueueNav}
+      canGoBack={canGoBack}
+    />
+  ) : null;
+
+  // Paper-list panel — kept separate from `nav` (rather than nested inside it)
+  // so every return branch below can show it, including the done/error cards.
+  const queuePanel = showQueueNav ? (
+    <QueueNavigatorPanel
+      projectId={projectId}
+      source={source}
+      stage={queueStage}
+      currentPos={displayPos}
+      onNavigate={(pos) => { navigateToPos(pos); }}
+      onClose={() => setShowQueueNav(false)}
     />
   ) : null;
 
@@ -1913,21 +1949,22 @@ function ScreeningPanel({
 
   // ── Fetch error (and not currently browsing history) ──
   if (fetchError && !isBrowsingHistory) {
-    return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
+    return <>{nav}{queuePanel}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
   }
 
   // ── Queue exhausted ──
-  if (!isBrowsingHistory && (!item || item.done)) {
-    return <>{nav}<DoneCard bucketLabel={bucketLabel} projectId={projectId} /></>;
+  if (isDoneState) {
+    return <>{nav}{queuePanel}<DoneCard bucketLabel={bucketLabel} projectId={projectId} /></>;
   }
 
-  if (!displayItem) return nav;
+  if (!displayItem) return <>{nav}{queuePanel}</>;
 
   // ── Inline extraction after FT include ──
   if (extractPhase && !isBrowsingHistory && item) {
     return (
       <div>
         {nav}
+        {queuePanel}
         <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
         <div style={{ border: "1px solid #dadce0", borderRadius: "0.5rem", padding: "0.85rem 1.1rem", marginBottom: "0.6rem", background: "#fff" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>{item.title ?? <em style={{ color: "#888" }}>No title</em>}</div>
@@ -1991,18 +2028,7 @@ function ScreeningPanel({
   return (
     <div>
       {nav}
-
-      {/* Session paper list — inline collapsible below nav bar */}
-      {showQueueNav && (
-        <QueueNavigatorPanel
-          projectId={projectId}
-          source={source}
-          stage={queueStage}
-          currentPos={displayPos}
-          onNavigate={(pos) => { navigateToPos(pos); }}
-          onClose={() => setShowQueueNav(false)}
-        />
-      )}
+      {queuePanel}
 
       {/* Subtle spinner during history navigation — nav bar stays visible */}
       {browseLoading && (
@@ -2749,7 +2775,8 @@ function MixedPanel({
 
   async function navigateToPos(pos: number) {
     if (pos < 1 || maxPos === null || pos > maxPos) return;
-    if (pos === maxPos) {
+    // Back to the live item — only while it's a real article (see ScreeningPanel)
+    if (pos === maxPos && item && !item.done) {
       setBrowseItem(null);
       setDisplayPos(pos);
       itemStartedAt.current = Date.now();
@@ -2781,7 +2808,13 @@ function MixedPanel({
   }
 
   async function goToPrev() {
-    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
+    if (displayPos === null) return;
+    // From the end-of-queue card, "prev" is the last decided paper itself
+    if (!isBrowsingHistory && (!item || item.done)) {
+      await navigateToPos(displayPos);
+      return;
+    }
+    if (displayPos > 1) await navigateToPos(displayPos - 1);
   }
   async function goToNext() {
     if (displayPos !== null && maxPos !== null && displayPos < maxPos) await navigateToPos(displayPos + 1);
@@ -2832,14 +2865,29 @@ function MixedPanel({
     },
   });
 
+  // Once the queue is exhausted, the position marker sits ON the last decided
+  // item rather than one past it — so Prev must stay enabled even at position
+  // 1 (a single-record corpus) to look back at it. See HistoryNav.canGoBack.
+  const isDoneState = !isBrowsingHistory && (!item || item.done);
+  const canGoBack = maxPos !== null && maxPos > 0
+    && (isDoneState || (displayPos !== null && displayPos > 1));
+
   const nav = maxPos !== null ? (
     <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading}
-      onToggleList={() => setShowQueueNav((v) => !v)} listOpen={showQueueNav} />
+      onToggleList={() => setShowQueueNav((v) => !v)} listOpen={showQueueNav} canGoBack={canGoBack} />
+  ) : null;
+
+  // Paper-list panel — kept separate from `nav` so every return branch below
+  // (including the done/error cards) can show it.
+  const queuePanel = showQueueNav ? (
+    <QueueNavigatorPanel projectId={projectId} source={source} stage="mixed"
+      currentPos={displayPos} onNavigate={(pos) => { navigateToPos(pos); }}
+      onClose={() => setShowQueueNav(false)} />
   ) : null;
 
   if (loading && maxPos === null) return <p style={{ color: "#888" }}>Loading…</p>;
-  if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
-  if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
+  if (fetchError && !isBrowsingHistory) return <>{nav}{queuePanel}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
+  if (isDoneState) return <>{nav}{queuePanel}<DoneCard bucketLabel="Mixed Screening" projectId={projectId} /></>;
 
   // ── History browse view (editable decisions + extraction) ──
   function toggleBrowseChip(field: "levels" | "dimensions", value: string) {
@@ -2850,11 +2898,7 @@ function MixedPanel({
     return (
       <div>
         {nav}
-        {showQueueNav && (
-          <QueueNavigatorPanel projectId={projectId} source={source} stage="mixed"
-            currentPos={displayPos} onNavigate={(pos) => { navigateToPos(pos); }}
-            onClose={() => setShowQueueNav(false)} />
-        )}
+        {queuePanel}
         {browseLoading && <div style={{ fontSize: "0.78rem", color: "#9ca3af", marginBottom: "0.4rem" }}>Loading…</div>}
         <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: "0.375rem", padding: "0.4rem 0.85rem", marginBottom: "0.5rem", fontSize: "0.78rem", color: "#92400e", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span>Viewing session history{browseItem.ft_decision === "include" ? " — you can edit the extraction below" : ""}</span>
@@ -2974,13 +3018,7 @@ function MixedPanel({
   return (
     <div>
       {nav}
-
-      {/* Session paper list — inline collapsible below nav bar */}
-      {showQueueNav && (
-        <QueueNavigatorPanel projectId={projectId} source={source} stage="mixed"
-          currentPos={displayPos} onNavigate={(pos) => { navigateToPos(pos); }}
-          onClose={() => setShowQueueNav(false)} />
-      )}
+      {queuePanel}
 
       <ProgressBar remaining={item.remaining} queuePosition={displayPos ?? item.queue_position} queueTotal={queueTotal ?? item.queue_total} queueSeed={queueSeed ?? item.queue_seed} sessionMax={maxPos} />
       <KeywordBar />
@@ -3196,7 +3234,8 @@ function ExtractionPanel({
 
   async function navigateToPos(pos: number) {
     if (pos < 1 || maxPos === null || pos > maxPos) return;
-    if (pos === maxPos) {
+    // Back to the live item — only while it's a real article (see ScreeningPanel)
+    if (pos === maxPos && item && !item.done) {
       setBrowseItem(null);
       setDisplayPos(pos);
       itemStartedAt.current = Date.now();
@@ -3226,7 +3265,13 @@ function ExtractionPanel({
   }
 
   async function goToPrev() {
-    if (displayPos !== null && displayPos > 1) await navigateToPos(displayPos - 1);
+    if (displayPos === null) return;
+    // From the end-of-queue card, "prev" is the last decided paper itself
+    if (!isBrowsingHistory && (!item || item.done)) {
+      await navigateToPos(displayPos);
+      return;
+    }
+    if (displayPos > 1) await navigateToPos(displayPos - 1);
   }
   async function goToNext() {
     if (displayPos !== null && maxPos !== null && displayPos < maxPos) await navigateToPos(displayPos + 1);
@@ -3250,13 +3295,20 @@ function ExtractionPanel({
     onSuccess: () => fetchNext(),
   });
 
+  // Once the queue is exhausted, the position marker sits ON the last decided
+  // item rather than one past it — so Prev must stay enabled even at position
+  // 1 (a single-record corpus) to look back at it. See HistoryNav.canGoBack.
+  const isDoneState = !isBrowsingHistory && (!item || item.done);
+  const canGoBack = maxPos !== null && maxPos > 0
+    && (isDoneState || (displayPos !== null && displayPos > 1));
+
   const nav = maxPos !== null ? (
-    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} />
+    <HistoryNav currentPos={displayPos ?? 1} maxPos={maxPos} onPrev={goToPrev} onNext={goToNext} isFetching={loading || browseLoading} canGoBack={canGoBack} />
   ) : null;
 
   if (loading && maxPos === null) return <p style={{ color: "#888" }}>Loading…</p>;
   if (fetchError && !isBrowsingHistory) return <>{nav}<ErrorCard message={fetchError} onRetry={fetchNext} projectId={projectId} /></>;
-  if (!isBrowsingHistory && (!item || item.done)) return <>{nav}<DoneCard bucketLabel="Extract Data" projectId={projectId} /></>;
+  if (isDoneState) return <>{nav}<DoneCard bucketLabel="Extract Data" projectId={projectId} /></>;
 
   // ── History browse view — show paper info + editable extraction form ──
   function toggleBrowseChip(field: "levels" | "dimensions", value: string) {
