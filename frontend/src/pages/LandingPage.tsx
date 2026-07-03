@@ -1,6 +1,85 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EvidencePlatform landing — typeset as an academic monograph.
+// Paper cream, ink serif (Fraunces), mono annotations (IBM Plex Mono),
+// hairline rules, numbered sections, and product mockups framed as figures.
+// One accent: madder red. Motion is restrained: a staggered load reveal,
+// the Fig. 1 pipeline cycle, and counters.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const P = {
+  paper:   "#f5f0e6",
+  paperHi: "#faf6ee",
+  plate:   "#fffdf7",
+  ink:     "#1d1710",
+  ink2:    "#514734",
+  ink3:    "#8a7d63",
+  line:    "#d8cdb5",
+  lineSoft:"#e6ddc9",
+  accent:  "#96301f",
+  inkBlock:"#171310",
+  cream:   "#efe7d4",
+};
+
+const SERIF = "'Fraunces', Georgia, 'Times New Roman', serif";
+const MONO  = "'IBM Plex Mono', ui-monospace, 'SF Mono', monospace";
+
+const PAGE_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&display=swap');
+
+.lp ::selection { background: ${P.accent}; color: ${P.cream}; }
+
+@keyframes lpRise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lp-rise { animation: lpRise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+.lp-btn {
+  font-family: ${MONO}; font-size: 13px; font-weight: 500;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.85rem 1.9rem; cursor: pointer; border-radius: 2px;
+  transition: background 0.18s, color 0.18s, transform 0.12s;
+}
+.lp-btn:active { transform: translateY(1px); }
+.lp-btn--ink {
+  background: ${P.ink}; color: ${P.cream}; border: 1px solid ${P.ink};
+}
+.lp-btn--ink:hover { background: ${P.accent}; border-color: ${P.accent}; color: #fff; }
+.lp-btn--ghost {
+  background: transparent; color: ${P.ink}; border: 1px solid ${P.line};
+}
+.lp-btn--ghost:hover { border-color: ${P.ink}; }
+.lp-btn--cream {
+  background: ${P.cream}; color: ${P.inkBlock}; border: 1px solid ${P.cream};
+}
+.lp-btn--cream:hover { background: #fff; border-color: #fff; }
+
+.lp-textlink {
+  color: ${P.accent}; cursor: pointer; background: none; border: none; padding: 0;
+  font-family: inherit; font-size: inherit; font-style: italic;
+  text-decoration: underline; text-decoration-thickness: 1px;
+  text-underline-offset: 3px; text-decoration-color: ${P.accent}55;
+  transition: text-decoration-color 0.15s;
+}
+.lp-textlink:hover { text-decoration-color: ${P.accent}; }
+
+.lp-index-row { border-top: 1px solid ${P.lineSoft}; transition: background 0.15s; }
+.lp-index-row:hover { background: ${P.paperHi}; }
+
+@media (max-width: 860px) {
+  .lp-nav-tag { display: none !important; }
+}
+@media (max-width: 560px) {
+  .lp-nav { padding: 0 1rem !important; }
+  .lp-nav-brand { letter-spacing: 0.1em !important; font-size: 11.5px !important; }
+  .lp-nav-signin { display: none !important; }
+  .lp-nav-cta { padding: 0.5rem 0.85rem !important; font-size: 11.5px !important; }
+}
+`;
+
 // ── Animated counter ──────────────────────────────────────────────────────────
 function AnimatedCounter({ target, suffix = "" }: { target: number; suffix?: string }) {
   const [val, setVal] = useState(0);
@@ -19,7 +98,7 @@ function AnimatedCounter({ target, suffix = "" }: { target: number; suffix?: str
         let cur = 0;
         const iv = setInterval(() => {
           cur++;
-          setVal(Math.round((cur / steps) * target));
+          setVal(Math.min(target, Math.round((cur / steps) * target)));
           if (cur >= steps) clearInterval(iv);
         }, step);
       }
@@ -28,98 +107,40 @@ function AnimatedCounter({ target, suffix = "" }: { target: number; suffix?: str
     return () => obs.disconnect();
   }, [target]);
 
-  return <div ref={ref}>{val.toLocaleString()}{suffix}</div>;
+  return <div ref={ref} style={{ display: "inline" }}>{val.toLocaleString()}{suffix}</div>;
 }
 
-// ── Pipeline stage node ───────────────────────────────────────────────────────
-function PipelineNode({
-  label, sub, color, icon, active,
-}: { label: string; sub: string; color: string; icon: string; active: boolean }) {
-  return (
-    <div style={{
-      display: "flex", flexDirection: "column", alignItems: "center",
-      gap: 8, flex: "0 0 auto", width: 100,
-      opacity: active ? 1 : 0.45,
-      transition: "opacity 0.4s",
-    }}>
-      <div style={{
-        width: 52, height: 52, borderRadius: 14,
-        background: active ? color : "#e2e8f0",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 22,
-        boxShadow: active ? `0 0 0 3px ${color}30, 0 4px 14px ${color}40` : "none",
-        transition: "all 0.4s",
-      }}>{icon}</div>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: active ? "#0f172a" : "#94a3b8" }}>{label}</div>
-        <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 1 }}>{sub}</div>
-      </div>
-    </div>
-  );
-}
-
-// ── Feature spotlight card ────────────────────────────────────────────────────
-function SpotlightCard({
-  tag, title, description, visual, accent, flip,
-}: {
-  tag: string; title: string; description: string;
-  visual: React.ReactNode; accent: string; flip?: boolean;
+// ── Figure plate — every mockup is presented as a numbered figure ─────────────
+function MockCard({ children, fig, style }: {
+  children: React.ReactNode; fig?: string; style?: React.CSSProperties;
 }) {
   return (
-    <div style={{
-      display: "flex", flexDirection: flip ? "row-reverse" : "row",
-      gap: "3rem", alignItems: "center",
-      flexWrap: "wrap",
-    }}>
-      <div style={{ flex: "1 1 320px", minWidth: 0 }}>
-        <span style={{
-          display: "inline-block", padding: "0.25rem 0.75rem",
-          borderRadius: 999, background: accent + "18", color: accent,
-          fontSize: 12, fontWeight: 700, letterSpacing: "0.04em",
-          textTransform: "uppercase", marginBottom: "0.9rem",
-        }}>{tag}</span>
-        <h3 style={{
-          fontSize: "1.55rem", fontWeight: 800,
-          letterSpacing: "-0.4px", color: "#0f172a",
-          margin: "0 0 0.85rem", lineHeight: 1.25,
-        }}>{title}</h3>
-        <p style={{ color: "#475569", lineHeight: 1.7, fontSize: "1rem", margin: 0 }}>{description}</p>
-      </div>
-      <div style={{ flex: "1 1 380px", minWidth: 0 }}>
-        {visual}
-      </div>
-    </div>
-  );
-}
-
-// ── Mock card wrapper ─────────────────────────────────────────────────────────
-function MockCard({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <div style={{
-      background: "#fff", borderRadius: 16,
-      border: "1px solid #e2e8f0",
-      boxShadow: "0 8px 32px rgba(0,0,0,0.08)",
-      overflow: "hidden",
-      ...style,
-    }}>
+    <figure style={{ margin: 0 }}>
       <div style={{
-        background: "#f8fafc", borderBottom: "1px solid #e2e8f0",
-        padding: "0.55rem 0.85rem",
-        display: "flex", alignItems: "center", gap: 5,
+        background: P.plate, borderRadius: 3,
+        border: `1px solid ${P.line}`,
+        boxShadow: `3px 3px 0 ${P.lineSoft}`,
+        padding: "1.25rem",
+        ...style,
       }}>
-        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#fca5a5", flexShrink: 0 }} />
-        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#fde68a", flexShrink: 0 }} />
-        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#bbf7d0", flexShrink: 0 }} />
+        {children}
       </div>
-      <div style={{ padding: "1.25rem" }}>{children}</div>
-    </div>
+      {fig && (
+        <figcaption style={{
+          fontFamily: MONO, fontSize: 11, color: P.ink3,
+          marginTop: 10, letterSpacing: "0.04em",
+        }}>
+          {fig}
+        </figcaption>
+      )}
+    </figure>
   );
 }
 
 // ── Euler mock visual ─────────────────────────────────────────────────────────
 function EulerMock() {
   return (
-    <MockCard>
+    <MockCard fig="Fig. 3 — Area-proportional overlap map, four sources.">
       <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 12 }}>
         Overlap Map — 4 sources
       </div>
@@ -164,7 +185,7 @@ function CitationMock() {
     { title: "Plant-based diets in primary prevention (meta-analysis)", dir: "→", new: true },
   ];
   return (
-    <MockCard>
+    <MockCard fig="Fig. 4 — Backward and forward citation discovery from seed papers.">
       <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 10 }}>
         Citation Sourcing — Semantic Scholar
       </div>
@@ -212,7 +233,7 @@ function LLMMock() {
     { title: "Trans fatty acids and inflammation markers", llm: "exclude", human: "exclude", match: true },
   ];
   return (
-    <MockCard>
+    <MockCard fig="Fig. 5 — Model decisions compared against human screening, with Cohen's κ.">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>LLM vs Human comparison</div>
         <div style={{
@@ -257,7 +278,6 @@ function LLMMock() {
 
 // ── Ontology visual ───────────────────────────────────────────────────────────
 function OntologyMock() {
-  // Ontology-style: rectangular class boxes, namespace prefixes, directed labelled arrows
   const NW = 80, NH = 26, NR = 4, hw = NW / 2, hh = NH / 2;
 
   const nodes = [
@@ -271,20 +291,17 @@ function OntologyMock() {
   ];
 
   const edges = [
-    // subClassOf hierarchy
     { x1: 170, y1: 39, x2: 76,  y2: 81,  label: "rdfs:subClassOf", lx: 108, ly: 56, dashed: false, col: "#475569" },
     { x1: 170, y1: 39, x2: 172, y2: 81,  label: "rdfs:subClassOf", lx: 203, ly: 57, dashed: false, col: "#475569" },
     { x1: 170, y1: 39, x2: 272, y2: 81,  label: "rdfs:subClassOf", lx: 234, ly: 55, dashed: false, col: "#475569" },
-    // rdf:type instantiation
     { x1: 76,  y1: 107, x2: 65,  y2: 151, label: "rdf:type", lx: 93,  ly: 131, dashed: false, col: "#64748b" },
     { x1: 172, y1: 107, x2: 172, y2: 151, label: "rdf:type", lx: 198, ly: 131, dashed: false, col: "#64748b" },
     { x1: 272, y1: 107, x2: 278, y2: 151, label: "rdf:type", lx: 254, ly: 131, dashed: false, col: "#64748b" },
-    // cross-property relation
     { x1: 103, y1: 164, x2: 133, y2: 164, label: "hasBiomarker", lx: 118, ly: 156, dashed: true, col: "#f97316" },
   ];
 
   return (
-    <MockCard>
+    <MockCard fig="Fig. 6 — Concept ontology: classes, individuals, and typed relations.">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>Knowledge Graph — Ontology</div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -296,7 +313,7 @@ function OntologyMock() {
           ))}
         </div>
       </div>
-      <svg viewBox="0 0 340 192" style={{ width: "100%", height: "auto", background: "#0f172a", borderRadius: 10 }}>
+      <svg viewBox="0 0 340 192" style={{ width: "100%", height: "auto", background: "#0f172a", borderRadius: 6 }}>
         <defs>
           <marker id="ont-arr"  markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
             <path d="M0,0 L0,6 L6,3 z" fill="#475569" />
@@ -309,7 +326,6 @@ function OntologyMock() {
           </marker>
         </defs>
 
-        {/* Subtle canvas grid */}
         {[28, 56, 84, 112, 140, 168].map(y => (
           <line key={y} x1={0} y1={y} x2={340} y2={y} stroke="#1e293b" strokeWidth={0.5} />
         ))}
@@ -317,7 +333,6 @@ function OntologyMock() {
           <line key={x} x1={x} y1={0} x2={x} y2={192} stroke="#1e293b" strokeWidth={0.5} />
         ))}
 
-        {/* Edges */}
         {edges.map((e, i) => {
           const markerId = e.dashed ? "url(#ont-arrP)" : i < 3 ? "url(#ont-arr)" : "url(#ont-arrT)";
           return (
@@ -335,17 +350,14 @@ function OntologyMock() {
           );
         })}
 
-        {/* Nodes */}
         {nodes.map(n => (
           <g key={n.id}>
             <rect x={n.cx - hw} y={n.cy - hh} width={NW} height={NH} rx={NR}
               fill={n.fill} stroke={n.stroke} strokeWidth={1.5} />
-            {/* Namespace prefix (top half of box) */}
             <text x={n.cx} y={n.cy - 4} textAnchor="middle"
               fontSize={6} fill={n.nsCol} fontFamily="monospace" opacity={0.85}>
               {n.ns}
             </text>
-            {/* Concept label (bottom half of box) */}
             <text x={n.cx} y={n.cy + 7} textAnchor="middle"
               fontSize={8.5} fill="#e2e8f0" fontWeight={700}>
               {n.label}
@@ -360,7 +372,7 @@ function OntologyMock() {
 // ── Team collaboration visual ─────────────────────────────────────────────────
 function TeamMock() {
   return (
-    <MockCard>
+    <MockCard fig="Fig. 7 — Independent reviewers, automatic conflict detection.">
       <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 12 }}>
         Team screening — inter-rater reliability
       </div>
@@ -431,13 +443,12 @@ function PrismaMock() {
     { label: "Excluded FT: 523", y: 3 },
   ];
   return (
-    <MockCard>
+    <MockCard fig="Fig. 8 — PRISMA 2020 flow, generated from live counts.">
       <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 12 }}>
         PRISMA flow — auto-generated
       </div>
       <div style={{ position: "relative" }}>
         <svg viewBox="0 0 340 310" style={{ width: "100%", height: "auto" }}>
-          {/* main column arrows */}
           {[0,1,2,3].map(i => (
             <line key={i} x1={120} y1={42 + i*58} x2={120} y2={52 + i*58}
               stroke="#94a3b8" strokeWidth="1.5" markerEnd="url(#arr)" />
@@ -447,7 +458,6 @@ function PrismaMock() {
               <path d="M0,0 L0,6 L6,3 z" fill="#94a3b8" />
             </marker>
           </defs>
-          {/* main boxes */}
           {boxes.map((b, i) => (
             <g key={b.label}>
               <rect x={10} y={10 + i * 58} width={220} height={36}
@@ -458,7 +468,6 @@ function PrismaMock() {
                 fill={b.color} fontWeight="800">n = {b.count}</text>
             </g>
           ))}
-          {/* side exclusion boxes */}
           {excluded.map((e) => (
             <g key={e.label}>
               <line x1={230} y1={28 + e.y * 58} x2={248} y2={28 + e.y * 58}
@@ -480,7 +489,7 @@ function SaturationMock() {
   const points = [12, 28, 45, 67, 84, 91, 95, 97, 98, 99];
   const maxW = 280;
   return (
-    <MockCard style={{ background: "#0f172a" }}>
+    <MockCard fig="Fig. 9 — Theoretical saturation: five consecutive extractions, no new themes." style={{ background: "#0f172a", borderColor: "#0f172a" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#e2e8f0", marginBottom: 10 }}>
         Data saturation tracker
       </div>
@@ -531,7 +540,7 @@ function DedupMock() {
     { tier: "Tier 5", match: "Fuzzy title similarity", count: 18, color: "#dc2626", pct: 9 },
   ];
   return (
-    <MockCard>
+    <MockCard fig="Fig. 2 — Five matching tiers, strictest first.">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>5-tier dedup engine</div>
         <div style={{
@@ -555,286 +564,355 @@ function DedupMock() {
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Spotlight section — numbered like paper sections ─────────────────────────
+function SpotlightCard({
+  num, tag, title, description, visual, flip,
+}: {
+  num: string; tag: string; title: string; description: string;
+  visual: React.ReactNode; flip?: boolean;
+}) {
+  return (
+    <div style={{
+      display: "flex", flexDirection: flip ? "row-reverse" : "row",
+      gap: "4rem", alignItems: "center",
+      flexWrap: "wrap",
+    }}>
+      <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+        <div style={{
+          fontFamily: MONO, fontSize: 12, color: P.accent,
+          letterSpacing: "0.14em", textTransform: "uppercase",
+          display: "flex", alignItems: "baseline", gap: 12, marginBottom: "1.1rem",
+        }}>
+          <span style={{ fontWeight: 500 }}>§ {num}</span>
+          <span style={{ flex: 1, borderBottom: `1px solid ${P.line}`, transform: "translateY(-3px)" }} />
+          <span style={{ color: P.ink3 }}>{tag}</span>
+        </div>
+        <h3 style={{
+          fontFamily: SERIF, fontSize: "1.8rem", fontWeight: 550,
+          letterSpacing: "-0.01em", color: P.ink,
+          margin: "0 0 1rem", lineHeight: 1.22,
+        }}>{title}</h3>
+        <p style={{
+          fontFamily: SERIF, color: P.ink2, lineHeight: 1.75,
+          fontSize: "1.02rem", margin: 0, fontWeight: 380,
+        }}>{description}</p>
+      </div>
+      <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+        {visual}
+      </div>
+    </div>
+  );
+}
+
+// ── Pipeline data ─────────────────────────────────────────────────────────────
 const PIPELINE_STEPS = [
-  { label: "Import", sub: "RIS·MEDLINE·BibTeX", color: "#4f46e5", icon: "📥" },
-  { label: "Dedup", sub: "5-tier matching", color: "#7c3aed", icon: "🔗" },
-  { label: "Overlap", sub: "Euler + matrix", color: "#0891b2", icon: "⭕" },
-  { label: "Screen", sub: "TA · FT · AI", color: "#059669", icon: "📋" },
-  { label: "Extract", sub: "Custom templates", color: "#d97706", icon: "🔬" },
-  { label: "Thematic", sub: "Code · theme", color: "#ec4899", icon: "🎨" },
-  { label: "Ontology", sub: "2D/3D graph", color: "#f59e0b", icon: "🕸️" },
-  { label: "PRISMA", sub: "Publication-ready", color: "#16a34a", icon: "📊" },
+  { label: "Import",   sub: "RIS · MEDLINE · BibTeX" },
+  { label: "Dedup",    sub: "5-tier matching" },
+  { label: "Overlap",  sub: "Euler + matrix" },
+  { label: "Screen",   sub: "TA · FT · AI" },
+  { label: "Extract",  sub: "Custom templates" },
+  { label: "Thematic", sub: "Code · theme" },
+  { label: "Ontology", sub: "2D / 3D graph" },
+  { label: "PRISMA",   sub: "Publication-ready" },
 ];
 
+const PIPELINE_NOTES = [
+  "Parse RIS, MEDLINE, and BibTeX from any database with automatic encoding correction.",
+  "Union-Find deduplication over five successive strategies: DOI, PMID, title/year/author, and fuzzy similarity.",
+  "Quantitative area-proportional Euler diagram and N×N pairwise heatmap across all sources.",
+  "Sequential or mixed-mode screening with TA/FT stages, criteria panels, PDF upload, and AI assistance.",
+  "Custom extraction templates with structured fields, provenance tracking, and inline editing.",
+  "Code-and-theme tree with evidence assignment, history audit trail, and saturation detection.",
+  "Interactive 2D (dagre) and 3D (force-directed) concept ontology built from extracted concepts.",
+  "Auto-generated PRISMA flow tracking every record from identification to synthesis.",
+];
+
+// ── Capability index (typeset as a table of contents) ────────────────────────
+const CAPABILITIES = [
+  { title: "Multi-format import",  ref: "§ 1.1", desc: "RIS, MEDLINE, BibTeX — automatic encoding detection" },
+  { title: "Five-tier dedup",      ref: "§ 1.2", desc: "Union-Find over DOI, PMID, title, fuzzy similarity" },
+  { title: "Euler overlap map",    ref: "§ 1.3", desc: "Area-proportional, spring-relaxation layout" },
+  { title: "Citation sourcing",    ref: "§ 1.4", desc: "Backward and forward via Semantic Scholar" },
+  { title: "TA / FT screening",    ref: "§ 2.1", desc: "Sequential and mixed modes, criteria, labels" },
+  { title: "LLM screening",        ref: "§ 2.2", desc: "Claude, GPT, Gemini, or any OpenRouter model" },
+  { title: "Consensus & κ",        ref: "§ 2.3", desc: "Inter-rater reliability, adjudication workflow" },
+  { title: "Evidence extraction",  ref: "§ 3.1", desc: "Custom templates, inline edit, provenance" },
+  { title: "Labels",               ref: "§ 3.2", desc: "Colour-coded tags across records and clusters" },
+  { title: "Concept ontology",     ref: "§ 3.3", desc: "2D dagre canvas and 3D force-directed graph" },
+  { title: "Thematic analysis",    ref: "§ 3.4", desc: "Code trees, evidence assignment, audit trail" },
+  { title: "Saturation badge",     ref: "§ 3.5", desc: "Detects theoretical data saturation automatically" },
+  { title: "PDF pipeline",         ref: "§ 4.1", desc: "Upload, view, Unpaywall + DOI + PMC resolution" },
+  { title: "PRISMA flow",          ref: "§ 4.2", desc: "Publication-ready SVG and PNG, auto-calculated" },
+  { title: "Team invitations",     ref: "§ 4.3", desc: "Token-based invites, per-project roles" },
+  { title: "Records browser",      ref: "§ 4.4", desc: "Sortable, filterable, column-configurable" },
+];
+
+const PRINCIPLES = [
+  {
+    numeral: "I", title: "Reproducibility first",
+    desc: "Every extraction, synthesis, and decision is traceable. Non-deterministic LLM steps log inputs, model version, and outputs.",
+  },
+  {
+    numeral: "II", title: "Full transparency",
+    desc: "Sources, confidence levels, and provenance are always visible. AI contributions are labelled and auditable — never hidden.",
+  },
+  {
+    numeral: "III", title: "AI assists, never decides",
+    desc: "LLM components support the workflow. Every AI-assisted step has a human review point. Your judgment stays in control.",
+  },
+  {
+    numeral: "IV", title: "Modular & auditable",
+    desc: "Any component can be inspected, replaced, or disabled independently. Audit trails are a first-class feature.",
+  },
+];
+
+// ── Main component ────────────────────────────────────────────────────────────
 export default function LandingPage() {
   const navigate = useNavigate();
   const [activeStep, setActiveStep] = useState(0);
 
   useEffect(() => {
-    const iv = setInterval(() => setActiveStep(s => (s + 1) % PIPELINE_STEPS.length), 1800);
+    const iv = setInterval(() => setActiveStep(s => (s + 1) % PIPELINE_STEPS.length), 2200);
     return () => clearInterval(iv);
   }, []);
 
-  return (
-    <div style={{ fontFamily: '"Inter", system-ui, sans-serif', color: "#0f172a", background: "#fff", overflowX: "hidden" }}>
+  const rule = { border: "none", borderTop: `1px solid ${P.line}`, margin: 0 } as const;
 
-      {/* ── Nav ── */}
-      <nav style={{
+  return (
+    <div className="lp" style={{
+      fontFamily: SERIF, color: P.ink, background: P.paper,
+      overflowX: "hidden", minHeight: "100vh",
+    }}>
+      <style>{PAGE_CSS}</style>
+
+      {/* ── Masthead ── */}
+      <nav className="lp-nav" style={{
         position: "sticky", top: 0, zIndex: 100,
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 2.5rem", height: 62,
-        background: "rgba(255,255,255,0.93)", backdropFilter: "blur(16px)",
-        borderBottom: "1px solid #e2e8f0",
+        padding: "0 clamp(1.25rem, 4vw, 3rem)", height: 64,
+        background: "rgba(245,240,230,0.92)", backdropFilter: "blur(12px)",
+        borderBottom: `1px solid ${P.line}`,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
           <span style={{
-            width: 34, height: 34, borderRadius: 9,
-            background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            color: "#fff", fontWeight: 900, fontSize: 15, letterSpacing: "-0.5px",
-          }}>E</span>
-          <div>
-            <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.3px", color: "#0f172a" }}>
-              EvidencePlatform
-            </span>
-            <span style={{
-              marginLeft: 8, fontSize: 10.5, fontWeight: 600, color: "#4f46e5",
-              background: "#eef2ff", padding: "1px 7px", borderRadius: 99,
-            }}>literature</span>
-          </div>
+            fontFamily: SERIF, fontStyle: "italic", fontWeight: 600,
+            fontSize: 22, color: P.accent, lineHeight: 1,
+          }}>E.</span>
+          <span className="lp-nav-brand" style={{
+            fontFamily: MONO, fontSize: 13, fontWeight: 500,
+            letterSpacing: "0.22em", textTransform: "uppercase", color: P.ink,
+          }}>
+            Evidence Platform
+          </span>
+          <span style={{
+            fontFamily: MONO, fontSize: 10.5, color: P.ink3,
+            letterSpacing: "0.12em", textTransform: "uppercase",
+            display: "inline-block",
+          }} className="lp-nav-tag">
+            · Open-source research infrastructure
+          </span>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button
-            onClick={() => navigate("/login")}
-            style={{
-              padding: "0.45rem 1.1rem", borderRadius: 7,
-              border: "1px solid #e2e8f0", background: "transparent",
-              fontWeight: 600, fontSize: 14, cursor: "pointer", color: "#374151",
-            }}>
+        <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+          <button onClick={() => navigate("/login")} className="lp-textlink lp-nav-signin" style={{ fontSize: 15 }}>
             Sign in
           </button>
-          <button
-            onClick={() => navigate("/register")}
-            style={{
-              padding: "0.45rem 1.25rem", borderRadius: 7,
-              border: "none", background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-              fontWeight: 700, fontSize: 14, cursor: "pointer", color: "#fff",
-              boxShadow: "0 2px 8px rgba(79,70,229,0.35)",
-            }}>
-            Get started free →
+          <button onClick={() => navigate("/register")} className="lp-btn lp-btn--ink lp-nav-cta" style={{ padding: "0.6rem 1.3rem" }}>
+            Begin a review
           </button>
         </div>
       </nav>
 
-      {/* ── Hero ── */}
-      <section style={{
-        minHeight: "92vh", display: "flex", flexDirection: "column",
-        alignItems: "center", justifyContent: "center",
-        padding: "5rem 1.5rem 4rem",
-        background: "radial-gradient(ellipse at 30% 20%, #eef2ff 0%, transparent 55%), radial-gradient(ellipse at 80% 70%, #f0fdf4 0%, transparent 55%), #f8fafc",
-        textAlign: "center", position: "relative", overflow: "hidden",
+      {/* ── Title page / hero ── */}
+      <header style={{
+        maxWidth: 1080, margin: "0 auto",
+        padding: "clamp(4rem, 9vh, 7rem) clamp(1.25rem, 4vw, 3rem) 4.5rem",
       }}>
-        {/* bg grid */}
-        <div style={{
-          position: "absolute", inset: 0, backgroundImage:
-            "linear-gradient(rgba(79,70,229,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(79,70,229,0.04) 1px, transparent 1px)",
-          backgroundSize: "40px 40px", pointerEvents: "none",
-        }} />
-
-        <div style={{
-          display: "inline-flex", alignItems: "center", gap: 8,
-          padding: "0.35rem 1rem", borderRadius: 999,
-          background: "linear-gradient(135deg, #eef2ff, #f0fdf4)",
-          border: "1px solid #c7d2fe",
-          fontSize: 13, fontWeight: 600, color: "#4f46e5",
-          marginBottom: "1.75rem", position: "relative",
+        <div className="lp-rise" style={{
+          fontFamily: MONO, fontSize: 12.5, color: P.ink3,
+          letterSpacing: "0.18em", textTransform: "uppercase",
+          display: "flex", alignItems: "center", gap: 16, rowGap: 8,
+          flexWrap: "wrap", marginBottom: "2.5rem",
         }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4f46e5" }} />
-          All-in-one literature management · From import to publication
+          <span style={{ color: P.accent }}>Vol. I</span>
+          <span style={{ width: 40, borderTop: `1px solid ${P.line}` }} />
+          <span>Systematic evidence synthesis</span>
+          <span style={{ width: 40, borderTop: `1px solid ${P.line}` }} />
+          <span>From import to publication</span>
         </div>
 
-        <h1 style={{
-          fontSize: "clamp(2.4rem, 5.5vw, 4.2rem)",
-          fontWeight: 900, lineHeight: 1.08,
-          letterSpacing: "-2px", maxWidth: 840,
-          margin: "0 auto 1.4rem",
-          color: "#0f172a", position: "relative",
+        <h1 className="lp-rise" style={{
+          fontFamily: SERIF,
+          fontSize: "clamp(2.6rem, 6.2vw, 4.6rem)",
+          fontWeight: 460, lineHeight: 1.06,
+          letterSpacing: "-0.015em",
+          margin: "0 0 2rem", maxWidth: 900,
+          animationDelay: "0.08s",
         }}>
-          The all-in-one platform<br />
-          <span style={{
-            background: "linear-gradient(90deg, #4f46e5 0%, #7c3aed 40%, #ec4899 100%)",
-            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-          }}>
-            for literature management
-          </span>
+          Ten thousand records.
+          <br />
+          One <em style={{ fontStyle: "italic", fontWeight: 500, color: P.accent }}>defensible</em> synthesis.
         </h1>
 
-        <p style={{
-          fontSize: "1.15rem", color: "#475569",
-          maxWidth: 640, margin: "0 auto 2.5rem",
-          lineHeight: 1.7, position: "relative",
+        <p className="lp-rise" style={{
+          fontSize: "1.14rem", color: P.ink2, fontWeight: 380,
+          maxWidth: 620, lineHeight: 1.78, margin: "0 0 2.75rem",
+          animationDelay: "0.16s",
         }}>
-          Import from any database, deduplicate, screen with AI assistance, extract structured evidence,
-          build concept ontologies, and collaborate with your team —
-          everything you need to manage literature, from first import to final publication.
+          EvidencePlatform carries a literature review from first database export to
+          publication-ready PRISMA — import, deduplication, screening, extraction,
+          and synthesis — with provenance recorded at every step, and every
+          AI contribution labelled and reviewed by you.
         </p>
 
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center", position: "relative" }}>
-          <button
-            onClick={() => navigate("/register")}
-            style={{
-              padding: "0.9rem 2.25rem", borderRadius: 10,
-              border: "none",
-              background: "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)",
-              color: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer",
-              boxShadow: "0 4px 20px rgba(79,70,229,0.45)",
-            }}>
-            Start your review — it's free
+        <div className="lp-rise" style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", animationDelay: "0.24s" }}>
+          <button onClick={() => navigate("/register")} className="lp-btn lp-btn--ink">
+            Begin a review — free
           </button>
-          <button
-            onClick={() => navigate("/login")}
-            style={{
-              padding: "0.9rem 2rem", borderRadius: 10,
-              border: "1px solid #cbd5e1", background: "#fff",
-              color: "#374151", fontWeight: 600, fontSize: 16, cursor: "pointer",
-            }}>
-            Sign in
-          </button>
+          <span style={{ fontSize: 15, color: P.ink3 }}>
+            or <button onClick={() => navigate("/login")} className="lp-textlink">sign in to your projects</button>
+          </span>
         </div>
 
-        {/* Pipeline animator */}
+        {/* Fig. 1 — pipeline */}
+        <figure className="lp-rise" style={{ margin: "4.5rem 0 0", animationDelay: "0.34s" }}>
+          <div style={{
+            border: `1px solid ${P.line}`, borderRadius: 3,
+            background: P.plate, boxShadow: `4px 4px 0 ${P.lineSoft}`,
+            padding: "1.75rem clamp(1rem, 3vw, 2rem) 1.5rem",
+          }}>
+            <div style={{ display: "flex", overflowX: "auto", paddingBottom: 4 }}>
+              {PIPELINE_STEPS.map((step, i) => {
+                const active = i === activeStep;
+                const done = i < activeStep;
+                return (
+                  <div key={step.label} style={{ display: "flex", alignItems: "flex-start", flex: "1 0 auto" }}>
+                    <div style={{ minWidth: 86, textAlign: "left" }}>
+                      <div style={{
+                        fontFamily: MONO, fontSize: 20, fontWeight: 400,
+                        color: active ? P.accent : done ? P.ink : P.ink3,
+                        transition: "color 0.4s",
+                      }}>
+                        {String(i + 1).padStart(2, "0")}
+                      </div>
+                      <div style={{
+                        marginTop: 6, paddingTop: 8,
+                        borderTop: `2px solid ${active ? P.accent : done ? P.ink : P.lineSoft}`,
+                        transition: "border-color 0.4s",
+                        marginRight: 18,
+                      }}>
+                        <div style={{
+                          fontFamily: MONO, fontSize: 11.5, fontWeight: 500,
+                          letterSpacing: "0.1em", textTransform: "uppercase",
+                          color: active || done ? P.ink : P.ink3,
+                          transition: "color 0.4s",
+                        }}>{step.label}</div>
+                        <div style={{ fontFamily: MONO, fontSize: 10, color: P.ink3, marginTop: 3 }}>
+                          {step.sub}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{
+              marginTop: "1.4rem", paddingTop: "1rem",
+              borderTop: `1px solid ${P.lineSoft}`,
+              fontSize: 15, color: P.ink2, fontStyle: "italic",
+              lineHeight: 1.6, minHeight: 44,
+            }}>
+              <span style={{ fontFamily: MONO, fontStyle: "normal", fontSize: 11.5, color: P.accent, marginRight: 10 }}>
+                {String(activeStep + 1).padStart(2, "0")}
+              </span>
+              {PIPELINE_NOTES[activeStep]}
+            </div>
+          </div>
+          <figcaption style={{
+            fontFamily: MONO, fontSize: 11, color: P.ink3,
+            marginTop: 10, letterSpacing: "0.04em",
+          }}>
+            Fig. 1 — The eight-stage evidence pipeline.
+          </figcaption>
+        </figure>
+      </header>
+
+      {/* ── Colophon strip (stats) ── */}
+      <div style={{ borderTop: `1px solid ${P.line}`, borderBottom: `1px solid ${P.line}`, background: P.paperHi }}>
         <div style={{
-          marginTop: "4rem", position: "relative",
-          background: "#fff", borderRadius: 18,
-          border: "1px solid #e2e8f0",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.09)",
-          padding: "2rem 2rem 1.5rem",
-          maxWidth: 860, width: "100%",
+          maxWidth: 1080, margin: "0 auto",
+          padding: "0 clamp(1.25rem, 4vw, 3rem)",
+          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(190px, 42vw), 1fr))",
         }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "1.5rem" }}>
-            8-stage evidence pipeline
-          </div>
-          <div style={{ display: "flex", gap: 0, alignItems: "flex-start", justifyContent: "space-between", overflowX: "auto" }}>
-            {PIPELINE_STEPS.map((step, i) => (
-              <div key={step.label} style={{ display: "flex", alignItems: "flex-start" }}>
-                <PipelineNode {...step} active={i <= activeStep} />
-                {i < PIPELINE_STEPS.length - 1 && (
-                  <div style={{
-                    width: 20, height: 2, background: i < activeStep ? "#4f46e5" : "#e2e8f0",
-                    marginTop: 25, flexShrink: 0, transition: "background 0.4s",
-                  }} />
-                )}
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: "1.25rem", padding: "0.75rem 1rem", background: "#f8fafc", borderRadius: 10, textAlign: "left", minHeight: 48 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: PIPELINE_STEPS[activeStep].color }}>
-              {PIPELINE_STEPS[activeStep].label}
-            </span>
-            <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>
-              {[
-                "Parse RIS, MEDLINE, and BibTeX from any database with automatic encoding correction",
-                "Three-tier Union-Find deduplication matching on DOI, PMID, title/year/author, and fuzzy similarity",
-                "Quantitative area-proportional Euler diagram + NxN pairwise heatmap across all sources",
-                "Sequential or mixed-mode screening with TA/FT stages, criteria panels, PDF upload, and AI assistance",
-                "Custom extraction templates with structured fields, provenance tracking, and inline editing",
-                "Interactive 2D (React Flow dagre) and 3D (three.js force-directed) concept ontology builder",
-                "Code-and-theme tree with evidence assignment, history audit trail, and saturation detection",
-                "Auto-generated PRISMA flow diagram tracking every record from identification to synthesis",
-              ][activeStep]}
-            </span>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Stats bar ── */}
-      <div style={{ background: "linear-gradient(135deg, #1e1b4b, #312e81)", padding: "2.5rem 1.5rem" }}>
-        <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", justifyContent: "space-around", flexWrap: "wrap", gap: "1.5rem" }}>
           {[
-            { target: 5, suffix: " tiers", label: "Dedup matching levels", color: "#a5b4fc" },
-            { target: 8, suffix: " stages", label: "Full pipeline coverage", color: "#6ee7b7" },
-            { target: 100, suffix: "%", label: "Traceable provenance", color: "#fde68a" },
-            { target: 0, suffix: " deps", label: "Vendor lock-in", color: "#fca5a5" },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "2.5rem", fontWeight: 900, color: s.color, lineHeight: 1 }}>
+            { target: 5, suffix: "", label: "deduplication tiers" },
+            { target: 8, suffix: "", label: "pipeline stages" },
+            { target: 100, suffix: "%", label: "traceable provenance" },
+            { target: 0, suffix: "", label: "vendor lock-in" },
+          ].map((s) => (
+            <div key={s.label} style={{ padding: "1.9rem 1.5rem 1.9rem 0" }}>
+              <div style={{ fontFamily: SERIF, fontSize: "2.4rem", fontWeight: 420, color: P.ink, lineHeight: 1 }}>
                 <AnimatedCounter target={s.target} suffix={s.suffix} />
               </div>
-              <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 6 }}>{s.label}</div>
+              <div style={{
+                fontFamily: MONO, fontSize: 11, color: P.ink3, marginTop: 8,
+                letterSpacing: "0.12em", textTransform: "uppercase",
+              }}>{s.label}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* ── Spotlight sections ── */}
-      <section style={{ padding: "6rem 1.5rem", background: "#fff" }}>
-        <div style={{ maxWidth: 1000, margin: "0 auto", display: "flex", flexDirection: "column", gap: "6rem" }}>
+      {/* ── Numbered sections ── */}
+      <section style={{ padding: "6.5rem clamp(1.25rem, 4vw, 3rem)" }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto", display: "flex", flexDirection: "column", gap: "6.5rem" }}>
 
-          {/* 1. Dedup */}
           <SpotlightCard
-            tag="Deduplication"
-            accent="#4f46e5"
-            title="5-tier Union-Find deduplication — no duplicates slip through"
-            description="Our three-layer Union-Find engine runs five successive matching strategies in order of strictness: exact DOI/PMID → title+year+author+volume → title+year+author → title+year → fuzzy title similarity (rapidfuzz). Matches are advisory-locked in the background so imports never block. You review clusters, inspect match evidence tier-by-tier, and lock consensus decisions that survive algorithmic reruns."
+            num="01" tag="Deduplication"
+            title="Five matching tiers. No duplicate slips through."
+            description="A Union-Find engine runs five successive matching strategies in order of strictness: exact DOI/PMID, title+year+author+volume, title+year+author, title+year, then fuzzy title similarity. Matches are advisory-locked in the background so imports never block. You review clusters, inspect match evidence tier-by-tier, and lock consensus decisions that survive algorithmic reruns."
             visual={<DedupMock />}
           />
 
-          {/* 2. Overlap */}
           <SpotlightCard
-            tag="Overlap Detection"
-            accent="#0891b2"
-            title="Quantitative Euler diagrams show exactly how your sources overlap"
-            description="Not just a Venn diagram — a mathematically area-proportional Euler layout computed via spring-relaxation so circle areas and intersections represent real record counts. Pair it with the NxN pairwise heatmap to instantly see which database pairs share the most. Manually link records, lock clusters, and replay strategy runs with full history."
+            num="02" tag="Overlap detection" flip
+            title="See exactly how your sources overlap — quantitatively."
+            description="Not just a Venn diagram: a mathematically area-proportional Euler layout, computed by spring relaxation, so circle areas and intersections represent real record counts. Pair it with the N×N pairwise heatmap to see which database pairs share the most. Link records manually, lock clusters, and replay strategy runs with full history."
             visual={<EulerMock />}
-            flip
           />
 
-          {/* 3. Citation sourcing */}
           <SpotlightCard
-            tag="Citation Sourcing — Novel"
-            accent="#ec4899"
-            title="Discover papers you didn't know to search for"
-            description="Starting from your extracted papers, EvidencePlatform queries Semantic Scholar to fetch every reference each paper cites (backward) and every paper that cites it (forward). Candidates are cross-deduplicated against your existing records, surfaced for review, and imported directly into the normal pipeline — deduplication, overlap detection, and screening included. No other literature management tool does this automatically."
+            num="03" tag="Citation sourcing"
+            title="Discover the papers you didn't know to search for."
+            description="Starting from your extracted papers, the platform queries Semantic Scholar for every reference each paper cites — and every paper that cites it. Candidates are cross-deduplicated against your existing records, surfaced for review, and imported straight into the normal pipeline: deduplication, overlap detection, and screening included."
             visual={<CitationMock />}
           />
 
-          {/* 4. LLM screening */}
           <SpotlightCard
-            tag="AI-Assisted Screening"
-            accent="#7c3aed"
-            title="LLM screening with human-in-the-loop comparison and Cohen's κ"
-            description="Run screening across your corpus with Claude, GPT-4, Gemini, or any OpenRouter model. The platform computes LLM-vs-human agreement statistics (percent agreement and Cohen's κ) and surfaces disagreements in a side-by-side conflict table. Send flagged items directly to consensus adjudication with one click. Your research question, custom prompt additions, and glossary are versioned per run."
+            num="04" tag="AI-assisted screening" flip
+            title="LLM screening, measured against you."
+            description="Run screening across your corpus with Claude, GPT, Gemini, or any OpenRouter model. The platform computes model-versus-human agreement — percent agreement and Cohen's κ — and surfaces disagreements in a side-by-side conflict table. Flagged items go to consensus adjudication in one click. Every run records its model, prompts, tokens, and cost."
             visual={<LLMMock />}
-            flip
           />
 
-          {/* 5. Ontology */}
           <SpotlightCard
-            tag="Concept Ontology"
-            accent="#f59e0b"
-            title="Build a living knowledge graph — 2D canvas and 3D force graph"
-            description="Define entity, relation, and metadata namespaces, then map concepts extracted from your papers into a structured ontology. The 2D canvas (React Flow + dagre layout) lets you position and connect nodes precisely. The 3D view (three.js force-directed graph) reveals cluster structure at scale. Extract concept instances per paper, aggregate across the corpus, and push consensus values to the ontology in bulk."
+            num="05" tag="Concept ontology"
+            title="A living knowledge graph of your field."
+            description="Define entity, relation, and metadata namespaces, then map concepts extracted from your papers into a structured ontology. The 2D canvas lets you position and connect nodes precisely; the 3D force-directed view reveals cluster structure at scale. Extract concept instances per paper, aggregate across the corpus, and push consensus values in bulk."
             visual={<OntologyMock />}
           />
 
-          {/* 6. Team + consensus */}
           <SpotlightCard
-            tag="Team Collaboration"
-            accent="#059669"
-            title="Dual-reviewer isolation, conflict detection, and Cohen's κ"
-            description="Invite co-reviewers by email with token-based activation. Each reviewer sees independent screening queues — no cross-contamination. The platform detects decision conflicts automatically, computes inter-rater reliability (Cohen's κ) per stage, and routes conflicts to the project admin for adjudication. Team screening stats update in real time."
+            num="06" tag="Team collaboration" flip
+            title="Independent reviewers. Honest disagreement."
+            description="Invite co-reviewers by email with token-based activation. Each reviewer screens an isolated queue — no cross-contamination. The platform detects decision conflicts automatically, computes inter-rater reliability per stage, and routes conflicts to the project admin for adjudication. Team statistics update in real time."
             visual={<TeamMock />}
-            flip
           />
 
-          {/* 7. PRISMA + saturation */}
           <SpotlightCard
-            tag="Synthesis & Publication"
-            accent="#16a34a"
-            title="Auto-generated PRISMA flow + data saturation detection"
-            description="Every record count at every pipeline stage is tracked continuously. Click 'PRISMA' to render a publication-ready flow diagram with source breakdown, exclusion reasons, and final synthesis count — no manual counting. Simultaneously, the saturation badge tracks consecutive extractions with no new themes and signals when your data has reached theoretical saturation."
-            visual={<div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            num="07" tag="Synthesis & publication"
+            title="The PRISMA figure draws itself."
+            description="Every record count at every stage is tracked continuously. One click renders a publication-ready PRISMA 2020 flow diagram — source breakdown, exclusion reasons, final synthesis count — exportable as print-resolution PNG or true vector SVG. Alongside it, the saturation tracker signals when consecutive extractions stop yielding new themes."
+            visual={<div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
               <PrismaMock />
               <SaturationMock />
             </div>}
@@ -843,194 +921,143 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── All features grid ── */}
-      <section style={{ padding: "5rem 1.5rem", background: "#f8fafc" }}>
-        <div style={{ maxWidth: 960, margin: "0 auto" }}>
-          <div style={{ textAlign: "center", marginBottom: "3rem" }}>
-            <h2 style={{ fontSize: "2rem", fontWeight: 800, letterSpacing: "-0.5px", margin: "0 0 0.75rem" }}>
-              Every tool your review needs
+      {/* ── Index of capabilities ── */}
+      <section style={{ padding: "0 clamp(1.25rem, 4vw, 3rem) 6.5rem" }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+          <hr style={rule} />
+          <div style={{ padding: "3.5rem 0 2.5rem", display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+            <h2 style={{
+              fontFamily: SERIF, fontSize: "2.1rem", fontWeight: 480,
+              letterSpacing: "-0.01em", margin: 0,
+            }}>
+              Index of capabilities
             </h2>
-            <p style={{ color: "#475569", fontSize: "1.05rem", maxWidth: 540, margin: "0 auto" }}>
-              Every module is built on the same principles: reproducible, auditable, and traceable from raw import to final synthesis.
-            </p>
+            <span style={{ fontFamily: MONO, fontSize: 11.5, color: P.ink3, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Sixteen modules · one audit trail
+            </span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
-            {[
-              { icon: "📥", title: "Multi-format Import", desc: "RIS, MEDLINE, BibTeX — auto-encoding detection", color: "#4f46e5" },
-              { icon: "🔗", title: "5-Tier Dedup", desc: "Union-Find with DOI, PMID, title, fuzzy", color: "#7c3aed" },
-              { icon: "⭕", title: "Euler Overlap Map", desc: "Area-proportional, spring-relaxation layout", color: "#0891b2" },
-              { icon: "📡", title: "Citation Sourcing", desc: "Backward + forward via Semantic Scholar", color: "#ec4899" },
-              { icon: "📋", title: "TA / FT Screening", desc: "Sequential & mixed modes, criteria, labels", color: "#059669" },
-              { icon: "🤖", title: "LLM Screening", desc: "Claude, GPT-4, Gemini, any OpenRouter model", color: "#6366f1" },
-              { icon: "⚖️", title: "Consensus & κ", desc: "Inter-rater reliability, adjudication workflow", color: "#d97706" },
-              { icon: "🔬", title: "Evidence Extraction", desc: "Custom templates, inline edit, provenance", color: "#f59e0b" },
-              { icon: "🏷️", title: "Labels", desc: "Color-coded tags across records and clusters", color: "#ef4444" },
-              { icon: "🕸️", title: "Concept Ontology", desc: "2D dagre canvas + 3D force-directed graph", color: "#f97316" },
-              { icon: "🎨", title: "Thematic Analysis", desc: "Code trees, evidence assignment, audit trail", color: "#ec4899" },
-              { icon: "📈", title: "Saturation Badge", desc: "Detects theoretical data saturation automatically", color: "#8b5cf6" },
-              { icon: "📄", title: "PDF Pipeline", desc: "Upload, view, Unpaywall + DOI + PMC links", color: "#0369a1" },
-              { icon: "📊", title: "PRISMA Flow", desc: "Publication-ready SVG, auto-calculated", color: "#16a34a" },
-              { icon: "👥", title: "Team Invitations", desc: "Token-based invite, role management", color: "#059669" },
-              { icon: "🔍", title: "Records Browser", desc: "Sortable, filterable, column-configurable", color: "#475569" },
-            ].map(f => (
-              <div key={f.title} style={{
-                background: "#fff", borderRadius: 12,
-                border: "1px solid #e2e8f0",
-                padding: "1.25rem 1.1rem",
-                transition: "transform 0.15s, box-shadow 0.15s",
-                cursor: "default",
-              }}
-                onMouseEnter={e => {
-                  (e.currentTarget as HTMLDivElement).style.transform = "translateY(-3px)";
-                  (e.currentTarget as HTMLDivElement).style.boxShadow = `0 8px 24px ${f.color}20`;
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLDivElement).style.transform = "translateY(0)";
-                  (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
-                }}
-              >
-                <div style={{ fontSize: 24, marginBottom: 8 }}>{f.icon}</div>
-                <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a", marginBottom: 4 }}>{f.title}</div>
-                <div style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.5 }}>{f.desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Designed for researchers ── */}
-      <section style={{ padding: "5rem 1.5rem", background: "#fff" }}>
-        <div style={{ maxWidth: 860, margin: "0 auto", textAlign: "center" }}>
-          <h2 style={{ fontSize: "1.9rem", fontWeight: 800, letterSpacing: "-0.5px", marginBottom: "0.75rem" }}>
-            Built on four non-negotiable principles
-          </h2>
-          <p style={{ color: "#475569", fontSize: "1.05rem", marginBottom: "3rem", maxWidth: 540, margin: "0 auto 3rem" }}>
-            The same standards that govern good science govern this codebase.
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "1.25rem" }}>
-            {[
-              {
-                icon: "🔁", title: "Reproducibility first",
-                desc: "Every extraction, synthesis, and decision is traceable. Non-deterministic LLM steps log inputs, model version, and outputs.",
-                color: "#4f46e5",
-              },
-              {
-                icon: "🔍", title: "Full transparency",
-                desc: "Sources, confidence levels, and provenance are always visible. AI contributions are labeled and auditable — never hidden.",
-                color: "#059669",
-              },
-              {
-                icon: "🤝", title: "AI assists, never decides",
-                desc: "LLM components support your workflow. Every AI-assisted step has a human review point. Your judgment stays in control.",
-                color: "#d97706",
-              },
-              {
-                icon: "🧩", title: "Modular & auditable",
-                desc: "Any component can be inspected, replaced, or disabled independently. Designed for transparency and reproducibility.",
-                color: "#ec4899",
-              },
-            ].map(p => (
-              <div key={p.title} style={{
-                textAlign: "left", padding: "1.4rem",
-                background: "#f8fafc", borderRadius: 14,
-                border: "1px solid #e2e8f0",
-              }}>
-                <div style={{
-                  width: 42, height: 42, borderRadius: 11,
-                  background: p.color + "18", fontSize: 20,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  marginBottom: 12,
-                }}>{p.icon}</div>
-                <h4 style={{ fontWeight: 700, fontSize: 14, margin: "0 0 6px", color: "#0f172a" }}>{p.title}</h4>
-                <p style={{ fontSize: 13, color: "#64748b", margin: 0, lineHeight: 1.6 }}>{p.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Final CTA ── */}
-      <section style={{
-        padding: "6rem 1.5rem",
-        background: "radial-gradient(ellipse at 30% 40%, #312e81 0%, #1e1b4b 60%, #0f172a 100%)",
-        textAlign: "center", position: "relative", overflow: "hidden",
-      }}>
-        <div style={{
-          position: "absolute", inset: 0,
-          backgroundImage: "linear-gradient(rgba(99,102,241,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.05) 1px, transparent 1px)",
-          backgroundSize: "50px 50px", pointerEvents: "none",
-        }} />
-        <div style={{ position: "relative" }}>
           <div style={{
-            display: "inline-flex", alignItems: "center", gap: 7,
-            padding: "0.3rem 0.9rem", borderRadius: 999,
-            background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)",
-            fontSize: 12.5, fontWeight: 600, color: "#a5b4fc",
-            marginBottom: "1.5rem",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(min(440px, 100%), 1fr))",
+            columnGap: "4rem",
+            borderBottom: `1px solid ${P.lineSoft}`,
           }}>
-            Free · christelle.xiong.32@gmail.com
+            {CAPABILITIES.map(f => (
+              <div key={f.title} className="lp-index-row" style={{ padding: "0.85rem 0.35rem" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                  <span style={{ fontFamily: SERIF, fontSize: 16.5, fontWeight: 540, color: P.ink, whiteSpace: "nowrap" }}>
+                    {f.title}
+                  </span>
+                  <span style={{
+                    flex: 1, borderBottom: `1px dotted ${P.line}`,
+                    transform: "translateY(-4px)", minWidth: 24,
+                  }} />
+                  <span style={{ fontFamily: MONO, fontSize: 11.5, color: P.accent, whiteSpace: "nowrap" }}>
+                    {f.ref}
+                  </span>
+                </div>
+                <div style={{ fontSize: 13.5, color: P.ink3, marginTop: 3, fontWeight: 380 }}>
+                  {f.desc}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Principles ── */}
+      <section style={{ background: P.paperHi, borderTop: `1px solid ${P.line}`, padding: "5.5rem clamp(1.25rem, 4vw, 3rem)" }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+          <div style={{ marginBottom: "3rem", maxWidth: 560 }}>
+            <div style={{ fontFamily: MONO, fontSize: 12, color: P.accent, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 14 }}>
+              Editorial principles
+            </div>
+            <h2 style={{ fontFamily: SERIF, fontSize: "2.1rem", fontWeight: 480, margin: "0 0 0.9rem", letterSpacing: "-0.01em" }}>
+              The standards that govern good science govern this code.
+            </h2>
+          </div>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+            gap: "2.5rem",
+          }}>
+            {PRINCIPLES.map(p => (
+              <div key={p.numeral} style={{ borderTop: `2px solid ${P.ink}`, paddingTop: "1.1rem" }}>
+                <div style={{
+                  fontFamily: SERIF, fontStyle: "italic", fontSize: "1.7rem",
+                  fontWeight: 480, color: P.accent, marginBottom: 10, lineHeight: 1,
+                }}>{p.numeral}.</div>
+                <h4 style={{
+                  fontFamily: MONO, fontWeight: 500, fontSize: 12.5,
+                  letterSpacing: "0.1em", textTransform: "uppercase",
+                  margin: "0 0 0.6rem", color: P.ink,
+                }}>{p.title}</h4>
+                <p style={{ fontSize: 14.5, color: P.ink2, margin: 0, lineHeight: 1.7, fontWeight: 380 }}>
+                  {p.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Final CTA — ink block ── */}
+      <section style={{
+        background: P.inkBlock, color: P.cream,
+        padding: "7rem clamp(1.25rem, 4vw, 3rem)",
+      }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+          <div style={{
+            fontFamily: MONO, fontSize: 12, color: "#9a8f78",
+            letterSpacing: "0.18em", textTransform: "uppercase",
+            display: "flex", alignItems: "center", gap: 16, rowGap: 8,
+            flexWrap: "wrap", marginBottom: "2.25rem",
+          }}>
+            <span>Free</span>
+            <span style={{ width: 40, borderTop: "1px solid #3a332a" }} />
+            <span>No lock-in</span>
+            <span style={{ width: 40, borderTop: "1px solid #3a332a" }} />
+            <span>Open source</span>
           </div>
           <h2 style={{
-            fontSize: "clamp(2rem, 4.5vw, 3.2rem)",
-            fontWeight: 900, color: "#fff",
-            margin: "0 auto 1rem", maxWidth: 660,
-            letterSpacing: "-1px", lineHeight: 1.15,
+            fontFamily: SERIF, fontStyle: "italic",
+            fontSize: "clamp(2.4rem, 5.5vw, 4rem)",
+            fontWeight: 440, letterSpacing: "-0.015em",
+            margin: "0 0 1.5rem", lineHeight: 1.12, maxWidth: 760,
           }}>
-            Start managing your literature today
+            Begin your review where it will end: <span style={{ color: "#d98d7c" }}>defensible.</span>
           </h2>
-          <p style={{ color: "#94a3b8", fontSize: "1.1rem", maxWidth: 500, margin: "0 auto 2.5rem" }}>
-            No credit card. No lock-in. One platform for every stage of your literature workflow.
+          <p style={{ color: "#a99d84", fontSize: "1.1rem", maxWidth: 520, margin: "0 0 3rem", lineHeight: 1.7, fontWeight: 380 }}>
+            One platform for every stage of the literature workflow —
+            and an audit trail your reviewers will thank you for.
           </p>
-          <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-            <button
-              onClick={() => navigate("/register")}
-              style={{
-                padding: "1rem 2.5rem", borderRadius: 10,
-                border: "none",
-                background: "linear-gradient(135deg, #6366f1, #4f46e5)",
-                color: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer",
-                boxShadow: "0 4px 20px rgba(99,102,241,0.5)",
-              }}>
-              Create your free account
+          <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => navigate("/register")} className="lp-btn lp-btn--cream">
+              Create your account
             </button>
-            <button
-              onClick={() => navigate("/login")}
-              style={{
-                padding: "1rem 2rem", borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.2)", background: "transparent",
-                color: "#e2e8f0", fontWeight: 600, fontSize: 16, cursor: "pointer",
-              }}>
+            <button onClick={() => navigate("/login")} className="lp-textlink" style={{ color: "#d98d7c", fontSize: 15, textDecorationColor: "#d98d7c55" }}>
               Sign in
             </button>
           </div>
         </div>
       </section>
 
-      {/* ── Footer ── */}
+      {/* ── Footer colophon ── */}
       <footer style={{
-        background: "#0f172a", color: "#475569",
-        padding: "1.75rem 2.5rem",
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        flexWrap: "wrap", gap: "0.75rem", fontSize: 13,
+        background: P.inkBlock, color: "#6f6553",
+        borderTop: "1px solid #2a251e",
+        padding: "1.6rem clamp(1.25rem, 4vw, 3rem)",
+        display: "flex", alignItems: "baseline", justifyContent: "space-between",
+        flexWrap: "wrap", gap: "0.75rem",
+        fontFamily: MONO, fontSize: 11.5, letterSpacing: "0.06em",
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <span style={{
-            width: 26, height: 26, borderRadius: 7,
-            background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "#fff", fontWeight: 900, fontSize: 12,
-          }}>E</span>
-          <span style={{ color: "#94a3b8", fontWeight: 600, letterSpacing: "-0.2px" }}>EvidencePlatform</span>
+        <div>
+          <span style={{ fontFamily: SERIF, fontStyle: "italic", color: "#d98d7c", marginRight: 10, fontSize: 14 }}>E.</span>
+          EVIDENCE PLATFORM — OPEN-SOURCE RESEARCH INFRASTRUCTURE
         </div>
-        <div style={{ display: "flex", gap: "1.5rem", color: "#475569" }}>
-          <span>Literature management platform</span>
-          <span>·</span>
-          <span>christelle.xiong.32@gmail.com</span>
-        </div>
-        <div style={{ color: "#334155", fontSize: 12 }}>
-          No warranty expressed or implied
-        </div>
+        <div>christelle.xiong.32@gmail.com</div>
+        <div style={{ color: "#4f4739" }}>Set in Fraunces &amp; IBM Plex Mono · No warranty expressed or implied</div>
       </footer>
 
     </div>
