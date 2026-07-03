@@ -248,5 +248,6 @@ def _consensus_out(c: ConsensusDecision) -> dict:
         "reason_code": c.reason_code,
         "notes": c.notes,
         "adjudicator_id": str(c.adjudicator_id) if c.adjudicator_id else None,
+        "origin": c.origin,
         "created_at": c.created_at.isoformat(),
     }

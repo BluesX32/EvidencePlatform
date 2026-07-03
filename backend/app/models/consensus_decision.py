@@ -38,6 +38,10 @@ class ConsensusDecision(Base):
     adjudicator_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Structured provenance (migration 049): 'human' | 'ai'
+    origin: Mapped[str] = mapped_column(
+        String(12), nullable=False, server_default="human"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

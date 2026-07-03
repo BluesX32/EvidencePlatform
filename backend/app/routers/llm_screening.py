@@ -1296,6 +1296,8 @@ async def send_to_consensus(
             # Update existing synthetic decision
             existing.decision = decision
             existing.notes = f"LLM: {run.model}"
+            existing.origin = "ai"
+            existing.llm_run_id = run.id
         else:
             sd = ScreeningDecision(
                 project_id=project.id,
@@ -1305,6 +1307,8 @@ async def send_to_consensus(
                 decision=decision,
                 reviewer_id=None,  # synthetic LLM reviewer
                 notes=f"LLM: {run.model}",
+                origin="ai",
+                llm_run_id=run.id,
             )
             db.add(sd)
             created += 1

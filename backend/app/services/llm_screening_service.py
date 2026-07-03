@@ -797,6 +797,8 @@ async def create_subproject_from_run(
                     stage="TA",
                     decision=result.ta_decision,
                     reviewer_id=None,
+                    origin="ai",
+                    llm_run_id=run.id,
                 ))
 
             # Pre-populate FT decision if present
@@ -808,6 +810,8 @@ async def create_subproject_from_run(
                     stage="FT",
                     decision=result.ft_decision,
                     reviewer_id=None,
+                    origin="ai",
+                    llm_run_id=run.id,
                 ))
 
             # Pre-populate extraction if available
@@ -818,6 +822,8 @@ async def create_subproject_from_run(
                     cluster_id=None,
                     extracted_json=result.extracted_json,
                     reviewer_id=None,
+                    origin="ai",
+                    llm_run_id=run.id,
                 ))
 
             imported += 1
@@ -1619,6 +1625,8 @@ async def _sync_extraction_to_shared_table(
 
     if existing is not None:
         existing.extracted_json = result.extracted_json
+        existing.origin = "ai"
+        existing.llm_run_id = result.run_id
     else:
         db.add(
             ExtractionRecord(
@@ -1627,6 +1635,8 @@ async def _sync_extraction_to_shared_table(
                 cluster_id=None,
                 extracted_json=result.extracted_json,
                 reviewer_id=triggered_by,
+                origin="ai",
+                llm_run_id=result.run_id,
             )
         )
     await db.flush()

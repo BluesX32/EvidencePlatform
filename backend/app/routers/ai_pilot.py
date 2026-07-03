@@ -20,13 +20,16 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, SessionLocal
 from app.dependencies import get_current_user, require_project_role, ADMIN_ROLE, REVIEWER_ROLE
+from app.models.ai_job import AiJob
 from app.models.concept_extraction import ConceptExtraction
 from app.models.source import Source
 from app.models.extraction_record import ExtractionRecord
@@ -50,18 +53,80 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["ai-pilot"])
 
 # ---------------------------------------------------------------------------
-# In-memory batch job tracker (per project, per job type)
+# Batch job tracking — persistent rows in ai_jobs (survives restarts, shared
+# across workers, and doubles as run history)
 # ---------------------------------------------------------------------------
 
-_batch_jobs: Dict[str, Dict[str, Any]] = {}
+# A "running" job whose heartbeat is older than this was interrupted
+# (e.g. server restart killed the background task) and must not block new runs.
+_STALE_JOB_SECONDS = 300
 
 
-def _job_key(project_id: str, job_type: str) -> str:
-    return f"{project_id}:{job_type}"
+def _job_payload(job: Optional[AiJob]) -> Dict[str, Any]:
+    if job is None:
+        return {"status": "idle"}
+    return {
+        "job_id": str(job.id),
+        "job_type": job.job_type,
+        "status": job.status,
+        "done": job.done,
+        "total": job.total,
+        "errors": job.errors,
+        "error": job.error_message,
+        "model": job.model,
+        "triggered_by": str(job.triggered_by) if job.triggered_by else None,
+        "created_at": job.created_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
 
 
-def _job_status(project_id: str, job_type: str) -> Dict[str, Any]:
-    return _batch_jobs.get(_job_key(project_id, job_type), {"status": "idle"})
+async def _latest_job(
+    db: AsyncSession, project_id: uuid.UUID, job_type: str
+) -> Optional[AiJob]:
+    return (await db.execute(
+        select(AiJob)
+        .where(AiJob.project_id == project_id, AiJob.job_type == job_type)
+        .order_by(AiJob.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+
+async def _reap_if_stale(db: AsyncSession, job: Optional[AiJob]) -> bool:
+    """Return True when job is genuinely still running.
+
+    A running job with a stale heartbeat is marked failed so it stops
+    blocking new runs and its history entry reflects the interruption.
+    """
+    if job is None or job.status != "running":
+        return False
+    age = datetime.now(tz=timezone.utc) - job.updated_at
+    if age.total_seconds() < _STALE_JOB_SECONDS:
+        return True
+    job.status = "failed"
+    job.error_message = "Interrupted — job stopped reporting progress (server restart?)"
+    job.completed_at = datetime.now(tz=timezone.utc)
+    await db.commit()
+    return False
+
+
+async def _current_job_payload(
+    db: AsyncSession, project_id: uuid.UUID, job_type: str
+) -> Dict[str, Any]:
+    job = await _latest_job(db, project_id, job_type)
+    await _reap_if_stale(db, job)
+    return _job_payload(job)
+
+
+async def _update_job(job_id: uuid.UUID, **values: Any) -> None:
+    """Write job progress in its own session (heartbeat included) so the
+    background task's work transaction stays untouched."""
+    async with SessionLocal() as session:
+        await session.execute(
+            update(AiJob)
+            .where(AiJob.id == job_id)
+            .values(updated_at=func.now(), **values)
+        )
+        await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +258,7 @@ async def get_pilot_status(
         )
     )).scalar() or 0
 
-    extract_job = _job_status(str(project_id), "extract")
+    extract_job = await _current_job_payload(db, pid, "extract")
 
     # ── Concepts ─────────────────────────────────────────────────────────────
     concept_count = (await db.execute(
@@ -202,7 +267,7 @@ async def get_pilot_status(
         )
     )).scalar() or 0
 
-    concepts_job = _job_status(str(project_id), "concepts")
+    concepts_job = await _current_job_payload(db, pid, "concepts")
 
     # ── Thematic ─────────────────────────────────────────────────────────────
     theme_count = (await db.execute(
@@ -357,11 +422,17 @@ async def start_bulk_extraction(
     if not anthropic_key and not openrouter_key:
         raise HTTPException(400, "No API key configured")
 
-    jk = _job_key(str(project_id), "extract")
-    if _batch_jobs.get(jk, {}).get("status") == "running":
-        return {"status": "running", **_batch_jobs[jk]}
+    existing = await _latest_job(db, project_id, "extract")
+    if await _reap_if_stale(db, existing):
+        return _job_payload(existing)
 
-    _batch_jobs[jk] = {"status": "running", "done": 0, "total": 0, "errors": 0}
+    job = AiJob(
+        project_id=project_id, job_type="extract",
+        status="running", model=body.model, triggered_by=user.id,
+    )
+    db.add(job)
+    await db.commit()
+    job_id = job.id
 
     # Capture primitives — the user/db session is closed before background task runs
     user_id = user.id
@@ -372,6 +443,8 @@ async def start_bulk_extraction(
         set_llm_log_context(LlmLogContext(
             feature="ai_pilot.extract", project_id=project_id, user_id=user_id,
         ))
+        done = 0
+        errors = 0
         try:
             async with SessionLocal() as db2:
                 # FT-included items this reviewer hasn't extracted yet
@@ -401,7 +474,7 @@ async def start_bulk_extraction(
                     if existing is None:
                         targets.append((row.record_id, row.cluster_id))
 
-                _batch_jobs[jk]["total"] = len(targets)
+                await _update_job(job_id, total=len(targets))
 
                 for rec_id, cl_id in targets:
                     try:
@@ -420,7 +493,8 @@ async def start_bulk_extraction(
                             )).scalar_one_or_none()
 
                         if not record:
-                            _batch_jobs[jk]["done"] += 1
+                            done += 1
+                            await _update_job(job_id, done=done)
                             continue
 
                         result = await svc._extract_one_record(
@@ -439,24 +513,27 @@ async def start_bulk_extraction(
                                 cluster_id=cl_id,
                                 extracted_json={"table": result},
                                 reviewer_id=user_id,
+                                origin="ai",
                             )
                             db2.add(er)
                             await db2.flush()
                     except Exception as e:
                         logger.warning("bulk extract error for record=%s: %s", rec_id or cl_id, e)
-                        _batch_jobs[jk]["errors"] = _batch_jobs[jk].get("errors", 0) + 1
+                        errors += 1
 
-                    _batch_jobs[jk]["done"] += 1
+                    done += 1
+                    await _update_job(job_id, done=done, errors=errors)
 
                 await db2.commit()
-                _batch_jobs[jk]["status"] = "done"
+                await _update_job(job_id, status="done", completed_at=func.now())
         except Exception as exc:
             logger.exception("bulk extraction failed for project %s", project_id)
-            _batch_jobs[jk]["status"] = "failed"
-            _batch_jobs[jk]["error"] = str(exc)
+            await _update_job(
+                job_id, status="failed", error_message=str(exc), completed_at=func.now()
+            )
 
     background_tasks.add_task(_run)
-    return {"status": "running", "done": 0, "total": 0}
+    return _job_payload(job)
 
 
 @router.get("/{project_id}/auto-extract-all/status")
@@ -466,7 +543,7 @@ async def bulk_extraction_status(
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     await require_project_role(db, project_id, user.id, allowed=REVIEWER_ROLE)
-    return _job_status(str(project_id), "extract")
+    return await _current_job_payload(db, project_id, "extract")
 
 
 # ---------------------------------------------------------------------------
@@ -495,11 +572,17 @@ async def start_bulk_concepts(
     if not anthropic_key and not openrouter_key:
         raise HTTPException(400, "No API key configured")
 
-    jk = _job_key(str(project_id), "concepts")
-    if _batch_jobs.get(jk, {}).get("status") == "running":
-        return {"status": "running", **_batch_jobs[jk]}
+    existing = await _latest_job(db, project_id, "concepts")
+    if await _reap_if_stale(db, existing):
+        return _job_payload(existing)
 
-    _batch_jobs[jk] = {"status": "running", "done": 0, "total": 0, "errors": 0}
+    job = AiJob(
+        project_id=project_id, job_type="concepts",
+        status="running", model=body.model, triggered_by=user.id,
+    )
+    db.add(job)
+    await db.commit()
+    job_id = job.id
 
     # Capture primitives before the request session closes
     user_id = user.id
@@ -512,6 +595,8 @@ async def start_bulk_concepts(
         set_llm_log_context(LlmLogContext(
             feature="ai_pilot.concepts", project_id=project_id, user_id=user_id,
         ))
+        done = 0
+        errors = 0
         try:
             async with SessionLocal() as db2:
                 included_q = select(
@@ -540,7 +625,7 @@ async def start_bulk_concepts(
                     if existing is None:
                         targets.append((row.record_id, row.cluster_id))
 
-                _batch_jobs[jk]["total"] = len(targets)
+                await _update_job(job_id, total=len(targets))
 
                 for rec_id, cl_id in targets:
                     try:
@@ -557,7 +642,8 @@ async def start_bulk_concepts(
                             )).scalar_one_or_none()
 
                         if not record:
-                            _batch_jobs[jk]["done"] += 1
+                            done += 1
+                            await _update_job(job_id, done=done)
                             continue
 
                         field_lines = [
@@ -588,24 +674,27 @@ async def start_bulk_concepts(
                                 cluster_id=cl_id,
                                 extracted_json={"cells": cells},
                                 reviewer_id=user_id,
+                                origin="ai",
                             )
                             db2.add(ce)
                             await db2.flush()
                     except Exception as e:
                         logger.warning("bulk concepts error for record=%s: %s", rec_id or cl_id, e)
-                        _batch_jobs[jk]["errors"] = _batch_jobs[jk].get("errors", 0) + 1
+                        errors += 1
 
-                    _batch_jobs[jk]["done"] += 1
+                    done += 1
+                    await _update_job(job_id, done=done, errors=errors)
 
                 await db2.commit()
-                _batch_jobs[jk]["status"] = "done"
+                await _update_job(job_id, status="done", completed_at=func.now())
         except Exception as exc:
             logger.exception("bulk concepts failed for project %s", project_id)
-            _batch_jobs[jk]["status"] = "failed"
-            _batch_jobs[jk]["error"] = str(exc)
+            await _update_job(
+                job_id, status="failed", error_message=str(exc), completed_at=func.now()
+            )
 
     background_tasks.add_task(_run)
-    return {"status": "running", "done": 0, "total": 0}
+    return _job_payload(job)
 
 
 @router.get("/{project_id}/auto-concepts-all/status")
@@ -615,7 +704,26 @@ async def bulk_concepts_status(
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     await require_project_role(db, project_id, user.id, allowed=REVIEWER_ROLE)
-    return _job_status(str(project_id), "concepts")
+    return await _current_job_payload(db, project_id, "concepts")
+
+
+@router.get("/{project_id}/ai-jobs")
+async def list_ai_jobs(
+    project_id: uuid.UUID,
+    job_type: Optional[str] = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Run history for AI Pilot batch jobs, newest first."""
+    await require_project_role(db, project_id, user.id, allowed=REVIEWER_ROLE)
+    q = select(AiJob).where(AiJob.project_id == project_id)
+    if job_type:
+        q = q.where(AiJob.job_type == job_type)
+    jobs = (await db.execute(
+        q.order_by(AiJob.created_at.desc()).limit(min(max(limit, 1), 100))
+    )).scalars().all()
+    return {"jobs": [_job_payload(j) for j in jobs]}
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +877,7 @@ async def ai_resolve_all(
                 decision=decision,
                 adjudicator_id=user.id,
                 notes=f"[AI] {rationale}",
+                origin="ai",
             )
             resolved += 1
         except Exception as e:

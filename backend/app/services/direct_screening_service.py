@@ -1847,6 +1847,7 @@ async def submit_decision(
             reason_code=reason_code,
             notes=notes,
             reviewer_id=reviewer_id,
+            origin="human" if reviewer_id is not None else "ai",
         )
         db.add(dec)
     await db.flush()
@@ -1877,6 +1878,7 @@ async def submit_decision(
         "reason_code": dec.reason_code,
         "notes": dec.notes,
         "reviewer_id": str(dec.reviewer_id) if dec.reviewer_id else None,
+        "origin": dec.origin,
         "created_at": dec.created_at,
     }
 

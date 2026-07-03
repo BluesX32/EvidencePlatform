@@ -742,6 +742,7 @@ async def ai_assign_code(
                     snippet_text=parsed.get("snippet") or None,
                     note="[AI assigned]",
                     assigned_by=user.id,
+                    origin="ai",
                 ))
                 new_assignments += 1
         except Exception as e:

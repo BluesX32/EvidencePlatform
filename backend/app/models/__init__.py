@@ -32,6 +32,7 @@ from app.models.citation_search import CitationSearch
 from app.models.citation_candidate import CitationCandidate
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 from app.models.llm_call import LlmCall
+from app.models.ai_job import AiJob
 
 __all__ = [
     "InviteCode",
@@ -70,4 +71,5 @@ __all__ = [
     "CitationCandidate",
     "ConceptTaxonomyNode",
     "LlmCall",
+    "AiJob",
 ]

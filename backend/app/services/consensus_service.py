@@ -111,8 +111,13 @@ async def adjudicate(
     adjudicator_id: uuid.UUID,
     reason_code: Optional[str] = None,
     notes: Optional[str] = None,
+    origin: str = "human",
 ) -> ConsensusDecision:
-    """Create or overwrite a consensus decision for a conflicted item."""
+    """Create or overwrite a consensus decision for a conflicted item.
+
+    origin='ai' marks resolutions proposed and applied by an LLM (the
+    adjudicator_id is then the human who triggered the bulk resolution).
+    """
     # Delete existing consensus decision if any
     filter_col = ConsensusDecision.record_id if record_id else ConsensusDecision.cluster_id
     item_id = record_id or cluster_id
@@ -130,6 +135,7 @@ async def adjudicate(
         existing.adjudicator_id = adjudicator_id
         existing.reason_code = reason_code
         existing.notes = notes
+        existing.origin = origin
         await db.flush()
         await db.refresh(existing)
         return existing
@@ -143,6 +149,7 @@ async def adjudicate(
         adjudicator_id=adjudicator_id,
         reason_code=reason_code,
         notes=notes,
+        origin=origin,
     )
     db.add(consensus)
     await db.flush()
