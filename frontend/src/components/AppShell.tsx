@@ -90,15 +90,15 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
         <div style={{ padding: "0.75rem 1.25rem 1.25rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           {SHORTCUTS.map((s, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "0.84rem" }}>
-              <span style={{ color: "#475569" }}>{s.action}</span>
+              <span style={{ color: "var(--text-secondary)" }}>{s.action}</span>
               <span style={{ display: "flex", gap: "0.2rem" }}>
                 {s.keys.map((k, j) => (
                   <kbd key={j} style={{
                     display: "inline-flex", alignItems: "center", justifyContent: "center",
                     minWidth: 24, padding: "0.1rem 0.4rem", borderRadius: "0.25rem",
-                    border: "1px solid #cbd5e1", background: "#f8fafc",
-                    fontSize: "0.76rem", fontFamily: "monospace", color: "#334155",
-                    boxShadow: "0 1px 0 #cbd5e1",
+                    border: "1px solid var(--border-strong)", background: "var(--surface-2)",
+                    fontSize: "0.76rem", fontFamily: "var(--font-mono)", color: "var(--text-secondary)",
+                    boxShadow: "0 1px 0 var(--border-strong)",
                   }}>{k}</kbd>
                 ))}
               </span>
@@ -111,8 +111,8 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
 }
 
 
-const labelSt: React.CSSProperties = { display: "block", fontSize: "0.78rem", fontWeight: 600, color: "#475569", marginBottom: "0.3rem" };
-const inputSt: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "0.45rem 0.6rem", border: "1px solid #cbd5e1", borderRadius: "0.375rem", fontSize: "0.88rem", outline: "none" };
+const labelSt: React.CSSProperties = { display: "block", fontSize: "0.78rem", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "0.3rem" };
+const inputSt: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "0.45rem 0.6rem", border: "1px solid var(--border-strong)", borderRadius: "0.375rem", fontSize: "0.88rem", outline: "none" };
 
 // ── API Keys Modal ────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div style={{ padding: "1rem 1.25rem 1.25rem" }}>
-          <p style={{ fontSize: "0.82rem", color: "#475569", margin: "0 0 1rem" }}>
+          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", margin: "0 0 1rem" }}>
             Keys are stored in your account and used automatically for LLM screening runs.
             They are never shared with other users.
           </p>
@@ -241,10 +241,10 @@ function ApiKeysModal({ profile, onClose, onSaved }: { profile: UserProfile | nu
           </form>
 
           {/* OneDrive */}
-          <hr style={{ border: "none", borderTop: "1px solid #e2e8f0", margin: "1.25rem 0 1rem" }} />
+          <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "1.25rem 0 1rem" }} />
           <div>
             <label style={labelSt}>Microsoft OneDrive</label>
-            <p style={{ fontSize: "0.78rem", color: "#64748b", margin: "0 0 0.75rem" }}>
+            <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: "0 0 0.75rem" }}>
               Connect OneDrive so the LLM screener can access full-text PDFs stored in your drive.
             </p>
             {profile?.onedrive_connected ? (
@@ -352,7 +352,7 @@ function SidebarProfile() {
   const MI = (icon: React.ReactNode, label: React.ReactNode, onClick: () => void, color?: string) => (
     <button
       onClick={() => { onClick(); setOpen(false); }}
-      style={{ ...miBtnStyle, color: color ?? "#cbd5e1" }}
+      style={{ ...miBtnStyle, color: color ?? "#cdbfa0" }}
       onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
       onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
     >
@@ -367,7 +367,7 @@ function SidebarProfile() {
       {open && (
         <div style={{
           position: "absolute", bottom: "calc(100% + 8px)", left: 0, right: 0,
-          background: "#1e293b", border: "1px solid rgba(255,255,255,0.1)",
+          background: "#2a2118", border: "1px solid rgba(255,255,255,0.1)",
           borderRadius: "0.5rem", boxShadow: "0 -8px 24px rgba(0,0,0,0.35)",
           overflow: "hidden", zIndex: 200,
         }}>
@@ -383,20 +383,20 @@ function SidebarProfile() {
                       value={nameDraft}
                       onChange={e => setNameDraft(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditingName(false); }}
-                      style={{ flex: 1, background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "0.25rem", color: "#f1f5f9", fontSize: "0.82rem", padding: "0.2rem 0.4rem", outline: "none" }}
+                      style={{ flex: 1, background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "0.25rem", color: "#f3ead8", fontSize: "0.82rem", padding: "0.2rem 0.4rem", outline: "none" }}
                     />
                     <button onClick={saveName} style={iconActStyle} title="Save"><Check size={13} /></button>
                     <button onClick={() => setEditingName(false)} style={iconActStyle} title="Cancel"><X size={13} /></button>
                   </div>
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
-                    <span style={{ fontSize: "0.86rem", fontWeight: 600, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: "0.86rem", fontWeight: 600, color: "#f3ead8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {profile?.name}
                     </span>
                     <button onClick={startEditName} style={iconActStyle} title="Edit name"><Pencil size={11} /></button>
                   </div>
                 )}
-                <div style={{ fontSize: "0.73rem", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "0.1rem" }}>
+                <div style={{ fontSize: "0.73rem", color: "#8f8268", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "0.1rem" }}>
                   {profile?.email}
                 </div>
               </div>
@@ -445,14 +445,14 @@ function SidebarProfile() {
       >
         <div style={avatarStyle}>{initials}</div>
         <div className="sidebar-profile-text" style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "#ede4d1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {profile?.name ?? "Account"}
           </div>
-          <div style={{ fontSize: "0.71rem", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div style={{ fontSize: "0.71rem", color: "#8f8268", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {profile?.email}
           </div>
         </div>
-        <ChevronsUpDown size={13} style={{ color: "#475569", flexShrink: 0 }} />
+        <ChevronsUpDown size={13} style={{ color: "#8f8268", flexShrink: 0 }} />
       </button>
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
@@ -463,7 +463,7 @@ function SidebarProfile() {
 
 const avatarStyle: React.CSSProperties = {
   width: 30, height: 30, borderRadius: "50%",
-  background: "var(--brand, #4f46e5)", color: "#fff",
+  background: "var(--brand, #96301f)", color: "#fff",
   display: "flex", alignItems: "center", justifyContent: "center",
   fontSize: "0.72rem", fontWeight: 700, flexShrink: 0,
 };
@@ -476,13 +476,13 @@ const miBtnStyle: React.CSSProperties = {
 
 const iconActStyle: React.CSSProperties = {
   background: "none", border: "none", cursor: "pointer",
-  color: "#64748b", display: "flex", alignItems: "center", padding: "0.1rem",
+  color: "#8f8268", display: "flex", alignItems: "center", padding: "0.1rem",
   borderRadius: "0.2rem",
 };
 
 const sectionLabel: React.CSSProperties = {
   fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.08em",
-  textTransform: "uppercase", color: "#475569", padding: "0.2rem 0.9rem 0.15rem",
+  textTransform: "uppercase", color: "#8f8268", padding: "0.2rem 0.9rem 0.15rem",
 };
 
 // ── Global nav (non-project sidebar) ─────────────────────────────────────
