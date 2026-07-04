@@ -4,6 +4,7 @@ Direct project-level screening service (migration 009+).
 All SQL filtering via CTEs.  No Python-side list manipulation for availability logic.
 
 Public API:
+  resolve_screening_state(db, project_id) → Dict (per-slot current TA/FT decision)
   get_project_sources_with_stats(db, project_id) → List[Dict]
   get_next_item(db, project_id, source_id, mode, reviewer_id, bucket) → Dict
   get_item_by_key(db, project_id, record_id, cluster_id, reviewer_id) → Dict
@@ -84,29 +85,35 @@ async def _build_cluster_map(
 # Sources with stats
 # ---------------------------------------------------------------------------
 
-async def get_project_sources_with_stats(
-    db: AsyncSession,
-    project_id: uuid.UUID,
-    reviewer_id: Optional[uuid.UUID] = None,
-) -> List[Dict]:
-    """
-    Return per-source stats + one aggregate "all" row.
+async def resolve_screening_state(
+    db: AsyncSession, project_id: uuid.UUID,
+) -> Dict[str, Any]:
+    """Resolve every screening slot in a project to its CURRENT TA/FT decision.
 
-    For each source:
-      record_count    — unique screening slots (clusters + standalones from this source)
-      ta_screened     — # unique slots with a TA decision (project-wide)
-      ta_included     — # unique slots with TA include decision
-      ft_screened     — # unique slots with a FT decision
-      ft_included     — # unique slots with FT include decision
-      extracted_count — # unique slots with an extraction record
-    """
-    # 1. Get sources
-    src_result = await db.execute(
-        select(Source).where(Source.project_id == project_id).order_by(Source.name)
-    )
-    sources = src_result.scalars().all()
+    A "slot" is a screening unit: a cross-source overlap cluster, or a
+    standalone record. Multiple raw ScreeningDecision rows can exist per
+    slot+stage — different reviewers, an LLM run, a decision that was later
+    revised — but exactly one of them governs the PRISMA funnel: the latest
+    HUMAN decision if one exists, else the latest synthetic (AI) one.
 
-    # 2. Get all records in project with their cross-source cluster (if any)
+    FT decisions are only "active" while the slot's current TA decision is
+    include or absent. A paper that was screened at full text and later
+    knocked back to TA-exclude no longer belongs in the full-text funnel —
+    its old FT decision must not be counted or listed anywhere downstream,
+    otherwise the same paper shows up as excluded in both the TA and FT
+    boxes simultaneously.
+
+    Every caller that counts or lists screening decisions (funnel stats,
+    PRISMA exclusion-reason breakdowns, the reason drill-down list) must go
+    through this resolver — duplicating the logic invites exactly this kind
+    of TA/FT double-count drift.
+
+    Returns:
+      record_to_slot: record_id -> slot key ("cluster:<uuid>" | "record:<uuid>")
+      ta: slot -> latest TA ScreeningDecision row
+      ft: slot -> latest FT ScreeningDecision row, omitted when not active
+    """
+    # 1. Get all records in project with their cross-source cluster (if any)
     #    result: list of (record_id, cluster_id_or_None)
     records_result = await db.execute(
         select(
@@ -145,6 +152,85 @@ async def get_project_sources_with_stats(
             # Only write standalone if we haven't seen a cluster for this record.
             record_to_slot[row.record_id] = f"record:{row.record_id}"
 
+    # 2. Get decisions (all decisions for this project, keyed by slot),
+    #    ordered so the LATEST decision per slot+stage wins. A slot whose
+    #    decision was revised (include → exclude, two reviewers, etc.) must
+    #    count in exactly one bucket, otherwise included+excluded can exceed
+    #    screened and the PRISMA funnel stops reconciling.
+    sd_result = await db.execute(
+        select(ScreeningDecision)
+        .where(ScreeningDecision.project_id == project_id)
+        .order_by(ScreeningDecision.created_at)
+    )
+    sd_rows = sd_result.scalars().all()
+
+    # Resolve latest decision per slot per stage, with HUMAN decisions
+    # outranking synthetic ones (reviewer_id IS NULL = applied from an LLM
+    # run). A machine decision may fill a gap but never override a human.
+    # IMPORTANT: normalize record_id-based decisions through record_to_slot so
+    # that a decision stored as "record:Y" when the record was standalone still
+    # matches as "cluster:X" if overlap detection later grouped it into a
+    # cross-source cluster (and vice-versa).
+    ta_latest: Dict[str, ScreeningDecision] = {}
+    ft_latest: Dict[str, ScreeningDecision] = {}
+    ta_human_slots: set = set()
+    ft_human_slots: set = set()
+    for row in sd_rows:
+        if row.record_id is not None:
+            slot = record_to_slot.get(row.record_id, f"record:{row.record_id}")
+        else:
+            slot = f"cluster:{row.cluster_id}"
+        is_human = row.reviewer_id is not None
+        if row.stage == "TA":
+            if is_human:
+                ta_latest[slot] = row
+                ta_human_slots.add(slot)
+            elif slot not in ta_human_slots:
+                ta_latest[slot] = row
+        elif row.stage == "FT":
+            if is_human:
+                ft_latest[slot] = row
+                ft_human_slots.add(slot)
+            elif slot not in ft_human_slots:
+                ft_latest[slot] = row
+
+    def _ft_active(slot: str) -> bool:
+        return slot not in ta_latest or ta_latest[slot].decision == "include"
+
+    ft_active_latest = {s: r for s, r in ft_latest.items() if _ft_active(s)}
+
+    return {"record_to_slot": record_to_slot, "ta": ta_latest, "ft": ft_active_latest}
+
+
+async def get_project_sources_with_stats(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    reviewer_id: Optional[uuid.UUID] = None,
+) -> List[Dict]:
+    """
+    Return per-source stats + one aggregate "all" row.
+
+    For each source:
+      record_count    — unique screening slots (clusters + standalones from this source)
+      ta_screened     — # unique slots with a TA decision (project-wide)
+      ta_included     — # unique slots with TA include decision
+      ft_screened     — # unique slots with a FT decision
+      ft_included     — # unique slots with FT include decision
+      extracted_count — # unique slots with an extraction record
+    """
+    # 1. Get sources
+    src_result = await db.execute(
+        select(Source).where(Source.project_id == project_id).order_by(Source.name)
+    )
+    sources = src_result.scalars().all()
+
+    # 2-4. Resolve every slot's current TA/FT decision (shared with the
+    # PRISMA exclusion-reason breakdown — see resolve_screening_state).
+    state = await resolve_screening_state(db, project_id)
+    record_to_slot = state["record_to_slot"]
+    ta_latest = {slot: row.decision for slot, row in state["ta"].items()}
+    ft_latest = {slot: row.decision for slot, row in state["ft"].items()}
+
     # 3. Build source → set-of-slot-ids
     source_slots: Dict[uuid.UUID, set] = {s.id: set() for s in sources}
     all_slots: set = set()
@@ -163,70 +249,16 @@ async def get_project_sources_with_stats(
                 if row.source_id in source_slots:
                     source_slots[row.source_id].add(slot)
 
-    # 4. Get decisions (all decisions for this project, keyed by slot),
-    #    ordered so the LATEST decision per slot+stage wins. A slot whose
-    #    decision was revised (include → exclude, two reviewers, etc.) must
-    #    count in exactly one bucket, otherwise included+excluded can exceed
-    #    screened and the PRISMA funnel stops reconciling.
-    sd_result = await db.execute(
-        select(
-            ScreeningDecision.record_id,
-            ScreeningDecision.cluster_id,
-            ScreeningDecision.stage,
-            ScreeningDecision.decision,
-            ScreeningDecision.reviewer_id,
-        )
-        .where(ScreeningDecision.project_id == project_id)
-        .order_by(ScreeningDecision.created_at)
-    )
-    sd_rows = sd_result.all()
-
-    # Resolve latest decision per slot per stage, with HUMAN decisions
-    # outranking synthetic ones (reviewer_id IS NULL = applied from an LLM
-    # run). A machine decision may fill a gap but never override a human.
-    # IMPORTANT: normalize record_id-based decisions through record_to_slot so
-    # that a decision stored as "record:Y" when the record was standalone still
-    # matches as "cluster:X" if overlap detection later grouped it into a
-    # cross-source cluster (and vice-versa).
-    ta_latest: Dict[str, str] = {}
-    ft_latest: Dict[str, str] = {}
-    ta_human_slots: set = set()
-    ft_human_slots: set = set()
-    for row in sd_rows:
-        if row.record_id is not None:
-            slot = record_to_slot.get(row.record_id, f"record:{row.record_id}")
-        else:
-            slot = f"cluster:{row.cluster_id}"
-        is_human = row.reviewer_id is not None
-        if row.stage == "TA":
-            if is_human:
-                ta_latest[slot] = row.decision
-                ta_human_slots.add(slot)
-            elif slot not in ta_human_slots:
-                ta_latest[slot] = row.decision
-        elif row.stage == "FT":
-            if is_human:
-                ft_latest[slot] = row.decision
-                ft_human_slots.add(slot)
-            elif slot not in ft_human_slots:
-                ft_latest[slot] = row.decision
-
     ta_screened_slots  = set(ta_latest)
     ta_included_slots  = {s for s, d in ta_latest.items() if d == "include"}
     ta_excluded_slots  = {s for s, d in ta_latest.items() if d == "exclude"}
     ta_uncertain_slots = {s for s, d in ta_latest.items() if d == "uncertain"}
 
-    # FT decisions only count while the slot is still TA-included (or has no
-    # TA decision at all — pure full-text workflows). A paper assessed at full
-    # text and later knocked back to TA-excluded belongs in the TA-excluded
-    # box, not in "full-text assessed" — otherwise FT assessed can exceed TA
-    # included and the funnel breaks.
-    def _ft_active(slot: str) -> bool:
-        return slot not in ta_latest or ta_latest[slot] == "include"
-
-    ft_screened_slots = {s for s in ft_latest if _ft_active(s)}
-    ft_included_slots = {s for s, d in ft_latest.items() if d == "include" and _ft_active(s)}
-    ft_excluded_slots = {s for s, d in ft_latest.items() if d != "include" and _ft_active(s)}
+    # ft_latest here is already filtered to "active" slots by resolve_screening_state
+    # (TA-excluded slots' old FT decisions are dropped) — see its docstring.
+    ft_screened_slots = set(ft_latest)
+    ft_included_slots = {s for s, d in ft_latest.items() if d == "include"}
+    ft_excluded_slots = {s for s, d in ft_latest.items() if d != "include"}
 
     # 5. Get extraction counts
     er_result = await db.execute(

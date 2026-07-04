@@ -16,6 +16,7 @@ from app.models.source import Source
 from app.models.user import User
 from app.repositories.import_repo import ImportRepo
 from app.repositories.project_repo import ProjectRepo
+from app.services.direct_screening_service import resolve_screening_state
 from app.services.sub_project_service import create_sub_project, create_sub_project_from_human_screening
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -629,37 +630,25 @@ async def get_prisma_stats(
     ).scalar() or 0
     duplicates_removed = total_identified - total_unique
 
-    # TA exclusion reasons
-    ta_reason_rows = (
-        await db.execute(
-            select(ScreeningDecision.reason_code, func.count().label("cnt"))
-            .where(
-                ScreeningDecision.project_id == project_id,
-                ScreeningDecision.stage == "TA",
-                ScreeningDecision.decision == "exclude",
-                ScreeningDecision.reviewer_id.isnot(None),
-            )
-            .group_by(ScreeningDecision.reason_code)
-            .order_by(func.count().desc())
-        )
-    ).all()
-    ta_exclude_reasons = [{"reason_code": r.reason_code, "count": r.cnt} for r in ta_reason_rows]
+    # Exclusion-reason breakdowns — resolved through the same per-slot
+    # current-decision logic as the funnel counts (resolve_screening_state),
+    # so a slot whose TA decision was later overridden to exclude can't also
+    # surface a stale FT-exclude reason from before that override.
+    state = await resolve_screening_state(db, project_id)
 
-    # FT exclusion reasons
-    ft_reason_rows = (
-        await db.execute(
-            select(ScreeningDecision.reason_code, func.count().label("cnt"))
-            .where(
-                ScreeningDecision.project_id == project_id,
-                ScreeningDecision.stage == "FT",
-                ScreeningDecision.decision == "exclude",
-                ScreeningDecision.reviewer_id.isnot(None),
-            )
-            .group_by(ScreeningDecision.reason_code)
-            .order_by(func.count().desc())
-        )
-    ).all()
-    ft_exclude_reasons = [{"reason_code": r.reason_code, "count": r.cnt} for r in ft_reason_rows]
+    def _reason_counts(latest: dict) -> list[dict]:
+        counts: dict[Optional[str], int] = {}
+        for row in latest.values():
+            if row.decision != "exclude" or row.reviewer_id is None:
+                continue
+            counts[row.reason_code] = counts.get(row.reason_code, 0) + 1
+        return [
+            {"reason_code": code, "count": cnt}
+            for code, cnt in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
+    ta_exclude_reasons = _reason_counts(state["ta"])
+    ft_exclude_reasons = _reason_counts(state["ft"])
 
     return {
         "by_source": by_source,
@@ -682,9 +671,10 @@ async def get_prisma_exclusions(
 ) -> dict:
     """Papers behind one exclusion-reason row of the PRISMA diagram.
 
-    Same population as the prisma-stats reason counts: human decisions
-    (reviewer_id IS NOT NULL) for the given stage. Pass no_reason=true for
-    the "No reason recorded" row; otherwise reason_code selects the group.
+    Same population as the prisma-stats reason counts: each slot's CURRENT
+    human exclude decision for the given stage (resolve_screening_state) —
+    not every decision row ever written for it. Pass no_reason=true for the
+    "No reason recorded" row; otherwise reason_code selects the group.
     """
     from app.models.overlap_cluster_member import OverlapClusterMember
 
@@ -692,18 +682,18 @@ async def get_prisma_exclusions(
     if stage not in ("TA", "FT"):
         raise HTTPException(status_code=422, detail="stage must be TA or FT")
 
-    q = select(ScreeningDecision).where(
-        ScreeningDecision.project_id == project_id,
-        ScreeningDecision.stage == stage,
-        ScreeningDecision.decision == "exclude",
-        ScreeningDecision.reviewer_id.isnot(None),
-    )
-    if no_reason:
-        q = q.where(ScreeningDecision.reason_code.is_(None))
-    else:
-        q = q.where(ScreeningDecision.reason_code == reason_code)
+    state = await resolve_screening_state(db, project_id)
+    latest = state["ta"] if stage == "TA" else state["ft"]
 
-    decisions = (await db.execute(q.order_by(ScreeningDecision.created_at))).scalars().all()
+    def _matches(row: ScreeningDecision) -> bool:
+        if row.decision != "exclude" or row.reviewer_id is None:
+            return False
+        return row.reason_code is None if no_reason else row.reason_code == reason_code
+
+    decisions = sorted(
+        (row for row in latest.values() if _matches(row)),
+        key=lambda row: row.created_at,
+    )
 
     papers = []
     for d in decisions:

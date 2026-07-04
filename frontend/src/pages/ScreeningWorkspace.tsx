@@ -1858,8 +1858,13 @@ function ScreeningPanel({
       strategy?: string;
     }) => screeningApi.submitDecision(projectId, body),
     onSuccess: async () => {
-      // Re-fetch the browse item to reflect updated decisions
-      if (displayPos !== null && displayPos !== maxPos) {
+      // Re-fetch the browse item to reflect updated decisions. This mutation only
+      // fires while isBrowsingHistory is true (browseItem is a fetched slot, not
+      // the live item), so the refresh must run regardless of position — including
+      // at displayPos === maxPos, which is the last-decided item once the queue is
+      // exhausted, not the live item. Skipping it there left the UI showing the
+      // pre-edit decision after a successful save.
+      if (displayPos !== null) {
         setBrowseLoading(true);
         try {
           const res = await screeningApi.getQueueSlot(projectId, { source, stage: queueStage, position: displayPos });
@@ -2852,7 +2857,10 @@ function MixedPanel({
       strategy: string;
     }) => screeningApi.submitDecision(projectId, body),
     onSuccess: async () => {
-      if (displayPos !== null && displayPos !== maxPos) {
+      // See the matching comment in ScreeningPanel's browseDecideMutation: this
+      // must refetch regardless of position, including at displayPos === maxPos
+      // (the last-decided item once the queue is exhausted).
+      if (displayPos !== null) {
         setBrowseLoading(true);
         try {
           const res = await screeningApi.getQueueSlot(projectId, { source, stage: "mixed", position: displayPos });
