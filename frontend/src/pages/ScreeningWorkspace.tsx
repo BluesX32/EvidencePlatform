@@ -474,11 +474,17 @@ function AnnotationsPanel({
         return;
       }
       if (formMode !== null) return;
-      const sel = window.getSelection()?.toString().trim();
-      if (sel && sel.length > 2) {
-        setSelectedText(sel);
-        setFormMode("highlight");
-      }
+      const sel = window.getSelection();
+      const text = sel?.toString().trim();
+      if (!text || text.length <= 2) return;
+      // The floating PDF viewer has its own highlight-and-note flow — a
+      // selection made inside it (its text layer bubbles mouseup to the
+      // document like anything else) must not also pop this panel's box.
+      const anchor = sel!.anchorNode;
+      const anchorEl = anchor instanceof Element ? anchor : anchor?.parentElement;
+      if (anchorEl?.closest('[aria-label="PDF viewer panel"]')) return;
+      setSelectedText(text);
+      setFormMode("highlight");
     };
     document.addEventListener("mouseup", handler);
     return () => document.removeEventListener("mouseup", handler);

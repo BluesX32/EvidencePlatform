@@ -267,25 +267,37 @@ const SinglePageView = memo(function SinglePageView({
 
   return (
     <div style={{ position: "relative" }}>
-      {/* PDF rendered to canvas */}
+      {/* PDF rendered to canvas.
+          draggable=false + user-drag:none stop the browser from starting a
+          native "drag this image out" gesture when a mouse-drag begins over
+          the canvas — without this, dragging to select text can instead pick
+          up the canvas as a draggable image and pan/scroll the whole page,
+          which looks like the page itself is being dragged away. */}
       <canvas
         ref={pdfCanvasRef}
-        style={{ display: "block", width: "100%", height: "auto" }}
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
+        style={{ display: "block", width: "100%", height: "auto", WebkitUserDrag: "none" } as React.CSSProperties}
       />
       {/* Yellow/purple annotation highlights */}
       <canvas
         ref={hlCanvasRef}
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
         style={{
           position: "absolute",
           inset: 0,
           width: "100%",
           height: "100%",
           pointerEvents: "none",
-        }}
+          WebkitUserDrag: "none",
+        } as React.CSSProperties}
       />
       {/* Selectable transparent text layer */}
       <div
         ref={textLayerRef}
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
         style={{
           position: "absolute",
           top: 0,
@@ -293,13 +305,36 @@ const SinglePageView = memo(function SinglePageView({
           overflow: "hidden",
           transformOrigin: "0 0",
           userSelect: "text",
-        }}
+          WebkitUserDrag: "none",
+        } as React.CSSProperties}
+        onMouseDown={beginContainedSelection}
         onMouseUp={onMouseUp}
         onClick={onClick}
       />
     </div>
   );
 });
+
+// Contain a selection drag to the PDF text layers. The floating panel is
+// position:fixed but still an ordinary DOM descendant, so a selection anchored
+// in its text layer can extend into the page content beneath it; the browser
+// then auto-scrolls the DOCUMENT to follow the selection end — to the user,
+// dragging over the PDF "drags the whole page away". Making everything else
+// unselectable for the duration of the drag pins the selection (and any
+// auto-scroll) inside the panel. The text layers stay selectable because their
+// inline `user-select: text` overrides the inherited `none`.
+function beginContainedSelection() {
+  document.body.style.userSelect = "none";
+  document.body.style.webkitUserSelect = "none";
+  const restore = () => {
+    document.body.style.userSelect = "";
+    document.body.style.webkitUserSelect = "";
+    window.removeEventListener("mouseup", restore);
+    window.removeEventListener("blur", restore);
+  };
+  window.addEventListener("mouseup", restore);
+  window.addEventListener("blur", restore);
+}
 
 // ── PDFViewerPanel ────────────────────────────────────────────────────────────
 
@@ -357,7 +392,10 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
   function saveNote() {
     const comment = noteDraft.trim();
-    if (!comment) return;
+    // A highlight alone is a valid save — selecting a passage and saving with
+    // no comment just marks it, without forcing the reviewer to type something.
+    // Only the no-selection "quick note" path requires actual text.
+    if (!comment && !selectionInfo) return;
     createMut.mutate({ comment, sel: selectionInfo });
   }
 
@@ -740,6 +778,10 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
 
           {/* ── PDF canvas area ──────────────────────────────────────────────── */}
           <div
+            // Belt-and-suspenders: also swallow dragstart at the scroll
+            // container level, in case it ever bubbles up from a canvas
+            // before that element's own guard runs (see SinglePageView).
+            onDragStart={(e) => e.preventDefault()}
             style={{
               flex: 1,
               overflow: "auto",
@@ -831,7 +873,7 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                 autoFocus
                 value={noteDraft}
                 onChange={(e) => setNoteDraft(e.target.value)}
-                placeholder="Add a note about this passage… (⌘↵ to save)"
+                placeholder="Add a note (optional)… (⌘↵ to save highlight)"
                 rows={2}
                 style={{
                   width: "100%",
@@ -883,19 +925,21 @@ export function PDFViewerPanel({ projectId, item, onClose }: Props) {
                 </button>
                 <button
                   onClick={saveNote}
-                  disabled={!noteDraft.trim() || createMut.isPending}
+                  disabled={createMut.isPending}
+                  title={noteDraft.trim() ? "Save this passage with your note" : "Save this passage as a highlight — add a note anytime later"}
                   style={{
                     fontSize: "0.73rem",
                     fontWeight: 600,
                     padding: "0.22rem 0.75rem",
                     borderRadius: "0.25rem",
                     border: "none",
-                    background: noteDraft.trim() ? "#4f46e5" : "#e2e8f0",
-                    color: noteDraft.trim() ? "#fff" : "#94a3b8",
-                    cursor: noteDraft.trim() ? "pointer" : "default",
+                    background: "#4f46e5",
+                    color: "#fff",
+                    cursor: createMut.isPending ? "default" : "pointer",
+                    opacity: createMut.isPending ? 0.6 : 1,
                   }}
                 >
-                  {createMut.isPending ? "Saving…" : "Save note"}
+                  {createMut.isPending ? "Saving…" : noteDraft.trim() ? "Save note" : "Save highlight"}
                 </button>
               </div>
             </div>
