@@ -1332,7 +1332,7 @@ function ResultsPanel({ projectId, run, extractionTemplate }: {
             </span>
           </span>
         )}
-        {run.stopped_at_saturation && <span style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.82rem" }}>⬡ Stopped at saturation</span>}
+        {run.stopped_at_saturation && <span title="Experimental stopping rule — not validated as conceptual-sufficiency evidence" style={{ color: "#6366f1", fontWeight: 600, fontSize: "0.82rem" }}>⬡ Stopped at experimental no-new-concepts threshold</span>}
         <span style={{ marginLeft: "auto", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)} · {(run.input_tokens + run.output_tokens).toLocaleString()} tokens</span>
       </div>
 

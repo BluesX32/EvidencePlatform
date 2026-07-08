@@ -13,14 +13,18 @@ assumption migration 050's per-origin uniqueness intentionally breaks.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.concept_event import ConceptEvent
 from app.models.concept_extraction import ConceptExtraction
 from app.models.concept_mention import ConceptMention
 from app.models.screening_queue import ScreeningQueue
+
+GROUNDING_STATUSES = ("verified", "unverified", "unavailable")
 
 
 def _flatten_cells(extracted_json: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -108,12 +112,16 @@ async def sync_mentions_for_extraction(
         value_grounding = field_grounding.get(value) if isinstance(field_grounding, dict) else None
         source_quote = None
         locator = None
+        grounding_status = "unavailable"
         if isinstance(value_grounding, dict):
+            grounded = bool(value_grounding.get("grounded"))
             source_quote = value_grounding.get("quote")
-            locator = {
-                "grounded": bool(value_grounding.get("grounded")),
-                "document": value_grounding.get("document"),
-            }
+            locator = {"grounded": grounded, "document": value_grounding.get("document")}
+            # An unvalidated AI quote is discarded (source_quote stays None,
+            # set above), not stored as "unverified" — "unverified" is
+            # reserved for the human/import path, where a curator asserts a
+            # quote without automated substring validation.
+            grounding_status = "verified" if grounded else "unavailable"
         mention = ConceptMention(
             project_id=ce.project_id,
             concept_extraction_id=ce.id,
@@ -122,6 +130,7 @@ async def sync_mentions_for_extraction(
             value=value,
             source_quote=source_quote,
             locator=locator,
+            grounding_status=grounding_status,
             origin=ce.origin,
             reviewer_id=ce.reviewer_id,
             ai_job_id=ai_job_id,
@@ -155,3 +164,53 @@ async def effective_concept_extractions(
         if current is None or (current.origin != "human" and ce.origin == "human"):
             by_key[key] = ce
     return list(by_key.values())
+
+
+async def attach_grounding(
+    db: AsyncSession,
+    mention: ConceptMention,
+    *,
+    source_quote: Optional[str],
+    locator: Optional[Dict[str, Any]],
+    status: str,
+    actor_id: Optional[uuid.UUID],
+) -> None:
+    """Attach or correct passage grounding on one mention — the shared path
+    for both the manual grounding endpoint and the CSV import script.
+
+    status="unavailable" is a deliberate "checked, none found" result: it
+    clears any quote/locator rather than leaving stale data. "verified"/
+    "unverified" both require a quote — raises ValueError otherwise, so a
+    caller (HTTP endpoint or script) can decide how to surface the failure.
+    Writes one append-only ConceptEvent(action="ground") so a later
+    correction (e.g. unverified -> verified) stays reconstructable. Does not
+    commit — the caller's transaction does.
+    """
+    if status not in GROUNDING_STATUSES:
+        raise ValueError(f"Invalid grounding status: {status!r} (expected one of {GROUNDING_STATUSES})")
+    if status == "unavailable":
+        source_quote = None
+        locator = None
+    elif not source_quote:
+        raise ValueError(f"source_quote is required for grounding status {status!r}")
+
+    prior_state = {
+        "source_quote": mention.source_quote,
+        "locator": mention.locator,
+        "grounding_status": mention.grounding_status,
+    }
+    mention.source_quote = source_quote
+    mention.locator = locator
+    mention.grounding_status = status
+    mention.grounded_by = actor_id
+    mention.grounded_at = datetime.now(tz=timezone.utc)
+
+    db.add(ConceptEvent(
+        project_id=mention.project_id, action="ground", entity_type="mention",
+        mention_id=mention.id,
+        prior_state=prior_state,
+        resulting_state={
+            "source_quote": source_quote, "locator": locator, "grounding_status": status,
+        },
+        actor_id=actor_id,
+    ))

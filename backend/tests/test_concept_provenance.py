@@ -8,6 +8,7 @@ end-to-end provenance export.
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -32,15 +33,17 @@ from app.routers.concept_extraction import (
     upsert_concept_extraction,
 )
 from app.routers.concept_taxonomy import (
+    MentionGroundingRequest,
     MentionMapRequest,
     MergeRequest,
     NodeUpdate,
     map_mention,
     merge_nodes,
+    set_mention_grounding,
     unmap_mention,
     update_node,
 )
-from app.services.concept_mention_service import sync_mentions_for_extraction
+from app.services.concept_mention_service import attach_grounding, sync_mentions_for_extraction
 from app.services.concept_provenance_service import build_provenance_export
 from app.services.discovery_service import compute_discovery
 
@@ -328,6 +331,10 @@ async def test_provenance_export_round_trip(db):
         taxonomy_node_id=node.id, ontology_node_id=ontology_node.id,
         mapping_type="taxonomy_node_to_ontology", actor_id=user.id,
     ))
+    await attach_grounding(
+        db, mention, source_quote="severe fatigue", locator={"page": 3},
+        status="verified", actor_id=user.id,
+    )
     await db.commit()
 
     export = await build_provenance_export(db, project.id, record_id=record.id)
@@ -344,6 +351,10 @@ async def test_provenance_export_round_trip(db):
     assert len(item["mentions"]) == 1
     assert item["mentions"][0]["concept_extraction_id"] in ce_ids
     assert item["mentions"][0]["canonical_node_id"] == str(node.id)
+    assert item["mentions"][0]["grounding_status"] == "verified"
+    assert item["mentions"][0]["source_quote"] == "severe fatigue"
+    assert item["mentions"][0]["grounded_by"] == str(user.id)
+    assert item["mentions"][0]["grounded_at"] is not None
 
     assert len(item["canonical_mappings"]) == 1
     assert item["canonical_mappings"][0]["canonical_node_id"] == str(node.id)
@@ -528,4 +539,86 @@ async def test_discovery_does_not_merge_separate_corpus_queues(db):
     assert statuses[str(record2.id)] == "first"
     for it in result["items"]:
         assert it["concepts"][0]["sequence_known"] is True
+    await db.rollback()
+
+
+# ── Human passage grounding ──────────────────────────────────────────────────
+
+async def _seed_human_mention(db, user, project, value="Fatigue"):
+    record = await _seed_record(db, project)
+    ce = ConceptExtraction(project_id=project.id, record_id=record.id, reviewer_id=user.id, origin="human",
+                            extracted_json={"cells": {"f1": [value]}})
+    db.add(ce)
+    await db.flush()
+    await sync_mentions_for_extraction(db, ce, field_map=FIELD_MAP)
+    await db.commit()
+    return (await db.execute(
+        select(ConceptMention).where(ConceptMention.concept_extraction_id == ce.id)
+    )).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_grounding_endpoint_sets_status_actor_timestamp_and_event(db):
+    user, project = await _seed_project(db)
+    mention = await _seed_human_mention(db, user, project)
+    assert mention.grounding_status == "unavailable"
+
+    out = await set_mention_grounding(
+        project_id=project.id, mention_id=mention.id,
+        body=MentionGroundingRequest(source_quote="severe fatigue reported", status="verified"),
+        current_user=user, db=db,
+    )
+    assert out["grounding_status"] == "verified"
+    assert out["grounded_by"] == str(user.id)
+    assert out["grounded_at"] is not None
+
+    await db.refresh(mention)
+    assert mention.source_quote == "severe fatigue reported"
+    assert mention.grounding_status == "verified"
+    assert mention.grounded_by == user.id
+
+    events = (await db.execute(
+        select(ConceptEvent).where(ConceptEvent.action == "ground", ConceptEvent.mention_id == mention.id)
+    )).scalars().all()
+    assert len(events) == 1
+    assert events[0].resulting_state["grounding_status"] == "verified"
+    assert events[0].prior_state["grounding_status"] == "unavailable"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_grounding_unavailable_clears_existing_quote(db):
+    user, project = await _seed_project(db)
+    mention = await _seed_human_mention(db, user, project)
+
+    await attach_grounding(db, mention, source_quote="a quote", locator=None, status="unverified", actor_id=user.id)
+    await db.commit()
+    assert mention.source_quote == "a quote"
+
+    out = await set_mention_grounding(
+        project_id=project.id, mention_id=mention.id,
+        body=MentionGroundingRequest(status="unavailable"),
+        current_user=user, db=db,
+    )
+    assert out["source_quote"] is None
+    assert out["locator"] is None
+    assert out["grounding_status"] == "unavailable"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_grounding_verified_without_quote_rejected(db):
+    user, project = await _seed_project(db)
+    mention = await _seed_human_mention(db, user, project)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await set_mention_grounding(
+            project_id=project.id, mention_id=mention.id,
+            body=MentionGroundingRequest(status="verified"),
+            current_user=user, db=db,
+        )
+    assert excinfo.value.status_code == 422
+
+    with pytest.raises(ValueError):
+        await attach_grounding(db, mention, source_quote=None, locator=None, status="verified", actor_id=user.id)
     await db.rollback()

@@ -6,8 +6,9 @@ Endpoints:
   PATCH  /projects/{id}/concept-taxonomy/nodes/{nid}    → rename / reparent
   DELETE /projects/{id}/concept-taxonomy/nodes/{nid}    → delete node
   POST   /projects/{id}/concept-taxonomy/merge          → merge nodes into one
-  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/map   → map one mention to a node
-  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/unmap → clear a mention's mapping
+  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/map       → map one mention to a node
+  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/unmap     → clear a mention's mapping
+  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/grounding → attach/correct passage grounding
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from app.models.concept_event import ConceptEvent
 from app.models.concept_mention import ConceptMention
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 from app.models.user import User
+from app.services.concept_mention_service import attach_grounding
 
 router = APIRouter(
     prefix="/projects/{project_id}/concept-taxonomy",
@@ -58,6 +60,12 @@ class MergeRequest(BaseModel):
 
 class MentionMapRequest(BaseModel):
     node_id: str
+
+
+class MentionGroundingRequest(BaseModel):
+    source_quote: Optional[str] = None
+    locator: Optional[Dict[str, Any]] = None  # {page, section, char_start, char_end}
+    status: str  # "verified" | "unverified" | "unavailable"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -492,3 +500,51 @@ async def unmap_mention(
     ))
     await db.commit()
     return {"mention_id": str(mention.id), "canonical_node_id": None}
+
+
+@router.post("/mentions/{mention_id}/grounding")
+async def set_mention_grounding(
+    project_id: uuid.UUID,
+    mention_id: uuid.UUID,
+    body: MentionGroundingRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Attach or correct one mention's passage grounding.
+
+    Human-authored concept mentions (including the disease-severity case
+    study's historical extractions) are article-linked but weren't originally
+    captured with a supporting quotation. This — and the structured CSV
+    workflow in backend/scripts/{export_grounding_template,import_concept_grounding}.py
+    — let a curator attach one after the fact, with a tri-state status,
+    actor, and timestamp recorded on the mention and in the concept_events
+    ledger (action="ground").
+    """
+    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+
+    mention = (await db.execute(
+        select(ConceptMention).where(
+            ConceptMention.id == mention_id, ConceptMention.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if mention is None:
+        raise HTTPException(404, "Mention not found")
+
+    try:
+        await attach_grounding(
+            db, mention,
+            source_quote=body.source_quote, locator=body.locator, status=body.status,
+            actor_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+    await db.commit()
+    return {
+        "mention_id": str(mention.id),
+        "source_quote": mention.source_quote,
+        "locator": mention.locator,
+        "grounding_status": mention.grounding_status,
+        "grounded_by": str(mention.grounded_by) if mention.grounded_by else None,
+        "grounded_at": mention.grounded_at.isoformat() if mention.grounded_at else None,
+    }

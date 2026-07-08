@@ -61,6 +61,16 @@ class ConceptMention(Base):
         UUID(as_uuid=True), ForeignKey("screening_queues.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
+    # Curation status for source_quote/locator (migration 052): 'verified'
+    # (quote confirmed — substring-validated for AI, curator-asserted for
+    # human) | 'unverified' (a quote exists but wasn't automatically
+    # validated) | 'unavailable' (no supporting quote attached/found; the
+    # default for every mention until curated).
+    grounding_status: Mapped[str] = mapped_column(String(12), nullable=False, server_default="unavailable")
+    grounded_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    grounded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -68,4 +78,8 @@ class ConceptMention(Base):
 
     __table_args__ = (
         CheckConstraint("origin IN ('human', 'ai')", name="chk_cm_origin"),
+        CheckConstraint(
+            "grounding_status IN ('verified', 'unverified', 'unavailable')",
+            name="chk_cm_grounding_status",
+        ),
     )
