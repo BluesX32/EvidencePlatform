@@ -10,10 +10,15 @@ GET  /projects/{id}/auto-extract-all/status  → poll batch extraction progress
 POST /projects/{id}/auto-concepts-all        → batch concept extraction (background)
 GET  /projects/{id}/auto-concepts-all/status → poll batch concept progress
 POST /projects/{id}/ai-suggest-themes        → suggest themes from extracted data
-POST /projects/{id}/ai-resolve-all           → bulk AI conflict resolution
+POST /projects/{id}/ai-resolve-all           → batch conflict resolution (background task)
+GET  /projects/{id}/ai-resolve-all/status    → poll batch conflict-resolution progress
+GET  /projects/{id}/ai-jobs                  → batch job history
+POST /projects/{id}/ai-jobs/{job_id}/stop    → request an in-progress job to stop
+GET  /projects/{id}/ai-jobs/{job_id}/results → what a specific job produced
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,6 +36,7 @@ from app.database import get_db, SessionLocal
 from app.dependencies import get_current_user, require_project_role, ADMIN_ROLE, REVIEWER_ROLE
 from app.models.ai_job import AiJob
 from app.models.concept_extraction import ConceptExtraction
+from app.models.consensus_decision import ConsensusDecision
 from app.models.source import Source
 from app.models.extraction_record import ExtractionRecord
 from app.models.llm_screening import LlmScreeningRun
@@ -62,6 +68,14 @@ router = APIRouter(prefix="/projects", tags=["ai-pilot"])
 # (e.g. server restart killed the background task) and must not block new runs.
 _STALE_JOB_SECONDS = 300
 
+# In-memory mirrors of ai_jobs.stop_requested / the background task handle, for
+# immediate effect within this process (same pattern as llm_screening_service's
+# _CANCEL_REQUESTS). The persisted `stop_requested` column is the source of
+# truth across restarts; these sets just avoid a DB round-trip on every
+# per-item loop iteration and let single-call jobs be cancelled outright.
+_STOP_REQUESTS: set[uuid.UUID] = set()
+_RUNNING_TASKS: Dict[uuid.UUID, asyncio.Task] = {}
+
 
 def _job_payload(job: Optional[AiJob]) -> Dict[str, Any]:
     if job is None:
@@ -78,6 +92,8 @@ def _job_payload(job: Optional[AiJob]) -> Dict[str, Any]:
         "triggered_by": str(job.triggered_by) if job.triggered_by else None,
         "created_at": job.created_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "stop_requested": job.stop_requested,
+        "result": job.result_json,
     }
 
 
@@ -130,6 +146,120 @@ async def _update_job(job_id: uuid.UUID, **values: Any) -> None:
         await session.commit()
 
 
+async def _resolve_record_for_item(
+    db: AsyncSession, record_id: Optional[uuid.UUID], cluster_id: Optional[uuid.UUID],
+) -> Optional[Record]:
+    """One representative Record for a screening slot (a direct record, or
+    any member record of an overlap cluster) — shared by the extraction,
+    concepts, and results-listing paths."""
+    if record_id:
+        return (await db.execute(select(Record).where(Record.id == record_id))).scalar_one_or_none()
+    return (await db.execute(
+        select(Record)
+        .join(RecordSource, RecordSource.record_id == Record.id)
+        .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+        .where(OverlapClusterMember.cluster_id == cluster_id)
+        .limit(1)
+    )).scalar_one_or_none()
+
+
+def _stop_flag_set(job_id: uuid.UUID) -> bool:
+    return job_id in _STOP_REQUESTS
+
+
+async def _finish_job(job_id: uuid.UUID, *, done_status: str = "done", **extra: Any) -> None:
+    """Resolve a job's terminal status, clear the in-memory stop bookkeeping,
+    and write the final row. done_status is used unless a stop was requested,
+    in which case status="stopped" regardless of how far the loop got."""
+    status = "stopped" if job_id in _STOP_REQUESTS else done_status
+    await _update_job(job_id, status=status, completed_at=func.now(), **extra)
+    _STOP_REQUESTS.discard(job_id)
+    _RUNNING_TASKS.pop(job_id, None)
+
+
+@router.post("/{project_id}/ai-jobs/{job_id}/stop")
+async def stop_ai_job(
+    project_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Request an in-progress AI Pilot job to stop.
+
+    Loop-based jobs (extract/concepts/resolve_conflicts) check this flag
+    between items and stop before starting the next one — in-flight work
+    finishes. Single-call jobs (suggest_themes/draft_setup) are cancelled
+    outright via their tracked asyncio.Task, since there's no per-item
+    boundary to stop at. Either way, re-running the same action afterward
+    picks up any remaining work rather than starting over.
+    """
+    await require_project_role(db, project_id, user.id, allowed=ADMIN_ROLE)
+    job = (await db.execute(
+        select(AiJob).where(AiJob.id == job_id, AiJob.project_id == project_id)
+    )).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if job.status != "running":
+        raise HTTPException(400, f"Job is not running (status={job.status})")
+
+    job.stop_requested = True
+    await db.commit()
+    _STOP_REQUESTS.add(job_id)
+    task = _RUNNING_TASKS.get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+    return {"status": "stopping"}
+
+
+@router.get("/{project_id}/ai-jobs/{job_id}/results")
+async def get_ai_job_results(
+    project_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """What one specific AI Pilot job produced — always available regardless
+    of whether the job is still running, stopped, done, or failed."""
+    await require_project_role(db, project_id, user.id, allowed=REVIEWER_ROLE)
+    job = (await db.execute(
+        select(AiJob).where(AiJob.id == job_id, AiJob.project_id == project_id)
+    )).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    if job.job_type in ("suggest_themes", "draft_setup"):
+        return {"job": _job_payload(job), "items": None}
+
+    if job.job_type == "extract":
+        model_cls, extra = ExtractionRecord, None
+    elif job.job_type == "concepts":
+        model_cls, extra = ConceptExtraction, None
+    elif job.job_type == "resolve_conflicts":
+        model_cls, extra = ConsensusDecision, ("stage", "decision", "notes")
+    else:
+        return {"job": _job_payload(job), "items": []}
+
+    rows = (await db.execute(
+        select(model_cls).where(model_cls.ai_job_id == job_id).order_by(model_cls.created_at)
+    )).scalars().all()
+
+    items = []
+    for row in rows:
+        record = await _resolve_record_for_item(db, row.record_id, row.cluster_id)
+        item: Dict[str, Any] = {
+            "record_id": str(row.record_id) if row.record_id else None,
+            "cluster_id": str(row.cluster_id) if row.cluster_id else None,
+            "title": record.title if record else None,
+            "created_at": row.created_at.isoformat(),
+        }
+        if extra:
+            for field in extra:
+                item[field] = getattr(row, field)
+        items.append(item)
+
+    return {"job": _job_payload(job), "items": items}
+
+
 # ---------------------------------------------------------------------------
 # LLM call helper — thin wrapper over the central gateway (app.services.llm_client)
 # ---------------------------------------------------------------------------
@@ -176,6 +306,24 @@ async def _llm_call(
     except ValueError as exc:  # no usable API key for this model
         raise HTTPException(400, str(exc))
     return result
+
+
+async def _record_oneshot_job(
+    db: AsyncSession, project_id: uuid.UUID, job_type: str, model: str, user_id: uuid.UUID,
+    *, status: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None,
+) -> None:
+    """Persist a one-shot AI action (draft_setup, suggest_themes) as an AiJob
+    row so its result stays visible via "View AI Results" after the request
+    completes. These are single LLM calls, not loops — there's no per-item
+    boundary to stop at, so unlike the batch jobs above this is a history
+    record only, not a stoppable/resumable run."""
+    db.add(AiJob(
+        project_id=project_id, job_type=job_type, status=status, model=model,
+        triggered_by=user_id, total=1, done=1 if status == "done" else 0,
+        errors=0 if status == "done" else 1, error_message=error, result_json=result,
+        completed_at=func.now(),
+    ))
+    await db.commit()
 
 
 def _parse_json_response(text: str) -> Any:
@@ -302,6 +450,7 @@ async def get_pilot_status(
 
     # ── Conflicts ─────────────────────────────────────────────────────────────
     conflicts = await detect_conflicts(db, pid, only_unresolved=True)
+    resolve_job = await _current_job_payload(db, pid, "resolve_conflicts")
 
     return {
         "setup": {
@@ -335,6 +484,7 @@ async def get_pilot_status(
         },
         "conflicts": {
             "unresolved_count": len(conflicts),
+            "batch_job": resolve_job,
         },
     }
 
@@ -402,10 +552,16 @@ The concept_template field ids must be unique strings like f1, f2, etc.
         )
         result = _parse_json_response(raw.text)
     except json.JSONDecodeError:
+        await _record_oneshot_job(db, project_id, "draft_setup", body.model, user.id,
+                                   status="failed", error="AI returned invalid JSON")
         raise HTTPException(502, "AI returned invalid JSON — please retry")
     except Exception as exc:
+        await _record_oneshot_job(db, project_id, "draft_setup", body.model, user.id,
+                                   status="failed", error=str(exc))
         raise HTTPException(502, f"LLM call failed: {exc}")
 
+    await _record_oneshot_job(db, project_id, "draft_setup", body.model, user.id,
+                               status="done", result=result)
     return result
 
 
@@ -493,20 +649,10 @@ async def start_bulk_extraction(
                 await _update_job(job_id, total=len(targets))
 
                 for rec_id, cl_id in targets:
+                    if _stop_flag_set(job_id):
+                        break
                     try:
-                        record: Optional[Record] = None
-                        if rec_id:
-                            record = (await db2.execute(
-                                select(Record).where(Record.id == rec_id)
-                            )).scalar_one_or_none()
-                        else:
-                            record = (await db2.execute(
-                                select(Record)
-                                .join(RecordSource, RecordSource.record_id == Record.id)
-                                .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
-                                .where(OverlapClusterMember.cluster_id == cl_id)
-                                .limit(1)
-                            )).scalar_one_or_none()
+                        record = await _resolve_record_for_item(db2, rec_id, cl_id)
 
                         if not record:
                             done += 1
@@ -530,6 +676,7 @@ async def start_bulk_extraction(
                                 extracted_json={"table": result},
                                 reviewer_id=user_id,
                                 origin="ai",
+                                ai_job_id=job_id,
                             )
                             db2.add(er)
                             await db2.flush()
@@ -541,12 +688,13 @@ async def start_bulk_extraction(
                     await _update_job(job_id, done=done, errors=errors)
 
                 await db2.commit()
-                await _update_job(job_id, status="done", completed_at=func.now())
+                await _finish_job(job_id)
         except Exception as exc:
             logger.exception("bulk extraction failed for project %s", project_id)
             await _update_job(
                 job_id, status="failed", error_message=str(exc), completed_at=func.now()
             )
+            _STOP_REQUESTS.discard(job_id)
 
     background_tasks.add_task(_run)
     return _job_payload(job)
@@ -646,18 +794,10 @@ async def start_bulk_concepts(
                 await _update_job(job_id, total=len(targets))
 
                 for rec_id, cl_id in targets:
+                    if _stop_flag_set(job_id):
+                        break
                     try:
-                        record: Optional[Record] = None
-                        if rec_id:
-                            record = (await db2.execute(select(Record).where(Record.id == rec_id))).scalar_one_or_none()
-                        else:
-                            record = (await db2.execute(
-                                select(Record)
-                                .join(RecordSource, RecordSource.record_id == Record.id)
-                                .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
-                                .where(OverlapClusterMember.cluster_id == cl_id)
-                                .limit(1)
-                            )).scalar_one_or_none()
+                        record = await _resolve_record_for_item(db2, rec_id, cl_id)
 
                         if not record:
                             done += 1
@@ -727,6 +867,7 @@ async def start_bulk_concepts(
                                 extracted_json={"cells": cells, "grounding": grounding},
                                 reviewer_id=user_id,
                                 origin="ai",
+                                ai_job_id=job_id,
                             )
                             db2.add(ce)
                             await db2.flush()
@@ -742,12 +883,13 @@ async def start_bulk_concepts(
                     await _update_job(job_id, done=done, errors=errors)
 
                 await db2.commit()
-                await _update_job(job_id, status="done", completed_at=func.now())
+                await _finish_job(job_id)
         except Exception as exc:
             logger.exception("bulk concepts failed for project %s", project_id)
             await _update_job(
                 job_id, status="failed", error_message=str(exc), completed_at=func.now()
             )
+            _STOP_REQUESTS.discard(job_id)
 
     background_tasks.add_task(_run)
     return _job_payload(job)
@@ -859,10 +1001,16 @@ Return only valid JSON, no markdown fences."""
         )
         result = _parse_json_response(raw.text)
     except json.JSONDecodeError:
+        await _record_oneshot_job(db, project_id, "suggest_themes", body.model, user.id,
+                                   status="failed", error="AI returned invalid JSON")
         raise HTTPException(502, "AI returned invalid JSON — please retry")
     except Exception as exc:
+        await _record_oneshot_job(db, project_id, "suggest_themes", body.model, user.id,
+                                   status="failed", error=str(exc))
         raise HTTPException(502, f"LLM call failed: {exc}")
 
+    await _record_oneshot_job(db, project_id, "suggest_themes", body.model, user.id,
+                               status="done", result=result)
     return result
 
 
@@ -879,70 +1027,111 @@ class ResolveAllRequest(BaseModel):
 async def ai_resolve_all(
     project_id: uuid.UUID,
     body: ResolveAllRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """For every unresolved conflict, ask the AI for a resolution and apply it."""
+    """Start a background task that asks the AI to resolve every unresolved
+    conflict and applies each resolution. Same job-tracked pattern as bulk
+    extraction/concepts: stoppable mid-run, and re-running afterward only
+    considers conflicts still unresolved."""
     await require_project_role(db, project_id, user.id, allowed=ADMIN_ROLE)
     anthropic_key = _resolve_anthropic_key(user)
     openrouter_key = _resolve_openrouter_key(user)
     if not anthropic_key and not openrouter_key:
         raise HTTPException(400, "No API key configured")
 
-    conflicts = await detect_conflicts(db, project_id, stage=body.stage, only_unresolved=True)
-    if not conflicts:
-        return {"resolved": 0, "message": "No unresolved conflicts found"}
+    existing = await _latest_job(db, project_id, "resolve_conflicts")
+    if await _reap_if_stale(db, existing):
+        return _job_payload(existing)
 
-    resolved = 0
-    failed = 0
+    job = AiJob(
+        project_id=project_id, job_type="resolve_conflicts",
+        status="running", model=body.model, triggered_by=user.id,
+    )
+    db.add(job)
+    await db.commit()
+    job_id = job.id
 
+    user_id = user.id
+    stage = body.stage
     system = "You are an expert systematic reviewer. Given two reviewers' screening decisions and notes, suggest the correct resolution. Return a JSON object with exactly two keys: 'decision' (either 'include' or 'exclude') and 'rationale' (one sentence). Return only valid JSON."
 
-    for conflict in conflicts:
+    async def _run() -> None:
+        set_llm_log_context(LlmLogContext(
+            feature="ai_pilot.resolve_conflicts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
+        ))
+        done = 0
+        errors = 0
         try:
-            decisions_text = "\n".join(
-                f"Reviewer {i+1}: {d['decision']}" + (f" — {d['notes']}" if d.get("notes") else "")
-                for i, d in enumerate(conflict["decisions"])
+            async with SessionLocal() as db2:
+                conflicts = await detect_conflicts(db2, project_id, stage=stage, only_unresolved=True)
+                await _update_job(job_id, total=len(conflicts))
+
+                for conflict in conflicts:
+                    if _stop_flag_set(job_id):
+                        break
+                    try:
+                        decisions_text = "\n".join(
+                            f"Reviewer {i+1}: {d['decision']}" + (f" — {d['notes']}" if d.get("notes") else "")
+                            for i, d in enumerate(conflict["decisions"])
+                        )
+                        prompt = (
+                            f"Stage: {conflict['stage']}\nReviewer decisions:\n{decisions_text}\n\n"
+                            "Should this paper be included or excluded? Return JSON with 'decision' and 'rationale'."
+                        )
+
+                        raw = await _llm_call(
+                            anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=200,
+                            feature="ai_pilot.resolve_conflicts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
+                        )
+                        parsed = _parse_json_response(raw.text)
+                        decision = parsed.get("decision", "").lower()
+                        rationale = parsed.get("rationale", "AI-assisted resolution")
+
+                        if decision not in ("include", "exclude"):
+                            errors += 1
+                        else:
+                            record_id = uuid.UUID(conflict["record_id"]) if conflict.get("record_id") else None
+                            cluster_id = uuid.UUID(conflict["cluster_id"]) if conflict.get("cluster_id") else None
+
+                            cd = await adjudicate(
+                                db=db2,
+                                project_id=project_id,
+                                record_id=record_id,
+                                cluster_id=cluster_id,
+                                stage=conflict["stage"],
+                                decision=decision,
+                                adjudicator_id=user_id,
+                                notes=f"[AI] {rationale}",
+                                origin="ai",
+                            )
+                            cd.ai_job_id = job_id
+                    except Exception as e:
+                        logger.warning("ai-resolve-all conflict error: %s", e)
+                        errors += 1
+
+                    done += 1
+                    await _update_job(job_id, done=done, errors=errors)
+
+                await db2.commit()
+                await _finish_job(job_id)
+        except Exception as exc:
+            logger.exception("ai-resolve-all failed for project %s", project_id)
+            await _update_job(
+                job_id, status="failed", error_message=str(exc), completed_at=func.now()
             )
-            prompt = (
-                f"Stage: {conflict['stage']}\nReviewer decisions:\n{decisions_text}\n\n"
-                "Should this paper be included or excluded? Return JSON with 'decision' and 'rationale'."
-            )
+            _STOP_REQUESTS.discard(job_id)
 
-            raw = await _llm_call(
-                anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=200,
-                feature="ai_pilot.resolve_conflicts", project_id=project_id, user_id=user.id,
-            )
-            parsed = _parse_json_response(raw.text)
-            decision = parsed.get("decision", "").lower()
-            rationale = parsed.get("rationale", "AI-assisted resolution")
+    background_tasks.add_task(_run)
+    return _job_payload(job)
 
-            if decision not in ("include", "exclude"):
-                failed += 1
-                continue
 
-            record_id = uuid.UUID(conflict["record_id"]) if conflict.get("record_id") else None
-            cluster_id = uuid.UUID(conflict["cluster_id"]) if conflict.get("cluster_id") else None
-
-            await adjudicate(
-                db=db,
-                project_id=project_id,
-                record_id=record_id,
-                cluster_id=cluster_id,
-                stage=conflict["stage"],
-                decision=decision,
-                adjudicator_id=user.id,
-                notes=f"[AI] {rationale}",
-                origin="ai",
-            )
-            resolved += 1
-        except Exception as e:
-            logger.warning("ai-resolve-all conflict error: %s", e)
-            failed += 1
-
-    await db.commit()
-    return {
-        "resolved": resolved,
-        "failed": failed,
-        "message": f"AI resolved {resolved} conflict{'s' if resolved != 1 else ''}. Review them in the Consensus page.",
-    }
+@router.get("/{project_id}/ai-resolve-all/status")
+async def ai_resolve_all_status(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    await require_project_role(db, project_id, user.id, allowed=REVIEWER_ROLE)
+    return await _current_job_payload(db, project_id, "resolve_conflicts")

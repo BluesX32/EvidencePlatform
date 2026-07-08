@@ -42,6 +42,10 @@ class ConsensusDecision(Base):
     origin: Mapped[str] = mapped_column(
         String(12), nullable=False, server_default="human"
     )
+    # Which AI Pilot batch job produced this row, when applicable (migration 053).
+    ai_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_jobs.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

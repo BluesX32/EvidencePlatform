@@ -7,8 +7,17 @@ import {
   Layers, MessageSquare, BarChart3, ChevronRight,
   Sparkles, RefreshCw,
 } from "lucide-react";
-import { aiPilotApi } from "../api/client";
+import { aiPilotApi, type AiBatchJob } from "../api/client";
 import { AiBadge } from "../components/AiProvenance";
+import { StopJobButton, ViewResultsButton } from "../components/AiJobControls";
+
+/** "Extract All with AI" / "Resume Extraction" (stopped with remaining work) /
+ * "Running…" — one label rule shared by extract, concepts, and resolve-conflicts. */
+function batchActionLabel(job: AiBatchJob, hasRemainingWork: boolean, startLabel: string): string {
+  if (job.status === "running") return "Running…";
+  if (job.status === "stopped" && hasRemainingWork) return `Resume — ${startLabel}`;
+  return startLabel;
+}
 
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4-5", label: "Claude Haiku (fast, via OpenRouter)" },
@@ -151,7 +160,8 @@ export default function AIPilotPage() {
       const anyRunning =
         d.screening.llm_run?.status === "running" ||
         d.extraction.batch_job.status === "running" ||
-        d.concepts.batch_job.status === "running";
+        d.concepts.batch_job.status === "running" ||
+        d.conflicts.batch_job.status === "running";
       return anyRunning ? 3000 : false;
     },
   });
@@ -168,10 +178,10 @@ export default function AIPilotPage() {
     onSuccess: () => { refetch(); },
   });
 
-  // ── Resolve all conflicts ─────────────────────────────────────────────────
+  // ── Resolve all conflicts (background job, like extraction/concepts) ────────
   const resolveAll = useMutation({
     mutationFn: () => aiPilotApi.resolveAll(projectId!, { model }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["ai-pilot-status", projectId] }); },
+    onSuccess: () => { refetch(); },
   });
 
   if (isLoading || !status) {
@@ -187,6 +197,7 @@ export default function AIPilotPage() {
   const s = status;
   const extractJob = s.extraction.batch_job;
   const conceptsJob = s.concepts.batch_job;
+  const resolveJob = s.conflicts.batch_job;
 
   // Derive stage statuses
   const setupStatus: StageStatus =
@@ -217,7 +228,7 @@ export default function AIPilotPage() {
     s.thematic.theme_count > 0 ? "done" : "idle";
 
   const conflictStatus: StageStatus =
-    resolveAll.isPending ? "running"
+    resolveAll.isPending || resolveJob.status === "running" ? "running"
     : s.conflicts.unresolved_count === 0 ? "done"
     : "review";
 
@@ -251,11 +262,6 @@ export default function AIPilotPage() {
       </header>
 
       {/* Resolve-all feedback */}
-      {resolveAll.isSuccess && resolveAll.data && (
-        <div className="card" style={{ padding: "0.75rem 1rem", marginBottom: "1rem", background: "#f0fdf4", borderColor: "#bbf7d0" }}>
-          <span style={{ color: "#16a34a", fontSize: "0.85rem", fontWeight: 600 }}>{resolveAll.data.data.message}</span>
-        </div>
-      )}
       {resolveAll.isError && (
         <div className="card" style={{ padding: "0.75rem 1rem", marginBottom: "1rem", background: "#fff5f5", borderColor: "#fca5a5" }}>
           <span style={{ color: "#c5221f", fontSize: "0.85rem" }}>Conflict resolution failed. Check API key and retry.</span>
@@ -362,14 +368,20 @@ export default function AIPilotPage() {
           progress={extractJob.status === "running" && extractJob.total ? { done: extractJob.done ?? 0, total: extractJob.total } : undefined}
           reviewPath={`/projects/${projectId}/extractions`}
           action={
-            s.setup.has_extraction_template && s.extraction.ft_included_count > 0 ? (
-              <AiButton
-                label={extractJob.status === "running" ? "Running…" : "Extract All with AI"}
-                loading={extractJob.status === "running"}
-                disabled={extractJob.status === "running"}
-                onClick={() => extractAll.mutate()}
-              />
-            ) : undefined
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              {s.setup.has_extraction_template && s.extraction.ft_included_count > 0 && (
+                <AiButton
+                  label={batchActionLabel(extractJob, s.extraction.extracted_count < s.extraction.ft_included_count, "Extract All with AI")}
+                  loading={extractJob.status === "running"}
+                  disabled={extractJob.status === "running"}
+                  onClick={() => extractAll.mutate()}
+                />
+              )}
+              {extractJob.status === "running" && extractJob.job_id && (
+                <StopJobButton projectId={projectId!} jobId={extractJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
+              )}
+              <ViewResultsButton projectId={projectId!} jobId={extractJob.job_id} />
+            </div>
           }
         />
 
@@ -389,14 +401,20 @@ export default function AIPilotPage() {
           progress={conceptsJob.status === "running" && conceptsJob.total ? { done: conceptsJob.done ?? 0, total: conceptsJob.total } : undefined}
           reviewPath={`/projects/${projectId}/concept-taxonomy`}
           action={
-            s.setup.has_concept_template && s.extraction.ft_included_count > 0 ? (
-              <AiButton
-                label={conceptsJob.status === "running" ? "Running…" : "Extract All with AI"}
-                loading={conceptsJob.status === "running"}
-                disabled={conceptsJob.status === "running"}
-                onClick={() => conceptsAll.mutate()}
-              />
-            ) : undefined
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              {s.setup.has_concept_template && s.extraction.ft_included_count > 0 && (
+                <AiButton
+                  label={batchActionLabel(conceptsJob, s.concepts.concept_count < s.extraction.ft_included_count, "Extract All with AI")}
+                  loading={conceptsJob.status === "running"}
+                  disabled={conceptsJob.status === "running"}
+                  onClick={() => conceptsAll.mutate()}
+                />
+              )}
+              {conceptsJob.status === "running" && conceptsJob.job_id && (
+                <StopJobButton projectId={projectId!} jobId={conceptsJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
+              )}
+              <ViewResultsButton projectId={projectId!} jobId={conceptsJob.job_id} />
+            </div>
           }
         />
 
@@ -427,20 +445,30 @@ export default function AIPilotPage() {
           icon={<MessageSquare size={16} />}
           title="Conflict resolution"
           subtitle={
-            s.conflicts.unresolved_count > 0
+            resolveJob.status === "running"
+              ? `Resolving… ${resolveJob.done ?? 0} / ${resolveJob.total ?? "?"}`
+              : s.conflicts.unresolved_count > 0
               ? `${s.conflicts.unresolved_count} unresolved conflict${s.conflicts.unresolved_count !== 1 ? "s" : ""}`
               : "No unresolved conflicts"
           }
           status={conflictStatus}
+          progress={resolveJob.status === "running" && resolveJob.total ? { done: resolveJob.done ?? 0, total: resolveJob.total } : undefined}
           reviewPath={`/projects/${projectId}/consensus`}
           action={
-            s.conflicts.unresolved_count > 0 ? (
-              <AiButton
-                label={resolveAll.isPending ? "Resolving…" : "Resolve All with AI"}
-                loading={resolveAll.isPending}
-                onClick={() => resolveAll.mutate()}
-              />
-            ) : undefined
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              {s.conflicts.unresolved_count > 0 && (
+                <AiButton
+                  label={batchActionLabel(resolveJob, s.conflicts.unresolved_count > 0, "Resolve All with AI")}
+                  loading={resolveAll.isPending || resolveJob.status === "running"}
+                  disabled={resolveAll.isPending || resolveJob.status === "running"}
+                  onClick={() => resolveAll.mutate()}
+                />
+              )}
+              {resolveJob.status === "running" && resolveJob.job_id && (
+                <StopJobButton projectId={projectId!} jobId={resolveJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
+              )}
+              <ViewResultsButton projectId={projectId!} jobId={resolveJob.job_id} />
+            </div>
           }
         />
 

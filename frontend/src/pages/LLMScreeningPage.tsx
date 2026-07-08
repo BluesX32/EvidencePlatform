@@ -29,6 +29,7 @@ import {
   Plus,
   Trash2,
   RotateCcw,
+  Eye,
 } from "lucide-react";
 import {
   projectsApi,
@@ -2480,7 +2481,7 @@ function PipelineEditor({
 
 // ── Run History Table ─────────────────────────────────────────────────────────
 
-function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, onDelete, onFork }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void; onCancel: (runId: string) => void; onDelete: (runId: string) => void; onFork: (run: LlmRunResponse) => void }) {
+function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, onDelete, onFork, onViewResults }: { runs: LlmRunResponse[]; selectedRunId: string | null; onSelect: (run: LlmRunResponse | null) => void; onResume: (runId: string) => void; onCancel: (runId: string) => void; onDelete: (runId: string) => void; onFork: (run: LlmRunResponse) => void; onViewResults: (run: LlmRunResponse) => void }) {
   if (runs.length === 0) return <p className="muted">No runs yet. Launch your first LLM run above.</p>;
 
   return (
@@ -2564,6 +2565,17 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, on
                 </td>
                 <td style={{ padding: "0.55rem 0.75rem", textAlign: "right", fontSize: "0.82rem", color: "#5f6368" }}>{fmtCost(run.actual_cost_usd ?? run.estimated_cost_usd)}</td>
                 <td style={{ padding: "0.55rem 0.5rem", textAlign: "center", whiteSpace: "nowrap" }}>
+                  {run.processed_records > 0 && (
+                    <button
+                      title="View AI Results"
+                      onClick={(e) => { e.stopPropagation(); onViewResults(run); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#5f6368", padding: "0.2rem", borderRadius: "0.25rem", lineHeight: 1, display: "inline-flex", alignItems: "center", marginRight: "0.2rem" }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#1a73e8"; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "#5f6368"; }}
+                    >
+                      <Eye size={14} />
+                    </button>
+                  )}
                   {isEffectivelyCompleted(run) && run.processed_records > 0 && (
                     <button
                       title="Fork as Sub-Project"
@@ -3040,7 +3052,7 @@ export default function LLMScreeningPage() {
                   <RefreshCw size={12} /> Refresh
                 </button>
               </div>
-              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} onCancel={handleCancel} onDelete={handleDelete} onFork={setForkRun} />
+              <RunHistoryTable runs={displayRuns} selectedRunId={selectedRun?.id ?? null} onSelect={setSelectedRun} onResume={handleResume} onCancel={handleCancel} onDelete={handleDelete} onFork={setForkRun} onViewResults={(run) => { setSelectedRun(run); setActiveTab("results"); }} />
             </section>
             {forkRun && projectId && (
               <SubprojectModal projectId={projectId} run={forkRun} onClose={() => setForkRun(null)} />

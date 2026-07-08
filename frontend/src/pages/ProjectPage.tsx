@@ -20,6 +20,7 @@ import StartScreeningModal from "../components/StartScreeningModal";
 import LabelManager from "../components/LabelManager";
 import { useToast } from "../components/Feedback";
 import CreateSubProjectModal from "../components/CreateSubProjectModal";
+import { ViewResultsButton } from "../components/AiJobControls";
 
 // ---------------------------------------------------------------------------
 // Safe UUID generator — genId() requires HTTPS (secure context).
@@ -643,6 +644,15 @@ export default function ProjectPage() {
     onError: () => toast("AI draft failed — check API key.", "error"),
   });
 
+  // Draft Setup is a single LLM call (not a batch loop), so there's no
+  // stop/resume — just a persisted history record so the last draft stays
+  // viewable via "View AI Results" after this panel is closed.
+  const { data: lastDraftJob } = useQuery({
+    queryKey: ["ai-jobs", id, "draft_setup"],
+    queryFn: () => aiPilotApi.listJobs(id!, "draft_setup").then(r => r.data.jobs[0] ?? null),
+    enabled: !!id,
+  });
+
   const templateMutation = useMutation({
     mutationFn: (rows: ExtractionTemplateRow[]) =>
       projectsApi.updateExtractionTemplate(id!, rows),
@@ -1102,6 +1112,7 @@ export default function ProjectPage() {
                   onClick={() => draftSetupMut.mutate()}
                   style={{ padding: "0.35rem 0.85rem", borderRadius: "0.375rem", border: "none", background: "#7c3aed", color: "#fff", fontSize: "0.82rem", fontWeight: 600, cursor: "pointer" }}
                 >{draftSetupMut.isPending ? "Thinking…" : "Generate Draft"}</button>
+                <ViewResultsButton projectId={id!} jobId={lastDraftJob?.job_id} />
               </div>
               {draftSetupMut.isError && <p style={{ color: "#c5221f", fontSize: "0.78rem", marginTop: "0.35rem" }}>Failed — check your API key in LLM Screening settings.</p>}
               <p style={{ color: "#6b7280", fontSize: "0.75rem", marginTop: "0.35rem", margin: "0.35rem 0 0" }}>

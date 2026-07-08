@@ -2401,15 +2401,44 @@ export interface AiPilotStatus {
   extraction: { extracted_count: number; ft_included_count: number; batch_job: AiBatchJob };
   concepts: { concept_count: number; batch_job: AiBatchJob };
   thematic: { theme_count: number; code_count: number };
-  conflicts: { unresolved_count: number };
+  conflicts: { unresolved_count: number; batch_job: AiBatchJob };
 }
 
+/** idle: no job has run yet. stopped: a user requested a stop (loop jobs
+ * finish the in-flight item first; single-call jobs are cancelled outright).
+ * Re-running the same action after "stopped" only does the remaining work. */
+export type AiJobStatus = "idle" | "running" | "done" | "failed" | "stopped";
+
 export interface AiBatchJob {
-  status: "idle" | "running" | "done" | "failed";
+  job_id?: string;
+  job_type?: string;
+  status: AiJobStatus;
   done?: number;
   total?: number;
   errors?: number;
   error?: string;
+  model?: string | null;
+  stop_requested?: boolean;
+  /** Persisted output for one-shot jobs (suggest_themes/draft_setup) — null for batch jobs. */
+  result?: Record<string, unknown> | null;
+  created_at?: string;
+  completed_at?: string | null;
+}
+
+export interface AiJobResultItem {
+  record_id: string | null;
+  cluster_id: string | null;
+  title: string | null;
+  created_at: string;
+  // resolve_conflicts-only fields:
+  stage?: string;
+  decision?: string;
+  notes?: string | null;
+}
+
+export interface AiJobResults {
+  job: AiBatchJob;
+  items: AiJobResultItem[] | null;
 }
 
 export interface AiDraftSetup {
@@ -2444,14 +2473,25 @@ export const aiPilotApi = {
     ),
 
   resolveAll: (projectId: string, params: { model?: string; stage?: string }) =>
-    api.post<{ resolved: number; failed: number; message: string }>(
-      `/projects/${projectId}/ai-resolve-all`,
-      params,
-    ),
+    api.post<AiBatchJob>(`/projects/${projectId}/ai-resolve-all`, params),
+
+  getResolveAllStatus: (projectId: string) =>
+    api.get<AiBatchJob>(`/projects/${projectId}/ai-resolve-all/status`),
 
   aiAssignCode: (projectId: string, codeId: string, params: { model?: string; max_papers?: number }) =>
     api.post<{ assigned: number; message: string }>(
       `/projects/${projectId}/thematic/codes/${codeId}/ai-assign`,
       params,
     ),
+
+  stopJob: (projectId: string, jobId: string) =>
+    api.post<{ status: string }>(`/projects/${projectId}/ai-jobs/${jobId}/stop`),
+
+  getJobResults: (projectId: string, jobId: string) =>
+    api.get<AiJobResults>(`/projects/${projectId}/ai-jobs/${jobId}/results`),
+
+  listJobs: (projectId: string, jobType?: string) =>
+    api.get<{ jobs: AiBatchJob[] }>(`/projects/${projectId}/ai-jobs`, {
+      params: jobType ? { job_type: jobType } : undefined,
+    }),
 };

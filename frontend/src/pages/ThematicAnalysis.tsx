@@ -9,6 +9,7 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../components/Feedback";
+import { ViewResultsButton } from "../components/AiJobControls";
 import {
   thematicApi,
   extractionLibraryApi,
@@ -888,7 +889,16 @@ export default function ThematicAnalysis() {
 
   const suggestThemesMut = useMutation({
     mutationFn: () => aiPilotApi.suggestThemes(projectId!, { model: suggestModel, focus_question: suggestFocus || undefined }),
-    onSuccess: (r) => { setSuggestedThemes(r.data.themes); },
+    onSuccess: (r) => { setSuggestedThemes(r.data.themes); qc.invalidateQueries({ queryKey: ["ai-jobs", projectId, "suggest_themes"] }); },
+  });
+
+  // Suggest Themes is a single LLM call (not a batch loop) — no stop/resume,
+  // just a persisted history record so the last suggestion set stays
+  // viewable via "View AI Results" even after this panel is closed.
+  const { data: lastSuggestJob } = useQuery({
+    queryKey: ["ai-jobs", projectId, "suggest_themes"],
+    queryFn: () => aiPilotApi.listJobs(projectId!, "suggest_themes").then(r => r.data.jobs[0] ?? null),
+    enabled: !!projectId,
   });
 
   const createFromSuggestionMut = useMutation({
@@ -1039,6 +1049,7 @@ export default function ThematicAnalysis() {
                 background: "#7c3aed", color: "#fff", fontSize: "0.82rem", fontWeight: 600, cursor: "pointer",
               }}
             >{suggestThemesMut.isPending ? "Thinking…" : "Generate"}</button>
+            <ViewResultsButton projectId={projectId!} jobId={lastSuggestJob?.job_id} />
           </div>
           {suggestThemesMut.isError && <p style={{ color: "#c5221f", fontSize: "0.8rem", marginTop: "0.4rem" }}>Failed — check API key and retry.</p>}
           {suggestedThemes.length > 0 && (

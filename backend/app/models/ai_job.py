@@ -10,8 +10,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from typing import Any, Dict
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -29,12 +31,20 @@ class AiJob(Base):
         nullable=False,
         index=True,
     )
-    # extract | concepts
+    # extract | concepts | resolve_conflicts | suggest_themes | draft_setup
     job_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    # running / done / failed
+    # running / done / failed / stopped
     status: Mapped[str] = mapped_column(
         String(10), nullable=False, server_default="running"
     )
+    # Cooperative stop signal (migration 053): the running loop checks this
+    # (via an in-memory mirror set for immediate effect — see app/routers/ai_pilot.py)
+    # and breaks early, leaving remaining work for the next "start" call to pick up.
+    stop_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Persisted output for one-shot jobs (suggest_themes, draft_setup) that
+    # don't create their own rows elsewhere — keeps the result viewable
+    # after the original request/response cycle ends.
+    result_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     total: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     done: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     errors: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
