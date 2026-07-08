@@ -160,6 +160,36 @@ async def test_log_context_supplies_attribution(own_session_factory):
 
 
 @pytest.mark.asyncio
+async def test_log_llm_call_returns_id_and_accepts_ai_job_id(own_session_factory):
+    from app.models.ai_job import AiJob
+    from app.models.project import Project
+    from app.models.user import User
+
+    feature = f"test.{uuid.uuid4().hex[:12]}"
+    async with own_session_factory() as session:
+        user = User(email=f"llmclient-job-{uuid.uuid4().hex[:8]}@example.org",
+                    password_hash="x", name="Test")
+        session.add(user)
+        await session.flush()
+        project = Project(name="LLM Client Job Test", created_by=user.id)
+        session.add(project)
+        await session.flush()
+        job = AiJob(project_id=project.id, job_type="concepts", status="running")
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    call_id = await log_llm_call(
+        feature=feature, provider="anthropic", model="claude-sonnet-4-6", ai_job_id=job_id,
+    )
+    assert isinstance(call_id, uuid.UUID)
+    rows = await _fetch_calls(own_session_factory, feature)
+    assert len(rows) == 1
+    assert rows[0].id == call_id
+    assert rows[0].ai_job_id == job_id
+
+
+@pytest.mark.asyncio
 async def test_call_llm_success_audits(own_session_factory, monkeypatch):
     feature = f"test.{uuid.uuid4().hex[:12]}"
 
@@ -182,6 +212,7 @@ async def test_call_llm_success_audits(own_session_factory, monkeypatch):
     assert rows[0].input_tokens == 10
     assert rows[0].latency_ms is not None
     assert rows[0].cost_usd is not None
+    assert result.call_id == rows[0].id
 
 
 @pytest.mark.asyncio

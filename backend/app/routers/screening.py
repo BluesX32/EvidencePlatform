@@ -641,7 +641,8 @@ async def get_saturation_status(
 
     consecutive_no_novelty — number of most-recent extractions in a row where
     framework_updated=false.  Resets to 0 whenever framework_updated=true.
-    saturated=true when count >= threshold (default 5).
+    threshold_reached=true when count >= threshold (default 5). This is a
+    configurable streak indicator, not an objective claim of saturation.
 
     When source_id is provided, only extractions for that corpus are considered
     so the counter resets independently per corpus.

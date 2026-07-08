@@ -7,6 +7,7 @@ Endpoints:
   POST   /projects/{id}/concept-extractions           → upsert concept extraction for an item
   GET    /projects/{id}/concept-extractions/item      → get concept extraction for one record/cluster
   GET    /projects/{id}/concept-extractions/aggregate → taxonomy aggregation (values × field_type)
+  GET    /projects/{id}/concept-extractions/discovery → order-aware first-occurrence/recurrence
   POST   /projects/{id}/concept-extractions/push-to-ontology → create ontology nodes from selected values
 """
 from __future__ import annotations
@@ -17,16 +18,19 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE, ADMIN_ROLE
 from app.models.concept_extraction import ConceptExtraction
+from app.models.concept_taxonomy_node import ConceptTaxonomyNode
+from app.models.concept_event import ConceptEvent
 from app.models.ontology_node import OntologyNode
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.services.concept_mention_service import effective_concept_extractions, sync_mentions_for_extraction
+from app.services.discovery_service import compute_discovery
 
 router = APIRouter(prefix="/projects/{project_id}/concept-extractions", tags=["concept_extraction"])
 
@@ -46,6 +50,8 @@ class ConceptExtractionOut(BaseModel):
     cluster_id: Optional[str]
     extracted_json: Dict[str, Any]
     reviewer_id: Optional[str]
+    origin: str
+    derived_from_id: Optional[str]
     created_at: str
     updated_at: str
 
@@ -70,6 +76,7 @@ class PushItem(BaseModel):
     field_type: str   # "entity" | "relation" | "metadata"
     namespace: Optional[str] = None  # override default namespace
     parent_id: Optional[str] = None
+    field_id: Optional[str] = None   # source concept_template field, for provenance linking
 
 
 class PushToOntologyRequest(BaseModel):
@@ -91,6 +98,8 @@ def _ce_out(ce: ConceptExtraction) -> ConceptExtractionOut:
         cluster_id=str(ce.cluster_id) if ce.cluster_id else None,
         extracted_json=ce.extracted_json or {},
         reviewer_id=str(ce.reviewer_id) if ce.reviewer_id else None,
+        origin=ce.origin,
+        derived_from_id=str(ce.derived_from_id) if ce.derived_from_id else None,
         created_at=ce.created_at.isoformat(),
         updated_at=ce.updated_at.isoformat(),
     )
@@ -104,6 +113,11 @@ def _default_namespace(field_type: str) -> str:
     return "concept"
 
 
+def _field_map(project) -> Dict[str, Dict[str, Any]]:
+    fields = (project.concept_template or {}).get("fields", [])
+    return {f["id"]: f for f in fields}
+
+
 # ── Upsert concept extraction ─────────────────────────────────────────────────
 
 @router.post("", response_model=ConceptExtractionOut, status_code=200)
@@ -113,6 +127,12 @@ async def upsert_concept_extraction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Human-facing save path (AI Pilot writes origin='ai' rows directly).
+
+    Identity is scoped to origin='human' so a human edit of an AI suggestion
+    creates/updates a distinct row instead of overwriting the AI original —
+    the first such edit records derived_from_id pointing at the AI row.
+    """
     await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
     if not body.record_id and not body.cluster_id:
@@ -123,24 +143,39 @@ async def upsert_concept_extraction(
     record_id = uuid.UUID(body.record_id) if body.record_id else None
     cluster_id = uuid.UUID(body.cluster_id) if body.cluster_id else None
 
-    # Look for existing row (per reviewer)
-    stmt = select(ConceptExtraction).where(
-        ConceptExtraction.project_id == project_id,
-        ConceptExtraction.reviewer_id == current_user.id,
+    item_filter = (
+        ConceptExtraction.record_id == record_id
+        if record_id
+        else ConceptExtraction.cluster_id == cluster_id
     )
-    if record_id:
-        stmt = stmt.where(ConceptExtraction.record_id == record_id)
-    else:
-        stmt = stmt.where(ConceptExtraction.cluster_id == cluster_id)
 
-    result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
+    existing = (await db.execute(
+        select(ConceptExtraction).where(
+            ConceptExtraction.project_id == project_id,
+            ConceptExtraction.reviewer_id == current_user.id,
+            ConceptExtraction.origin == "human",
+            item_filter,
+        )
+    )).scalar_one_or_none()
+
+    project = await ProjectRepo.get_by_id(db, project_id)
+    field_map = _field_map(project) if project else {}
 
     if existing:
         existing.extracted_json = body.extracted_json
+        await sync_mentions_for_extraction(db, existing, field_map=field_map)
         await db.commit()
         await db.refresh(existing)
         return _ce_out(existing)
+
+    ai_row = (await db.execute(
+        select(ConceptExtraction).where(
+            ConceptExtraction.project_id == project_id,
+            ConceptExtraction.reviewer_id == current_user.id,
+            ConceptExtraction.origin == "ai",
+            item_filter,
+        )
+    )).scalar_one_or_none()
 
     ce = ConceptExtraction(
         project_id=project_id,
@@ -148,8 +183,12 @@ async def upsert_concept_extraction(
         cluster_id=cluster_id,
         extracted_json=body.extracted_json,
         reviewer_id=current_user.id,
+        origin="human",
+        derived_from_id=ai_row.id if ai_row else None,
     )
     db.add(ce)
+    await db.flush()
+    await sync_mentions_for_extraction(db, ce, field_map=field_map)
     await db.commit()
     await db.refresh(ce)
     return _ce_out(ce)
@@ -217,6 +256,10 @@ async def get_item_concept_extraction(
             ConceptExtraction.project_id == project_id,
             ConceptExtraction.reviewer_id == target_reviewer,
         )
+        # Human row first: once an AI row and its human-edited row can coexist
+        # (migration 050), the form should default to showing the human view,
+        # with the AI original still reachable as the second element.
+        .order_by(case((ConceptExtraction.origin == "human", 0), else_=1))
     )
     if record_id:
         stmt = stmt.where(ConceptExtraction.record_id == uuid.UUID(record_id))
@@ -247,21 +290,22 @@ async def get_taxonomy_aggregate(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    concept_template = project.concept_template or {}
-    fields = concept_template.get("fields", [])
-    field_map: Dict[str, Dict] = {f["id"]: f for f in fields}
+    field_map = _field_map(project)
 
     role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
 
-    stmt = select(ConceptExtraction).where(ConceptExtraction.project_id == project_id)
     if role not in ADMIN_ROLE:
         # Reviewers always see only their own aggregate.
-        stmt = stmt.where(ConceptExtraction.reviewer_id == current_user.id)
+        reviewer_ids = [current_user.id]
     elif as_reviewer_id:
         # Admins can scope to a specific reviewer (for canvas mode).
-        stmt = stmt.where(ConceptExtraction.reviewer_id == as_reviewer_id)
-    result = await db.execute(stmt)
-    extractions = result.scalars().all()
+        reviewer_ids = [as_reviewer_id]
+    else:
+        reviewer_ids = None
+    # One row per (reviewer, item) — human row if present, else the AI row it
+    # was derived from — so a human edit doesn't double-count values that
+    # also appear in its AI-authored counterpart.
+    extractions = await effective_concept_extractions(db, project_id, reviewer_ids=reviewer_ids)
 
     # Aggregate: (field_id, value) → {field_type, field_label, count, record_ids}
     key_data: Dict[tuple, Dict] = {}
@@ -308,6 +352,32 @@ async def get_taxonomy_aggregate(
     return TaxonomyAggregate(**buckets)
 
 
+# ── Discovery (order-aware first-occurrence / recurrence) ───────────────────────
+
+@router.get("/discovery")
+async def get_discovery(
+    project_id: uuid.UUID,
+    source_id: Optional[uuid.UUID] = Query(None),
+    as_reviewer_id: Optional[uuid.UUID] = Query(None, description="Admin only: compute for a specific reviewer"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Order-aware first-occurrence vs recurrence per concept per article.
+
+    Replaces the previous client-side all-other-articles comparison: order
+    comes from concept_mentions.sequence_index (the reviewer's frozen
+    extraction-queue position) and identity prefers canonical_node_id over
+    raw string equality. Manual novelty overrides are surfaced alongside the
+    computed status, never silently replacing it.
+    """
+    role = await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+    if as_reviewer_id and role in ADMIN_ROLE:
+        target_reviewer = as_reviewer_id
+    else:
+        target_reviewer = current_user.id
+    return await compute_discovery(db, project_id, target_reviewer, source_id=source_id)
+
+
 # ── Push to ontology ────────────────────────────────────────────────────────────
 
 @router.post("/push-to-ontology", response_model=PushToOntologyResult)
@@ -317,7 +387,14 @@ async def push_to_ontology(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create ontology nodes from selected taxonomy values."""
+    """Create ontology nodes from selected taxonomy values.
+
+    When item.field_id is given, records a concept_events row linking the
+    source concept_taxonomy_node (if one exists for that field/value) to the
+    resulting ontology node — the P0.5 canonical-concept-to-ontology mapping
+    provenance. Both newly-created and already-existing target nodes get a
+    mapping event, since "already exists" is itself an established mapping.
+    """
     await require_project_role(db, project_id, current_user.id, allowed=ADMIN_ROLE)
 
     created = 0
@@ -338,8 +415,27 @@ async def push_to_ontology(
         )
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
+
+        source_node = None
+        if item.field_id:
+            source_node = (await db.execute(
+                select(ConceptTaxonomyNode).where(
+                    ConceptTaxonomyNode.project_id == project_id,
+                    ConceptTaxonomyNode.field_id == item.field_id,
+                    ConceptTaxonomyNode.name == name,
+                )
+            )).scalar_one_or_none()
+
         if existing:
             skipped += 1
+            db.add(ConceptEvent(
+                project_id=project_id, action="map_ontology", entity_type="ontology_mapping",
+                taxonomy_node_id=source_node.id if source_node else None,
+                ontology_node_id=existing.id,
+                mapping_type="taxonomy_node_to_ontology" if source_node else "raw_value_to_ontology",
+                resulting_state={"ontology_node_id": str(existing.id), "ontology_node_name": name},
+                actor_id=current_user.id,
+            ))
             continue
 
         # Determine position among siblings
@@ -359,7 +455,17 @@ async def push_to_ontology(
             position=position,
         )
         db.add(node)
+        await db.flush()
         created += 1
+        db.add(ConceptEvent(
+            project_id=project_id, action="map_ontology", entity_type="ontology_mapping",
+            taxonomy_node_id=source_node.id if source_node else None,
+            ontology_node_id=node.id,
+            mapping_type="taxonomy_node_to_ontology" if source_node else "raw_value_to_ontology",
+            prior_state=None if source_node else {"field_id": item.field_id, "value": name},
+            resulting_state={"ontology_node_id": str(node.id), "ontology_node_name": name},
+            actor_id=current_user.id,
+        ))
 
     await db.commit()
     return PushToOntologyResult(created=created, skipped=skipped)

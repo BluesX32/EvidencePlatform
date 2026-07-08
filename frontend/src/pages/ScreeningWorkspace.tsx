@@ -2194,12 +2194,12 @@ function SaturationBadge({ projectId, source }: { projectId: string; source?: st
 
   if (!data) return null;
 
-  const { consecutive_no_novelty: count, saturated, threshold } = data;
+  const { consecutive_no_novelty: count, threshold_reached, threshold } = data;
   const pct = Math.min(1, count / threshold);
-  const bg = saturated ? "#fee2e2" : pct >= 0.6 ? "#fff7ed" : "#f9fafb";
-  const borderColor = saturated ? "#fca5a5" : pct >= 0.6 ? "#fdba74" : "#e5e7eb";
-  const textColor = saturated ? "#b91c1c" : pct >= 0.6 ? "#c2410c" : "#6b7280";
-  const barColor = saturated ? "#ef4444" : pct >= 0.6 ? "#f97316" : count > 0 ? "#facc15" : "#22c55e";
+  const bg = threshold_reached ? "#fee2e2" : pct >= 0.6 ? "#fff7ed" : "#f9fafb";
+  const borderColor = threshold_reached ? "#fca5a5" : pct >= 0.6 ? "#fdba74" : "#e5e7eb";
+  const textColor = threshold_reached ? "#b91c1c" : pct >= 0.6 ? "#c2410c" : "#6b7280";
+  const barColor = threshold_reached ? "#ef4444" : pct >= 0.6 ? "#f97316" : count > 0 ? "#facc15" : "#22c55e";
 
   return (
     <div style={{ marginBottom: "1rem", padding: "10px 14px", borderRadius: 8, border: `1px solid ${borderColor}`, background: bg }}>
@@ -2214,7 +2214,7 @@ function SaturationBadge({ projectId, source }: { projectId: string; source?: st
       </div>
       <div style={{ marginTop: 5, fontSize: 11, color: textColor, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span>
-          {saturated
+          {threshold_reached
             ? `⚠️ ${threshold} papers in a row added no new framework concepts — consider stopping.`
             : count === 0
             ? data.total_extractions === 0
@@ -3499,7 +3499,7 @@ function QueueSidebar({
   const ftPending = Math.max(0, agg.ta_included - agg.ft_screened);
   const extractPending = Math.max(0, agg.ft_included - agg.extracted_count);
 
-  // Current source's saturation state (used to mark extract as done when saturated)
+  // Current source's saturation state (used to mark extract as done when threshold reached)
   const currentSrc = sources.find((s) => s.id === source);
 
   // Completion flags — a stage is "done" when all TA is screened and downstream
@@ -3507,7 +3507,7 @@ function QueueSidebar({
   // Extract is also "done" when the current corpus has reached saturation.
   const taDone = agg.record_count > 0 && taUnscreened === 0;
   const ftDone = taDone && ftPending === 0;
-  const extractDone = ftDone && (extractPending === 0 || (currentSrc?.saturated ?? false));
+  const extractDone = ftDone && (extractPending === 0 || (currentSrc?.threshold_reached ?? false));
 
   function goToBucket(bucket: string) {
     navigate(`/projects/${projectId}/screen?${new URLSearchParams({ bucket, source, strategy }).toString()}`);
@@ -3583,7 +3583,7 @@ function QueueSidebar({
               const taDone = src.record_count > 0 && src.ta_screened >= src.record_count;
               const ftDone = taDone && (src.ta_included === 0 || src.ft_screened >= src.ta_included);
               const exDoneByCount = ftDone && (src.ft_included === 0 || src.extracted_count >= src.ft_included);
-              const exDone = exDoneByCount || (ftDone && src.saturated);
+              const exDone = exDoneByCount || (ftDone && src.threshold_reached);
               return (
                 <div key={src.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.25rem" }}>
                   <span style={{ fontSize: "0.73rem", color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 100 }} title={src.name}>
@@ -3598,9 +3598,9 @@ function QueueSidebar({
                         {done ? "✓" : label[0]}
                       </span>
                     ))}
-                    {/* EX dot — green tick if done by count, lightning if saturated */}
-                    {src.saturated && !exDoneByCount ? (
-                      <span title={`Saturated at ${src.saturated_at} consecutive papers`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.62rem", fontWeight: 700, background: "#fef9c3", color: "#a16207" }}>
+                    {/* EX dot — green tick if done by count, lightning if streak threshold reached */}
+                    {src.threshold_reached && !exDoneByCount ? (
+                      <span title={`Reached streak threshold at ${src.threshold_reached_at} consecutive papers`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 3, fontSize: "0.62rem", fontWeight: 700, background: "#fef9c3", color: "#a16207" }}>
                         ⚡
                       </span>
                     ) : (

@@ -14,12 +14,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_project_role, REVIEWER_ROLE
+from app.models.concept_event import ConceptEvent
+from app.models.concept_mention import ConceptMention
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 from app.models.user import User
 
@@ -319,10 +321,56 @@ async def merge_nodes(
 
     canonical.aliases = all_aliases
 
+    absorbed = [sn for sn in source_nodes if sn.id != canonical.id]
+
+    if absorbed:
+        # Reassign (or newly map) mentions matching any merged name/alias/
+        # extra_value onto the canonical node, before the source rows that
+        # some of them may currently point at are deleted below.
+        match_values = {canonical_name}
+        absorbed_ids = [sn.id for sn in absorbed]
+        for sn in absorbed:
+            match_values.add(sn.name)
+            match_values.update(sn.aliases or [])
+        for ev in (body.extra_values or []):
+            ev_name = (ev.get("name") or "").strip()
+            if ev_name:
+                match_values.add(ev_name)
+
+        await db.execute(
+            update(ConceptMention)
+            .where(
+                ConceptMention.project_id == project_id,
+                ConceptMention.field_id == body.field_id,
+                ConceptMention.value.in_(match_values),
+                or_(
+                    ConceptMention.canonical_node_id.is_(None),
+                    ConceptMention.canonical_node_id.in_(absorbed_ids),
+                ),
+            )
+            .values(canonical_node_id=canonical.id)
+        )
+
+        # Append-only survivorship record: absorbed nodes are about to be
+        # deleted, so snapshot enough state here to reconstruct the merge.
+        for sn in absorbed:
+            db.add(ConceptEvent(
+                project_id=project_id, action="merge", entity_type="taxonomy_node",
+                taxonomy_node_id=canonical.id,
+                prior_state={
+                    "deleted_node_id": str(sn.id),
+                    "name": sn.name,
+                    "field_id": sn.field_id,
+                    "aliases": list(sn.aliases or []),
+                    "parent_id": str(sn.parent_id) if sn.parent_id else None,
+                },
+                resulting_state={"canonical_node_id": str(canonical.id), "canonical_name": canonical.name},
+                actor_id=current_user.id,
+            ))
+
     # Delete source nodes (except canonical)
-    for sn in source_nodes:
-        if sn.id != canonical.id:
-            await db.delete(sn)
+    for sn in absorbed:
+        await db.delete(sn)
 
     await db.commit()
     await db.refresh(canonical)

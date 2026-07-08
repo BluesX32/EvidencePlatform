@@ -224,8 +224,32 @@ export interface ConceptExtractionRecord {
   cluster_id: string | null;
   extracted_json: ConceptExtractionJson;
   reviewer_id: string | null;
+  /** 'human' | 'ai' — see implementation_claim_audit.md P0.2. */
+  origin: "human" | "ai";
+  /** When this is a human edit of an AI suggestion, the AI row it was derived from. */
+  derived_from_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DiscoveryConcept {
+  field_id: string;
+  value: string;
+  canonical_node_id: string | null;
+  computed_status: "first" | "recurrent";
+  override_status: "new" | "existing" | null;
+  effective_status: "first" | "recurrent";
+}
+
+export interface DiscoveryItem {
+  record_id: string | null;
+  cluster_id: string | null;
+  sequence_index: number | null;
+  concepts: DiscoveryConcept[];
+}
+
+export interface DiscoveryResult {
+  items: DiscoveryItem[];
 }
 
 export interface ConceptTaxonomyEntry {
@@ -420,9 +444,12 @@ export const conceptExtractionApi = {
       params: asReviewerId ? { as_reviewer_id: asReviewerId } : undefined,
     }),
 
+  getDiscovery: (projectId: string, params?: { source_id?: string | null; as_reviewer_id?: string | null }) =>
+    api.get<DiscoveryResult>(`/projects/${projectId}/concept-extractions/discovery`, { params }),
+
   pushToOntology: (
     projectId: string,
-    items: Array<{ value: string; field_type: ConceptFieldType; namespace?: string; parent_id?: string | null }>,
+    items: Array<{ value: string; field_type: ConceptFieldType; field_id?: string; namespace?: string; parent_id?: string | null }>,
   ) => api.post<PushToOntologyResult>(`/projects/${projectId}/concept-extractions/push-to-ontology`, { items }),
 };
 
@@ -861,10 +888,10 @@ export interface ScreeningSource {
   extracted_count: number;
   /** True when this source was imported from an LLM screening run. */
   is_llm_import: boolean;
-  /** True when this corpus's extraction has reached the saturation threshold. */
-  saturated: boolean;
-  /** Number of consecutive no-novelty extractions when saturated; null otherwise. */
-  saturated_at: number | null;
+  /** True when this corpus's extraction has reached the no-novelty streak threshold. */
+  threshold_reached: boolean;
+  /** Number of consecutive no-novelty extractions when threshold_reached; null otherwise. */
+  threshold_reached_at: number | null;
 }
 
 export interface LlmScreeningNote {
@@ -1108,7 +1135,7 @@ export const labelsApi = {
 
 export interface SaturationStatus {
   consecutive_no_novelty: number;
-  saturated: boolean;
+  threshold_reached: boolean;
   threshold: number;
   total_extractions: number;
 }

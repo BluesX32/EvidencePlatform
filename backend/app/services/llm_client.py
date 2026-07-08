@@ -102,6 +102,7 @@ class LlmLogContext:
     project_id: Optional[uuid.UUID] = None
     user_id: Optional[uuid.UUID] = None
     run_id: Optional[uuid.UUID] = None
+    ai_job_id: Optional[uuid.UUID] = None
 
 
 _log_context: contextvars.ContextVar[Optional[LlmLogContext]] = contextvars.ContextVar(
@@ -150,8 +151,14 @@ async def log_llm_call(
     project_id: Optional[uuid.UUID] = None,
     user_id: Optional[uuid.UUID] = None,
     run_id: Optional[uuid.UUID] = None,
-) -> None:
-    """Insert one llm_calls audit row in its own session; never raises."""
+    ai_job_id: Optional[uuid.UUID] = None,
+) -> Optional[uuid.UUID]:
+    """Insert one llm_calls audit row in its own session; never raises.
+
+    Returns the created row's id (for callers that need to link a downstream
+    artifact — e.g. a concept mention — back to the exact call that produced
+    it), or None if logging itself failed.
+    """
     from app.models.llm_call import LlmCall  # local import to avoid model/service cycles
 
     ctx = _log_context.get()
@@ -159,6 +166,7 @@ async def log_llm_call(
         project_id = project_id or ctx.project_id
         user_id = user_id or ctx.user_id
         run_id = run_id or ctx.run_id
+        ai_job_id = ai_job_id or ctx.ai_job_id
 
     cost = (
         compute_cost_usd(model, input_tokens, output_tokens)
@@ -167,28 +175,30 @@ async def log_llm_call(
     )
     try:
         async with SessionLocal() as session:
-            session.add(
-                LlmCall(
-                    feature=feature,
-                    provider=provider,
-                    model=model,
-                    status=status,
-                    error_message=_truncate(error_message, 2_000),
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost_usd=cost,
-                    latency_ms=latency_ms,
-                    system_prompt=_truncate(system_prompt, _MAX_PROMPT_CHARS),
-                    prompt=_truncate(prompt, _MAX_PROMPT_CHARS),
-                    response=_truncate(response, _MAX_RESPONSE_CHARS),
-                    project_id=project_id,
-                    user_id=user_id,
-                    run_id=run_id,
-                )
+            call = LlmCall(
+                feature=feature,
+                provider=provider,
+                model=model,
+                status=status,
+                error_message=_truncate(error_message, 2_000),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost,
+                latency_ms=latency_ms,
+                system_prompt=_truncate(system_prompt, _MAX_PROMPT_CHARS),
+                prompt=_truncate(prompt, _MAX_PROMPT_CHARS),
+                response=_truncate(response, _MAX_RESPONSE_CHARS),
+                project_id=project_id,
+                user_id=user_id,
+                run_id=run_id,
+                ai_job_id=ai_job_id,
             )
+            session.add(call)
             await session.commit()
+            return call.id
     except Exception:
         logger.exception("Failed to write llm_calls audit row (feature=%s)", feature)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +213,7 @@ class LlmResult:
     output_tokens: int
     provider: str
     model: str
+    call_id: Optional[uuid.UUID] = None
 
 
 def _pick_provider(
@@ -238,13 +249,14 @@ async def call_llm(
     project_id: Optional[uuid.UUID] = None,
     user_id: Optional[uuid.UUID] = None,
     run_id: Optional[uuid.UUID] = None,
+    ai_job_id: Optional[uuid.UUID] = None,
 ) -> LlmResult:
     """Make a plain-text LLM call, audit it, and return the response text + usage."""
     provider, effective_model = _pick_provider(model, anthropic_key, openrouter_key)
     started = time.monotonic()
 
-    async def _log(status: str, result: Optional[LlmResult], error: Optional[str]) -> None:
-        await log_llm_call(
+    async def _log(status: str, result: Optional[LlmResult], error: Optional[str]) -> Optional[uuid.UUID]:
+        return await log_llm_call(
             feature=feature,
             provider=provider,
             model=effective_model,
@@ -259,6 +271,7 @@ async def call_llm(
             project_id=project_id,
             user_id=user_id,
             run_id=run_id,
+            ai_job_id=ai_job_id,
         )
 
     try:
@@ -273,7 +286,7 @@ async def call_llm(
     except Exception as exc:
         await _log("error", None, str(exc))
         raise
-    await _log("ok", result, None)
+    result.call_id = await _log("ok", result, None)
     return result
 
 

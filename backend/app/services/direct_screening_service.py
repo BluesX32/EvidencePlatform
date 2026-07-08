@@ -360,8 +360,8 @@ async def get_project_sources_with_stats(
             queue_obj = queue_q.scalars().first()
 
             if queue_obj is None:
-                item["saturated"] = False
-                item["saturated_at"] = None
+                item["threshold_reached"] = False
+                item["threshold_reached_at"] = None
                 continue
 
             slots_set_rec = {uuid.UUID(s["id"]) for s in queue_obj.slots if s.get("type") == "record"}
@@ -378,23 +378,16 @@ async def get_project_sources_with_stats(
                 )
             ]
 
-            consecutive = 0
-            for row in filtered:
-                if row.extracted_json.get("framework_updated", True):
-                    break
-                consecutive += 1
+            consecutive = _no_novelty_streak(filtered)
 
             sat_threshold = 5
-            saturated = consecutive >= sat_threshold
-            # saturated_at = total extractions done when saturation was first reached
-            # = total extractions minus the papers before the streak started
-            saturated_at = len(filtered) - (len(filtered) - consecutive) if saturated else None
-            item["saturated"] = saturated
-            item["saturated_at"] = consecutive if saturated else None
+            threshold_reached = consecutive >= sat_threshold
+            item["threshold_reached"] = threshold_reached
+            item["threshold_reached_at"] = consecutive if threshold_reached else None
     else:
         for item in result_list:
-            item["saturated"] = False
-            item["saturated_at"] = None
+            item["threshold_reached"] = False
+            item["threshold_reached_at"] = None
 
     return result_list
 
@@ -1975,7 +1968,26 @@ async def submit_extraction(
 
 # ---------------------------------------------------------------------------
 # Saturation detection
+#
+# "Saturation" here is an operational streak counter, not an objective claim
+# that a literature has been exhaustively covered — the audit-facing term is
+# threshold_reached. See app.services.discovery_service for the order-aware
+# concept-recurrence computation this counter does NOT perform (it counts
+# reviewer-declared framework_updated=false streaks, not concept identity).
 # ---------------------------------------------------------------------------
+
+
+def _no_novelty_streak(rows) -> int:
+    """Count consecutive most-recent rows with extracted_json.framework_updated
+    == False, stopping at the first True (or missing, which defaults True).
+    Shared by get_saturation, get_saturation_papers, and
+    get_project_sources_with_stats so the streak rule has one definition."""
+    consecutive = 0
+    for row in rows:
+        if row.extracted_json.get("framework_updated", True):
+            break
+        consecutive += 1
+    return consecutive
 
 
 async def get_saturation(
@@ -2025,7 +2037,7 @@ async def get_saturation(
             # No extraction queue for this source yet → zero extractions.
             return {
                 "consecutive_no_novelty": 0,
-                "saturated": False,
+                "threshold_reached": False,
                 "threshold": threshold,
                 "total_extractions": 0,
             }
@@ -2044,7 +2056,7 @@ async def get_saturation(
         if not conditions:
             return {
                 "consecutive_no_novelty": 0,
-                "saturated": False,
+                "threshold_reached": False,
                 "threshold": threshold,
                 "total_extractions": 0,
             }
@@ -2116,15 +2128,11 @@ async def get_saturation(
         if r.record_id not in ft_excl_records and r.cluster_id not in ft_excl_clusters
     ]
     total = len(included_rows)
-    consecutive = 0
-    for row in included_rows:
-        if row.extracted_json.get("framework_updated", True):
-            break
-        consecutive += 1
+    consecutive = _no_novelty_streak(included_rows)
 
     return {
         "consecutive_no_novelty": consecutive,
-        "saturated": consecutive >= threshold,
+        "threshold_reached": consecutive >= threshold,
         "threshold": threshold,
         "total_extractions": total,
     }

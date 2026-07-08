@@ -42,6 +42,13 @@ class LlmCall(Base):
         nullable=True,
         index=True,
     )
+    # AI Pilot batch job this call belongs to, when applicable (migration 050)
+    ai_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ai_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Dot-separated surface tag: screening.run / ai_pilot.draft_setup /
     # thematic.ai_assign / search.strategy / consensus.suggest / …
     feature: Mapped[str] = mapped_column(String(60), nullable=False, index=True)

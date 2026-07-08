@@ -9,6 +9,8 @@ import type {
   ScreeningNextItem,
   ConceptTemplate,
   ConceptExtractionRecord,
+  DiscoveryResult,
+  DiscoveryItem,
   TeamMember,
 } from "../api/client";
 import { PDFFetchButton } from "../components/PDFFetchButton";
@@ -638,53 +640,26 @@ function EditPanel({
 // Concept novelty chart
 // ---------------------------------------------------------------------------
 
-function buildSeenValues(
-  allExtractions: ConceptExtractionRecord[],
-  excludeKey: string | null,
-): Map<string, Set<string>> {
-  const map = new Map<string, Set<string>>();
-  for (const ce of allExtractions) {
-    const key = ce.record_id ?? ce.cluster_id;
-    if (key === excludeKey) continue;
-    const cells = ce.extracted_json?.cells ?? {};
-    for (const [fieldId, val] of Object.entries(cells)) {
-      if (!map.has(fieldId)) map.set(fieldId, new Set());
-      if (Array.isArray(val)) val.forEach((v) => map.get(fieldId)!.add(v as string));
-      else if (val) map.get(fieldId)!.add(val as string);
-    }
-  }
-  return map;
-}
-
-function countNovelty(
-  ce: ConceptExtractionRecord,
-  seenValues: Map<string, Set<string>>,
+function countNoveltyFromDiscovery(
+  discoveryItem: DiscoveryItem | undefined,
   entityFieldIds: Set<string>,
 ): { newCount: number; existingCount: number } {
-  const cells = ce.extracted_json?.cells ?? {};
-  const storedNovelty = ce.extracted_json?.novelty ?? {};
   let newCount = 0, existingCount = 0;
-  for (const [fieldId, val] of Object.entries(cells)) {
-    if (!entityFieldIds.has(fieldId)) continue;
-    const activeVals = Array.isArray(val) ? val : (val ? [val as string] : []);
-    const fieldNovelty = storedNovelty[fieldId] ?? {};
-    const seen = seenValues.get(fieldId) ?? new Set<string>();
-    for (const v of activeVals) {
-      const status = v in fieldNovelty ? fieldNovelty[v] : (seen.has(v) ? "existing" : "new");
-      if (status === "new") newCount++;
-      else existingCount++;
-    }
+  for (const concept of discoveryItem?.concepts ?? []) {
+    if (!entityFieldIds.has(concept.field_id)) continue;
+    if (concept.effective_status === "first") newCount++;
+    else existingCount++;
   }
   return { newCount, existingCount };
 }
 
 function ConceptNoveltyChart({
   items,
-  conceptExtractions,
+  discovery,
   conceptTemplate,
 }: {
   items: ExtractionLibraryItem[];
-  conceptExtractions: ConceptExtractionRecord[];
+  discovery: DiscoveryResult | undefined;
   conceptTemplate: ConceptTemplate | null;
 }) {
   const entityFieldIds = new Set(
@@ -692,15 +667,13 @@ function ConceptNoveltyChart({
   );
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const ceMap = new Map(
-    conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
+  const discoveryMap = new Map(
+    (discovery?.items ?? []).map((d) => [(d.record_id ?? d.cluster_id)!, d])
   );
 
   const data = items.map((item) => {
     const key = item.record_id ?? item.cluster_id ?? "";
-    const ce = ceMap.get(key);
-    const seenValues = ce ? buildSeenValues(conceptExtractions, key) : new Map();
-    const counts = ce ? countNovelty(ce, seenValues, entityFieldIds) : { newCount: 0, existingCount: 0 };
+    const counts = countNoveltyFromDiscovery(discoveryMap.get(key), entityFieldIds);
     const rawTitle = item.title ?? "Untitled";
     // Use "AuthorYear" style label if possible, else truncated title
     const firstAuthor = item.authors?.[0]?.split(",")[0]?.trim() ?? "";
@@ -1094,10 +1067,26 @@ export default function ExtractionLibrary() {
     enabled: !!projectId,
   });
 
-  // Build lookup: record_id or cluster_id → ConceptExtractionRecord
-  const conceptMap = new Map<string, ConceptExtractionRecord>(
-    conceptExtractions.map((ce) => [(ce.record_id ?? ce.cluster_id)!, ce])
-  );
+  // Order-aware first-occurrence/recurrence, computed on the backend from a
+  // frozen sequence + canonical-concept mapping (see implementation_claim_audit.md
+  // P0.6) — replaces the previous client-side all-other-articles comparison.
+  const { data: discovery } = useQuery({
+    queryKey: ["concept-discovery", projectId, selectedReviewerId],
+    queryFn: () => conceptExtractionApi.getDiscovery(projectId!, { as_reviewer_id: selectedReviewerId ?? null }).then((r) => r.data),
+    enabled: !!projectId && showChart,
+  });
+
+  // Build lookup: record_id or cluster_id → ConceptExtractionRecord.
+  // A human row and its AI-derived original can coexist (migration 050); the
+  // human row always wins for display.
+  const conceptMap = new Map<string, ConceptExtractionRecord>();
+  for (const ce of conceptExtractions) {
+    const key = (ce.record_id ?? ce.cluster_id)!;
+    const current = conceptMap.get(key);
+    if (!current || (current.origin !== "human" && ce.origin === "human")) {
+      conceptMap.set(key, ce);
+    }
+  }
 
   // ── Client-side filter (search only; applied on top of drag order) ───────
   const visible = orderedItems.filter((item) => {
@@ -1220,7 +1209,7 @@ export default function ExtractionLibrary() {
 
         {/* ── Concept novelty chart ────────────────────────────────────────── */}
         {showChart && (
-          <ConceptNoveltyChart items={visible} conceptExtractions={conceptExtractions} conceptTemplate={conceptTemplate} />
+          <ConceptNoveltyChart items={visible} discovery={discovery} conceptTemplate={conceptTemplate} />
         )}
 
         {/* ── Search ──────────────────────────────────────────────────────── */}

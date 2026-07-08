@@ -45,6 +45,7 @@ from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
 from app.services import llm_client
 from app.services import llm_screening_service as svc
+from app.services.concept_mention_service import sync_mentions_for_extraction
 from app.services.consensus_service import detect_conflicts, adjudicate
 from app.services.llm_client import LlmLogContext, set_llm_log_context
 
@@ -154,8 +155,11 @@ async def _llm_call(
     feature: str,
     project_id: Optional[uuid.UUID] = None,
     user_id: Optional[uuid.UUID] = None,
-) -> str:
-    """Call LLM via the central gateway (audited to llm_calls), return text."""
+    ai_job_id: Optional[uuid.UUID] = None,
+) -> llm_client.LlmResult:
+    """Call LLM via the central gateway (audited to llm_calls), return the result
+    (text + usage + the created llm_calls.id, for callers that need to link a
+    downstream artifact back to the exact call that produced it)."""
     try:
         result = await llm_client.call_llm(
             feature=feature,
@@ -167,10 +171,11 @@ async def _llm_call(
             openrouter_key=openrouter_key,
             project_id=project_id,
             user_id=user_id,
+            ai_job_id=ai_job_id,
         )
     except ValueError as exc:  # no usable API key for this model
         raise HTTPException(400, str(exc))
-    return result.text
+    return result
 
 
 def _parse_json_response(text: str) -> Any:
@@ -384,7 +389,7 @@ The concept_template field ids must be unique strings like f1, f2, etc.
             anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=3000,
             feature="ai_pilot.draft_setup", project_id=project_id, user_id=user.id,
         )
-        result = _parse_json_response(raw)
+        result = _parse_json_response(raw.text)
     except json.JSONDecodeError:
         raise HTTPException(502, "AI returned invalid JSON — please retry")
     except Exception as exc:
@@ -441,7 +446,7 @@ async def start_bulk_extraction(
 
     async def _run() -> None:
         set_llm_log_context(LlmLogContext(
-            feature="ai_pilot.extract", project_id=project_id, user_id=user_id,
+            feature="ai_pilot.extract", project_id=project_id, user_id=user_id, ai_job_id=job_id,
         ))
         done = 0
         errors = 0
@@ -591,9 +596,11 @@ async def start_bulk_concepts(
     base_system = "You are an expert qualitative researcher extracting structured concepts from academic papers. Extract only what is explicitly stated. Return a JSON object with field ids as keys and arrays of string values."
     system_prompt = f"{base_system}\n\n{ai_instructions}".strip() if ai_instructions else base_system
 
+    field_map = {f["id"]: f for f in fields}
+
     async def _run() -> None:
         set_llm_log_context(LlmLogContext(
-            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id,
+            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
         ))
         done = 0
         errors = 0
@@ -658,12 +665,12 @@ async def start_bulk_concepts(
                             + "\n}\nFor each field, list ALL values found as an array of strings. Empty array if none."
                         )
 
-                        raw = await _llm_call(
+                        result = await _llm_call(
                             anthropic_key, openrouter_key, body.model, system_prompt, prompt, max_tokens=1500,
-                            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id,
+                            feature="ai_pilot.concepts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
                         )
                         try:
-                            cells = _parse_json_response(raw)
+                            cells = _parse_json_response(result.text)
                         except Exception:
                             cells = {}
 
@@ -678,6 +685,10 @@ async def start_bulk_concepts(
                             )
                             db2.add(ce)
                             await db2.flush()
+                            await sync_mentions_for_extraction(
+                                db2, ce, field_map=field_map,
+                                ai_job_id=job_id, llm_call_id=result.call_id,
+                            )
                     except Exception as e:
                         logger.warning("bulk concepts error for record=%s: %s", rec_id or cl_id, e)
                         errors += 1
@@ -801,7 +812,7 @@ Return only valid JSON, no markdown fences."""
             anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=2000,
             feature="ai_pilot.suggest_themes", project_id=project_id, user_id=user.id,
         )
-        result = _parse_json_response(raw)
+        result = _parse_json_response(raw.text)
     except json.JSONDecodeError:
         raise HTTPException(502, "AI returned invalid JSON — please retry")
     except Exception as exc:
@@ -857,7 +868,7 @@ async def ai_resolve_all(
                 anthropic_key, openrouter_key, body.model, system, prompt, max_tokens=200,
                 feature="ai_pilot.resolve_conflicts", project_id=project_id, user_id=user.id,
             )
-            parsed = _parse_json_response(raw)
+            parsed = _parse_json_response(raw.text)
             decision = parsed.get("decision", "").lower()
             rationale = parsed.get("rationale", "AI-assisted resolution")
 

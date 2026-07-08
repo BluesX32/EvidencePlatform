@@ -546,7 +546,7 @@ function PushPanel({ projectId, tab, selected, allEntries, onSuccess }: {
     mutationFn: () => {
       const items = allEntries
         .filter(e => selected.has(e.key))
-        .map(e => ({ value: e.value, field_type: e.field_type, namespace, parent_id: parentId || null }));
+        .map(e => ({ value: e.value, field_type: e.field_type, field_id: e.field_id, namespace, parent_id: parentId || null }));
       return conceptExtractionApi.pushToOntology(projectId, items);
     },
     onSuccess: res => {

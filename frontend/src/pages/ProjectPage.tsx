@@ -1005,7 +1005,7 @@ export default function ProjectPage() {
                       const taAllDone = src.record_count > 0 && src.ta_screened >= src.record_count;
                       const ftAllDone = src.ta_included === 0 || src.ft_screened >= src.ta_included;
                       const exAllDoneByCount = src.ft_included === 0 || src.extracted_count >= src.ft_included;
-                      const exAllDone = exAllDoneByCount || (ftAllDone && !!src.saturated);
+                      const exAllDone = exAllDoneByCount || (ftAllDone && !!src.threshold_reached);
                       const allDone = taAllDone && ftAllDone && exAllDone;
                       return (
                         <tr key={src.id} style={{ background: allDone ? "#f0fdf4" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -1019,9 +1019,9 @@ export default function ProjectPage() {
                             {cell(src.ft_screened, src.ta_included)}
                           </td>
                           <td style={{ padding: "0.55rem 0.75rem", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
-                            {!!src.saturated ? (
-                              <span title={`Saturated after ${src.saturated_at} consecutive papers with no new themes`} style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", background: "#fef9c3", color: "#a16207", borderRadius: "1rem", padding: "0.1rem 0.5rem", fontSize: "0.75rem", fontWeight: 700, cursor: "default" }}>
-                                ⚡ {src.saturated_at}/{src.ft_included}
+                            {!!src.threshold_reached ? (
+                              <span title={`Reached streak threshold after ${src.threshold_reached_at} consecutive papers with no new themes`} style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", background: "#fef9c3", color: "#a16207", borderRadius: "1rem", padding: "0.1rem 0.5rem", fontSize: "0.75rem", fontWeight: 700, cursor: "default" }}>
+                                ⚡ {src.threshold_reached_at}/{src.ft_included}
                               </span>
                             ) : (
                               cell(src.extracted_count, src.ft_included)

@@ -33,6 +33,8 @@ from app.models.citation_candidate import CitationCandidate
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
 from app.models.llm_call import LlmCall
 from app.models.ai_job import AiJob
+from app.models.concept_mention import ConceptMention
+from app.models.concept_event import ConceptEvent
 
 __all__ = [
     "InviteCode",
@@ -72,4 +74,6 @@ __all__ = [
     "ConceptTaxonomyNode",
     "LlmCall",
     "AiJob",
+    "ConceptMention",
+    "ConceptEvent",
 ]
