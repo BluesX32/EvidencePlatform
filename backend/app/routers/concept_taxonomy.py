@@ -6,6 +6,8 @@ Endpoints:
   PATCH  /projects/{id}/concept-taxonomy/nodes/{nid}    → rename / reparent
   DELETE /projects/{id}/concept-taxonomy/nodes/{nid}    → delete node
   POST   /projects/{id}/concept-taxonomy/merge          → merge nodes into one
+  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/map   → map one mention to a node
+  POST   /projects/{id}/concept-taxonomy/mentions/{mid}/unmap → clear a mention's mapping
 """
 from __future__ import annotations
 
@@ -52,6 +54,10 @@ class MergeRequest(BaseModel):
     extra_values: Optional[List[Dict[str, str]]] = None  # [{name, field_id, field_type}] for raw values not yet nodes
     canonical_name: str                # name of the surviving node
     field_id: str
+
+
+class MentionMapRequest(BaseModel):
+    node_id: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,6 +175,9 @@ async def update_node(
     if node is None:
         raise HTTPException(404, "Node not found")
 
+    old_name = node.name
+    old_parent_id = node.parent_id
+
     if body.name is not None:
         node.name = body.name.strip() or node.name
 
@@ -198,6 +207,24 @@ async def update_node(
             if parent is None:
                 raise HTTPException(404, "Parent node not found")
             node.parent_id = new_parent_id
+
+    # Event-log the two transformations actually performed during synthesis
+    # (both can fire in the same call — not mutually exclusive).
+    if node.name != old_name:
+        db.add(ConceptEvent(
+            project_id=project_id, action="rename", entity_type="taxonomy_node",
+            taxonomy_node_id=node.id,
+            prior_state={"name": old_name}, resulting_state={"name": node.name},
+            actor_id=current_user.id,
+        ))
+    if node.parent_id != old_parent_id:
+        db.add(ConceptEvent(
+            project_id=project_id, action="reparent", entity_type="taxonomy_node",
+            taxonomy_node_id=node.id,
+            prior_state={"parent_id": str(old_parent_id) if old_parent_id else None},
+            resulting_state={"parent_id": str(node.parent_id) if node.parent_id else None},
+            actor_id=current_user.id,
+        ))
 
     try:
         await db.flush()
@@ -375,3 +402,93 @@ async def merge_nodes(
     await db.commit()
     await db.refresh(canonical)
     return _node_out(canonical)
+
+
+# ── Manual mention-to-canonical mapping ─────────────────────────────────────────
+# Direct corrections to what merge does automatically — map/unmap a single
+# mention without requiring a full merge. Accept/reject candidate-mention
+# statuses and split/retype are deferred: no "candidate" review status exists
+# in the current workflow (mentions are created already-accepted) and no
+# split/retype case-study usage exists to instrument.
+
+@router.post("/mentions/{mention_id}/map")
+async def map_mention(
+    project_id: uuid.UUID,
+    mention_id: uuid.UUID,
+    body: MentionMapRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Manually map one concept mention onto a canonical taxonomy node."""
+    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+
+    mention = (await db.execute(
+        select(ConceptMention).where(
+            ConceptMention.id == mention_id, ConceptMention.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if mention is None:
+        raise HTTPException(404, "Mention not found")
+
+    try:
+        node_id = uuid.UUID(body.node_id)
+    except ValueError:
+        raise HTTPException(422, f"Invalid node_id: {body.node_id}")
+    node = (await db.execute(
+        select(ConceptTaxonomyNode).where(
+            ConceptTaxonomyNode.id == node_id, ConceptTaxonomyNode.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if node is None:
+        raise HTTPException(404, "Node not found")
+
+    prior_node_id = mention.canonical_node_id
+    mention.canonical_node_id = node.id
+    db.add(ConceptEvent(
+        project_id=project_id, action="map", entity_type="mention",
+        mention_id=mention.id, taxonomy_node_id=node.id,
+        prior_state={"canonical_node_id": str(prior_node_id) if prior_node_id else None},
+        resulting_state={"canonical_node_id": str(node.id), "canonical_name": node.name},
+        actor_id=current_user.id,
+    ))
+    await db.commit()
+    return {"mention_id": str(mention.id), "canonical_node_id": str(node.id)}
+
+
+@router.post("/mentions/{mention_id}/unmap")
+async def unmap_mention(
+    project_id: uuid.UUID,
+    mention_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Clear a concept mention's canonical mapping."""
+    await require_project_role(db, project_id, current_user.id, allowed=REVIEWER_ROLE)
+
+    mention = (await db.execute(
+        select(ConceptMention).where(
+            ConceptMention.id == mention_id, ConceptMention.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if mention is None:
+        raise HTTPException(404, "Mention not found")
+    if mention.canonical_node_id is None:
+        return {"mention_id": str(mention.id), "canonical_node_id": None}
+
+    prior_node_id = mention.canonical_node_id
+    prior_node = (await db.execute(
+        select(ConceptTaxonomyNode).where(ConceptTaxonomyNode.id == prior_node_id)
+    )).scalar_one_or_none()
+    mention.canonical_node_id = None
+    db.add(ConceptEvent(
+        project_id=project_id, action="unmap", entity_type="mention",
+        mention_id=mention.id, taxonomy_node_id=prior_node_id,
+        prior_state={
+            "canonical_node_id": str(prior_node_id),
+            "canonical_name": prior_node.name if prior_node else None,
+        },
+        resulting_state={"canonical_node_id": None},
+        actor_id=current_user.id,
+    ))
+    await db.commit()
+    return {"mention_id": str(mention.id), "canonical_node_id": None}

@@ -2513,8 +2513,8 @@ function RunHistoryTable({ runs, selectedRunId, onSelect, onResume, onCancel, on
                 <td style={{ padding: "0.55rem 0.75rem", color: "#5f6368", fontSize: "0.78rem" }}>{modelLabel}</td>
                 <td style={{ padding: "0.55rem 0.75rem" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-                    <span style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : run.mode === "ta_only" ? "#b06000" : run.mode === "ft_only" ? "#1a73e8" : "#5f6368" }}>
-                      {run.mode === "saturation" ? "Saturation" : run.mode === "ta_only" ? "TA Only" : run.mode === "ft_only" ? "FT Only" : "PRISMA-ScR"}
+                    <span title={run.mode === "saturation" ? "Experimental — not validated as conceptual-sufficiency evidence" : undefined} style={{ fontSize: "0.78rem", color: run.mode === "saturation" ? "#6366f1" : run.mode === "ta_only" ? "#b06000" : run.mode === "ft_only" ? "#1a73e8" : "#5f6368" }}>
+                      {run.mode === "saturation" ? "Saturation (experimental)" : run.mode === "ta_only" ? "TA Only" : run.mode === "ft_only" ? "FT Only" : "PRISMA-ScR"}
                       {run.stopped_at_saturation && " ⬡"}
                     </span>
                     {run.agent_mode === "multi" && (
@@ -2853,7 +2853,7 @@ export default function LLMScreeningPage() {
                 {[
                   { id: "prisma_scr" as const, label: "PRISMA-ScR", desc: "Screen all records: TA → FT → Extract in parallel. Standard systematic review workflow." },
                   { id: "ta_only" as const, label: "TA Only (interactive)", desc: "Screen by title/abstract only. Pauses so you can upload PDFs for included papers, then launch FT screening." },
-                  { id: "saturation" as const, label: "Saturation", desc: "Process one corpus sequentially. Stop when no new concepts found (mirrors human saturation review)." },
+                  { id: "saturation" as const, label: "Saturation (experimental)", desc: "Process one corpus sequentially, stopping when no new concepts found against an unnormalized running list. Not validated as evidence of conceptual sufficiency — do not use this mode's results as saturation evidence." },
                 ].map(({ id, label, desc }) => (
                   <div key={id} onClick={() => setMode(id)} style={{ padding: "0.85rem", border: `2px solid ${mode === id ? "#6366f1" : "#dadce0"}`, borderRadius: "0.5rem", cursor: "pointer", background: mode === id ? "#ede9fe" : "#fff" }}>
                     <div style={{ fontWeight: 700, color: mode === id ? "#6366f1" : "#3c4043", marginBottom: "0.25rem" }}>{label}</div>

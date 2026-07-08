@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,13 +30,16 @@ class ConceptExtraction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
+    # Per-origin uniqueness (migration 051): two partial unique indexes on
+    # (project_id, reviewer_id, record_id|cluster_id, origin) — DB-only, not
+    # mirrored here, matching how ExtractionRecord's partial indexes aren't
+    # modeled in __table_args__ either. A single constraint spanning both
+    # nullable id columns (migration 050's original attempt) doesn't work:
+    # NULL is never equal to NULL, so it silently failed to prevent
+    # duplicate rows for the same record item.
     __table_args__ = (
         CheckConstraint(
             "(record_id IS NOT NULL AND cluster_id IS NULL) OR (record_id IS NULL AND cluster_id IS NOT NULL)",
             name="chk_ce_exactly_one",
-        ),
-        UniqueConstraint(
-            "project_id", "reviewer_id", "record_id", "cluster_id", "origin",
-            name="uq_ce_reviewer_item_origin",
         ),
     )

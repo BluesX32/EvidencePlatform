@@ -36,16 +36,19 @@ def _flatten_cells(extracted_json: Dict[str, Any]) -> List[Tuple[str, str]]:
     return pairs
 
 
-async def _resolve_sequence_index(
+async def _resolve_sequence(
     db: AsyncSession,
     project_id: uuid.UUID,
     reviewer_id: Optional[uuid.UUID],
     record_id: Optional[uuid.UUID],
     cluster_id: Optional[uuid.UUID],
-) -> Optional[int]:
-    """1-based position of this item in the reviewer's extraction queue, if any."""
+) -> Tuple[Optional[uuid.UUID], Optional[int]]:
+    """(screening_queue_id, 1-based position) of this item in the reviewer's
+    extraction queue, if any. The queue id anchors the position to one frozen
+    sequence — a bare position number is meaningless across different queues
+    (e.g. two corpora can each have a slot at position 1)."""
     if reviewer_id is None:
-        return None
+        return None, None
     rows = (await db.execute(
         select(ScreeningQueue).where(
             ScreeningQueue.project_id == project_id,
@@ -58,8 +61,8 @@ async def _resolve_sequence_index(
     for queue in rows:
         for i, slot in enumerate(queue.slots or []):
             if slot.get("type") == target_type and slot.get("id") == target:
-                return i + 1
-    return None
+                return queue.id, i + 1
+    return None, None
 
 
 async def sync_mentions_for_extraction(
@@ -89,26 +92,42 @@ async def sync_mentions_for_extraction(
             await db.delete(mention)
 
     new_pairs = [p for p in target_pairs if p not in existing_by_pair]
+    queue_id: Optional[uuid.UUID] = None
     sequence_index: Optional[int] = None
     if new_pairs:
-        sequence_index = await _resolve_sequence_index(
+        queue_id, sequence_index = await _resolve_sequence(
             db, ce.project_id, ce.reviewer_id, ce.record_id, ce.cluster_id
         )
+
+    grounding = (ce.extracted_json or {}).get("grounding", {})
 
     created: List[ConceptMention] = []
     for field_id, value in new_pairs:
         field_info = field_map.get(field_id, {})
+        field_grounding = grounding.get(field_id, {}) if isinstance(grounding, dict) else {}
+        value_grounding = field_grounding.get(value) if isinstance(field_grounding, dict) else None
+        source_quote = None
+        locator = None
+        if isinstance(value_grounding, dict):
+            source_quote = value_grounding.get("quote")
+            locator = {
+                "grounded": bool(value_grounding.get("grounded")),
+                "document": value_grounding.get("document"),
+            }
         mention = ConceptMention(
             project_id=ce.project_id,
             concept_extraction_id=ce.id,
             field_id=field_id,
             field_type=field_info.get("field_type", "metadata"),
             value=value,
+            source_quote=source_quote,
+            locator=locator,
             origin=ce.origin,
             reviewer_id=ce.reviewer_id,
             ai_job_id=ai_job_id,
             llm_call_id=llm_call_id,
             sequence_index=sequence_index,
+            screening_queue_id=queue_id,
         )
         db.add(mention)
         created.append(mention)

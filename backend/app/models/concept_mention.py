@@ -54,6 +54,13 @@ class ConceptMention(Base):
     )
     # Frozen review-order position (from the reviewer's screening queue), when known.
     sequence_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Which screening_queue sequence_index is relative to (migration 051) — two
+    # different corpus queues can independently produce the same position
+    # number, so discovery analysis must never compare positions across queues.
+    screening_queue_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("screening_queues.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

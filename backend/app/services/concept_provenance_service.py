@@ -19,6 +19,49 @@ from app.models.concept_event import ConceptEvent
 from app.models.concept_extraction import ConceptExtraction
 from app.models.concept_mention import ConceptMention
 from app.models.concept_taxonomy_node import ConceptTaxonomyNode
+from app.models.overlap_cluster_member import OverlapClusterMember
+from app.models.record import Record
+from app.models.record_source import RecordSource
+from app.models.source import Source
+
+
+async def _resolve_identity(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    record_id: Optional[uuid.UUID],
+    cluster_id: Optional[uuid.UUID],
+) -> Dict[str, Any]:
+    """Record title/identifiers + source-database membership for one item.
+
+    For a cluster, resolves via any one member record_source (title/DOI/year/
+    authors are expected to agree across duplicates) and unions source names
+    across all members.
+    """
+    if record_id is not None:
+        record = (await db.execute(select(Record).where(Record.id == record_id))).scalar_one_or_none()
+        source_names = (await db.execute(
+            select(Source.name)
+            .join(RecordSource, RecordSource.source_id == Source.id)
+            .where(RecordSource.record_id == record_id)
+        )).scalars().all()
+    else:
+        rows = (await db.execute(
+            select(Record, Source.name)
+            .join(RecordSource, RecordSource.record_id == Record.id)
+            .join(OverlapClusterMember, OverlapClusterMember.record_source_id == RecordSource.id)
+            .join(Source, Source.id == RecordSource.source_id)
+            .where(OverlapClusterMember.cluster_id == cluster_id)
+        )).all()
+        record = rows[0][0] if rows else None
+        source_names = sorted({name for _, name in rows})
+
+    return {
+        "title": record.title if record else None,
+        "doi": record.doi if record else None,
+        "year": record.year if record else None,
+        "authors": record.authors if record else None,
+        "source_names": list(source_names),
+    }
 
 
 async def build_provenance_export(
@@ -71,10 +114,12 @@ async def build_provenance_export(
         events = list({e.id: e for e in events}.values())
 
         ontology_mappings = [e for e in events if e.action == "map_ontology"]
+        identity = await _resolve_identity(db, project_id, rec_id, cl_id)
 
         items.append({
             "record_id": str(rec_id) if rec_id else None,
             "cluster_id": str(cl_id) if cl_id else None,
+            "identity": identity,
             "extractions": [
                 {
                     "id": str(ce.id),
@@ -100,6 +145,7 @@ async def build_provenance_export(
                     "llm_call_id": str(m.llm_call_id) if m.llm_call_id else None,
                     "canonical_node_id": str(m.canonical_node_id) if m.canonical_node_id else None,
                     "sequence_index": m.sequence_index,
+                    "screening_queue_id": str(m.screening_queue_id) if m.screening_queue_id else None,
                 }
                 for m in mentions
             ],

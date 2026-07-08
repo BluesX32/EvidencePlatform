@@ -1,13 +1,22 @@
-"""Order-aware concept discovery (implementation-audit P0.6).
+"""Order-aware concept discovery (implementation-audit P0.6, hardened per
+p0_implementation_decision.md item 4).
 
 Replaces the previous frontend computation (buildSeenValues in
 ExtractionLibrary.tsx), which compared each article against *all other*
 extractions regardless of order — causing the first paper introducing a
 value to be marked "existing" whenever a later paper repeated it. This
 computes first-occurrence vs recurrence from an explicit frozen sequence
-(concept_mentions.sequence_index, falling back to parent-extraction
-insertion order) and canonical-concept equality (falling back to raw
+(concept_mentions.sequence_index, scoped to the concept_mentions.screening_queue_id
+it was resolved from) and canonical-concept equality (falling back to raw
 (field_id, value) equality for mentions not yet mapped to a taxonomy node).
+
+Recurrence is always scoped per screening_queue_id: two different corpus
+queues can independently produce the same sequence_index, so a value is
+never marked recurrent against an occurrence from a different queue.
+Mentions with no resolvable queue (screening_queue_id is None — legacy or
+reconstructed data) form their own implicit "unknown-sequence" bucket and
+are flagged sequence_known=False so callers can exclude them from a
+trajectory claim rather than treating an unresolved position as comparable.
 """
 from __future__ import annotations
 
@@ -58,12 +67,23 @@ async def compute_discovery(
         select(ConceptMention).where(ConceptMention.concept_extraction_id.in_(ce_by_id.keys()))
     )).scalars().all()
 
+    queue_ids = {m.screening_queue_id for m in mentions if m.screening_queue_id is not None}
+    queue_created_at: Dict[uuid.UUID, Any] = {}
+    if queue_ids:
+        queues = (await db.execute(
+            select(ScreeningQueue).where(ScreeningQueue.id.in_(queue_ids))
+        )).scalars().all()
+        queue_created_at = {q.id: q.created_at for q in queues}
+
     def sort_key(m: ConceptMention):
         ce = ce_by_id[m.concept_extraction_id]
-        # Ranked mentions (known queue position) sort before unranked ones,
-        # which fall back to their parent extraction's insertion order.
-        has_seq = m.sequence_index is not None
-        return (0 if has_seq else 1, m.sequence_index or 0, ce.created_at)
+        has_seq = m.sequence_index is not None and m.screening_queue_id is not None
+        # Group by queue first (via its freeze time) so items from the same
+        # corpus stay contiguous instead of interleaving with other corpora's
+        # unrelated position numbers; unranked mentions sort last by
+        # insertion order.
+        queue_time = queue_created_at.get(m.screening_queue_id) if has_seq else None
+        return (0 if has_seq else 1, queue_time or ce.created_at, m.sequence_index or 0)
 
     mentions_sorted = sorted(mentions, key=sort_key)
 
@@ -72,7 +92,13 @@ async def compute_discovery(
 
     for m in mentions_sorted:
         ce = ce_by_id[m.concept_extraction_id]
-        group_key = ("node", m.canonical_node_id) if m.canonical_node_id else ("raw", m.field_id, m.value)
+        sequence_known = m.screening_queue_id is not None
+        identity = ("node", m.canonical_node_id) if m.canonical_node_id else ("raw", m.field_id, m.value)
+        # Recurrence is scoped per screening_queue_id — a value repeating in a
+        # *different* queue is never recurrent against the first queue's
+        # occurrence. Mentions with no resolvable queue share one implicit
+        # "unknown-sequence" bucket per identity.
+        group_key = (m.screening_queue_id, identity)
         computed_status = "recurrent" if group_key in seen_groups else "first"
         seen_groups.add(group_key)
 
@@ -91,11 +117,13 @@ async def compute_discovery(
         item = items.setdefault(ce.id, {
             "record_id": str(ce.record_id) if ce.record_id else None,
             "cluster_id": str(ce.cluster_id) if ce.cluster_id else None,
+            "screening_queue_id": None,
             "sequence_index": None,
             "concepts": [],
         })
         if item["sequence_index"] is None and m.sequence_index is not None:
             item["sequence_index"] = m.sequence_index
+            item["screening_queue_id"] = str(m.screening_queue_id) if m.screening_queue_id else None
         item["concepts"].append({
             "field_id": m.field_id,
             "value": m.value,
@@ -103,6 +131,7 @@ async def compute_discovery(
             "computed_status": computed_status,
             "override_status": override_status,
             "effective_status": effective_status,
+            "sequence_known": sequence_known,
         })
 
     ordered_items: List[Dict[str, Any]] = sorted(

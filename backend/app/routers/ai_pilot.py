@@ -189,6 +189,17 @@ def _parse_json_response(text: str) -> Any:
     return json.loads(t.strip())
 
 
+def _quote_is_grounded(source_text: str, quote: str) -> bool:
+    """Whitespace/case-normalized substring check. Never fabricate a locator
+    for a quote the model didn't actually copy from the supplied text —
+    ungrounded quotes are recorded as such, not silently accepted."""
+    norm_quote = " ".join(quote.split()).casefold()
+    if not norm_quote:
+        return False
+    norm_source = " ".join(source_text.split()).casefold()
+    return norm_quote in norm_source
+
+
 # ---------------------------------------------------------------------------
 # 1. Pipeline status
 # ---------------------------------------------------------------------------
@@ -654,15 +665,18 @@ async def start_bulk_concepts(
                             continue
 
                         field_lines = [
-                            f'  "{f["id"]}": ["{f.get("label","?")} — {f.get("field_type","?")}"]'
+                            f'  "{f["id"]}": [{{"value": "extracted {f.get("label","?")} value", '
+                            f'"quote": "verbatim supporting phrase copied exactly from the title or abstract"}}]'
                             for f in fields
                         ]
                         prompt = (
                             f"## Paper\n**Title**: {record.title or '(no title)'}\n"
                             + (f"**Abstract**: {record.abstract}\n" if record.abstract else "")
-                            + "\n## Concept Fields\nReturn a JSON object with these keys:\n{\n"
+                            + "\n## Concept Fields\nReturn a JSON object with these keys, each an array of objects:\n{\n"
                             + ",\n".join(field_lines)
-                            + "\n}\nFor each field, list ALL values found as an array of strings. Empty array if none."
+                            + "\n}\nFor each field, list ALL values found. 'quote' must be copied verbatim "
+                              "from the title or abstract above — use an empty string if no exact supporting "
+                              "phrase exists. Empty array if no values for a field."
                         )
 
                         result = await _llm_call(
@@ -670,16 +684,47 @@ async def start_bulk_concepts(
                             feature="ai_pilot.concepts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
                         )
                         try:
-                            cells = _parse_json_response(result.text)
+                            parsed = _parse_json_response(result.text)
                         except Exception:
-                            cells = {}
+                            parsed = {}
+
+                        source_text = f"{record.title or ''} {record.abstract or ''}"
+                        cells: Dict[str, List[str]] = {}
+                        grounding: Dict[str, Dict[str, Any]] = {}
+                        for field_id, arr in (parsed.items() if isinstance(parsed, dict) else []):
+                            if not isinstance(arr, list):
+                                continue
+                            values: List[str] = []
+                            field_grounding: Dict[str, Any] = {}
+                            for entry in arr:
+                                if isinstance(entry, dict):
+                                    v = str(entry.get("value", "")).strip()
+                                    q = entry.get("quote")
+                                    q = q.strip() if isinstance(q, str) else None
+                                else:
+                                    # Model didn't follow the {value, quote} schema — keep the
+                                    # value, record it as ungrounded rather than fabricating a quote.
+                                    v = str(entry).strip()
+                                    q = None
+                                if not v:
+                                    continue
+                                grounded = bool(q) and _quote_is_grounded(source_text, q)
+                                values.append(v)
+                                field_grounding[v] = {
+                                    "quote": q if grounded else None,
+                                    "grounded": grounded,
+                                    "document": "title_abstract",
+                                }
+                            if values:
+                                cells[field_id] = values
+                                grounding[field_id] = field_grounding
 
                         if cells:
                             ce = ConceptExtraction(
                                 project_id=project_id,
                                 record_id=rec_id,
                                 cluster_id=cl_id,
-                                extracted_json={"cells": cells},
+                                extracted_json={"cells": cells, "grounding": grounding},
                                 reviewer_id=user_id,
                                 origin="ai",
                             )

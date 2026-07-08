@@ -881,7 +881,15 @@ async def _execute_run_saturation(
     openrouter_api_key: Optional[str] = None,
     pipeline: Optional[list] = None,
 ) -> None:
-    """Background task: screen a single corpus sequentially, stopping at saturation."""
+    """Background task: screen a single corpus sequentially, stopping at saturation.
+
+    EXPERIMENTAL: the stopping rule loads framework nodes once at the start
+    and never updates them with newly discovered concepts, and "new concepts"
+    are unnormalized model output, not canonicalized against an evolving set
+    (see EP-Manuscript/implementation_claim_audit.md and
+    p0_implementation_decision.md). Do not use this mode's results as
+    evidence of conceptual sufficiency in the manuscript.
+    """
     async with SessionLocal() as db:
         try:
             await _do_execute_run_saturation(
