@@ -19,6 +19,13 @@ function batchActionLabel(job: AiBatchJob, hasRemainingWork: boolean, startLabel
   return startLabel;
 }
 
+// Past these sizes, a fixed-size template pushes the model's structured-output
+// budget close to its ceiling — the response can get cut off mid-JSON and
+// silently produce nothing for that paper (see the "materials to process"
+// advisory below; the actual token scaling lives in the backend).
+const EXTRACTION_ROW_WARNING_THRESHOLD = 30;
+const CONCEPT_FIELD_WARNING_THRESHOLD = 20;
+
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4-5", label: "Claude Haiku (fast, via OpenRouter)" },
   { value: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet (smart, via OpenRouter)" },
@@ -354,7 +361,7 @@ export default function AIPilotPage() {
           icon={<FileText size={16} />}
           title="Data extraction"
           subtitle={
-            extractJob.status === "running"
+            (extractJob.status === "running"
               ? `Extracting… ${extractJob.done ?? 0} / ${extractJob.total ?? "?"}`
               : extractJob.status === "done"
               ? `Bulk extraction complete — ${s.extraction.extracted_count} extracted`
@@ -362,7 +369,10 @@ export default function AIPilotPage() {
               ? `${s.extraction.extracted_count} / ${s.extraction.ft_included_count} extracted`
               : s.extraction.ft_included_count > 0
               ? `${s.extraction.ft_included_count} papers awaiting extraction`
-              : "Screen papers first"
+              : "Screen papers first")
+            + (s.setup.extraction_row_count > EXTRACTION_ROW_WARNING_THRESHOLD
+              ? ` ⚠ ${s.setup.extraction_row_count}-field template — AI may return incomplete results per paper`
+              : "")
           }
           status={extractStatus}
           progress={extractJob.status === "running" && extractJob.total ? { done: extractJob.done ?? 0, total: extractJob.total } : undefined}
@@ -389,13 +399,16 @@ export default function AIPilotPage() {
           icon={<Layers size={16} />}
           title="Concept extraction"
           subtitle={
-            conceptsJob.status === "running"
+            (conceptsJob.status === "running"
               ? `Extracting concepts… ${conceptsJob.done ?? 0} / ${conceptsJob.total ?? "?"}`
               : s.concepts.concept_count > 0
               ? `${s.concepts.concept_count} concept record${s.concepts.concept_count !== 1 ? "s" : ""}`
               : s.extraction.ft_included_count > 0
               ? "Concepts not yet extracted"
-              : "Screen papers first"
+              : "Screen papers first")
+            + (s.setup.concept_field_count > CONCEPT_FIELD_WARNING_THRESHOLD
+              ? ` ⚠ ${s.setup.concept_field_count}-field template — AI may return incomplete results per paper`
+              : "")
           }
           status={conceptStatus}
           progress={conceptsJob.status === "running" && conceptsJob.total ? { done: conceptsJob.done ?? 0, total: conceptsJob.total } : undefined}

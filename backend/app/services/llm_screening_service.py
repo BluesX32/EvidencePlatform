@@ -3259,12 +3259,17 @@ async def _call_llm(
     system_prompt_override: Optional[str] = None,
     tool_schema_override: Optional[list] = None,
     log_feature: str = "screening.run",
+    max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
     """Dispatch to the correct provider backend based on model name + env keys.
 
     Returns the tool input dict plus '_input_tokens' / '_output_tokens' keys.
     system_prompt_override replaces _SYSTEM_PROMPT when provided.
     tool_schema_override replaces _TOOL_SCHEMA/_OAI_TOOLS when provided.
+    max_tokens overrides the default per-provider budget — callers whose tool
+    schema has many fields (e.g. a large extraction template) should raise
+    this, or the model's JSON response can get cut off mid-object and fail
+    to parse (silently producing zero output rather than a clear error).
 
     Every call is audited to llm_calls. Batch pipelines attribute calls to
     their project/run via set_llm_log_context(); log_feature is the fallback
@@ -3301,6 +3306,7 @@ async def _call_llm(
                 api_key=anthropic_api_key,
                 system_prompt_override=system_prompt_override,
                 tool_schema_override=tool_schema_override,
+                max_tokens=max_tokens,
             )
         else:
             result = await _call_openrouter(
@@ -3309,6 +3315,7 @@ async def _call_llm(
                 api_key=openrouter_api_key,
                 system_prompt_override=system_prompt_override,
                 tool_schema_override=tool_schema_override,
+                max_tokens=max_tokens,
             )
     except Exception as exc:
         await _audit(None, str(exc))
@@ -3323,6 +3330,7 @@ async def _call_anthropic(
     api_key: Optional[str] = None,
     system_prompt_override: Optional[str] = None,
     tool_schema_override: Optional[list] = None,
+    max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
     """Call Anthropic API directly using native tool_use."""
     import anthropic  # type: ignore
@@ -3339,7 +3347,7 @@ async def _call_anthropic(
         try:
             response = await client.messages.create(
                 model=model,
-                max_tokens=2048,
+                max_tokens=max_tokens or 2048,
                 system=effective_system,
                 tools=effective_tools,  # type: ignore[arg-type]
                 tool_choice={"type": "any"},
@@ -3374,6 +3382,7 @@ async def _call_openrouter(
     api_key: Optional[str] = None,
     system_prompt_override: Optional[str] = None,
     tool_schema_override: Optional[list] = None,
+    max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
     """Call any model via OpenRouter using the OpenAI-compatible function-calling API.
 
@@ -3431,7 +3440,10 @@ async def _call_openrouter(
                 # hundreds to thousands of tokens for chain-of-thought before the
                 # actual function call.  1024 is too small — use 8192 so thinking
                 # tokens don't exhaust the budget before the tool response.
-                _max_tokens = 8192 if model in _THINKING_MODELS else 2048
+                # A caller-supplied max_tokens (e.g. scaled to a large extraction
+                # template's field count) never gets shrunk below that floor.
+                _default_max_tokens = 8192 if model in _THINKING_MODELS else 2048
+                _max_tokens = max(max_tokens, _default_max_tokens) if max_tokens else _default_max_tokens
                 # Only OpenAI models reliably support forced tool_choice; all others
                 # (Google, Meta/Llama, Mistral, DeepSeek…) get "auto" instead.
                 _tool_choice: Any = (
@@ -3709,6 +3721,14 @@ async def _extract_one_record(
         )
     )
 
+    # Scale the output budget to the template size — a fixed 2048-token cap
+    # truncates the tool-call JSON mid-object for larger templates (each
+    # field needs its own key/value in the response), which fails to parse
+    # and silently produces no extraction for that paper. ~150 tokens/field
+    # covers a short answer per field; floor/ceiling match the existing
+    # provider defaults (2048 baseline, 8192 same as the "thinking model" cap).
+    extraction_max_tokens = max(2048, min(300 + len(rows) * 150, 8192))
+
     try:
         result = await _call_llm(
             model,
@@ -3718,6 +3738,7 @@ async def _extract_one_record(
             system_prompt_override=extraction_system,
             tool_schema_override=tool_schema,
             log_feature="extraction.auto_fill",
+            max_tokens=extraction_max_tokens,
         )
         # Remove internal token-counting keys
         result.pop("_input_tokens", None)

@@ -2391,7 +2391,13 @@ export const searchApi = {
 // ── AI Pilot API ──────────────────────────────────────────────────────────────
 
 export interface AiPilotStatus {
-  setup: { has_criteria: boolean; has_extraction_template: boolean; has_concept_template: boolean };
+  setup: {
+    has_criteria: boolean;
+    has_extraction_template: boolean;
+    has_concept_template: boolean;
+    extraction_row_count: number;
+    concept_field_count: number;
+  };
   import: { source_count: number; record_count: number };
   dedup: { cluster_count: number };
   screening: {

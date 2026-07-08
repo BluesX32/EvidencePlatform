@@ -457,6 +457,12 @@ async def get_pilot_status(
             "has_criteria": has_criteria,
             "has_extraction_template": bool(project.extraction_template),
             "has_concept_template": bool(project.concept_template),
+            # Surfaced so the UI can warn before running AI extraction: very
+            # large templates risk the model's JSON response getting cut off
+            # (see max_tokens scaling in llm_screening_service._extract_one_record
+            # and ai_pilot.py's concepts prompt).
+            "extraction_row_count": len((project.extraction_template or {}).get("rows", [])),
+            "concept_field_count": len((project.concept_template or {}).get("fields", [])),
         },
         "import": {
             "source_count": source_count,
@@ -820,7 +826,12 @@ async def start_bulk_concepts(
                         )
 
                         result = await _llm_call(
-                            anthropic_key, openrouter_key, body.model, system_prompt, prompt, max_tokens=1500,
+                            anthropic_key, openrouter_key, body.model, system_prompt, prompt,
+                            # A fixed token budget truncates the JSON response mid-object once
+                            # there are enough fields (each can hold multiple {value, quote}
+                            # entries) — the response then fails to parse and this paper
+                            # silently produces zero concepts. Scale with field count instead.
+                            max_tokens=max(1500, min(400 + len(fields) * 250, 8192)),
                             feature="ai_pilot.concepts", project_id=project_id, user_id=user_id, ai_job_id=job_id,
                         )
                         try:

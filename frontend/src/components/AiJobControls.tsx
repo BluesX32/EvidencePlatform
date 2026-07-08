@@ -95,7 +95,13 @@ function AiResultsModal({
 
             {data.items !== null ? (
               data.items.length === 0 ? (
-                <p style={{ color: "var(--text-muted)" }}>No items produced yet.</p>
+                <p style={{ color: "var(--text-muted)" }}>
+                  {(data.job.done ?? 0) > 0
+                    ? `${data.job.done} item(s) were processed but none produced a result. This usually means the model's ` +
+                      "response didn't parse (e.g. it was cut off for a large template, or hit an error) — check the " +
+                      "model/API key, try a smaller template, or a stronger model, then run again to pick up where this left off."
+                    : "No items produced yet."}
+                </p>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <tbody>
