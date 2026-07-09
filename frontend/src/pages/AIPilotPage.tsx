@@ -1,15 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Cpu, CheckCircle2, Circle, Loader2, AlertCircle,
   Settings, Upload, GitMerge, Search, FileText,
   Layers, MessageSquare, BarChart3, ChevronRight,
-  Sparkles, RefreshCw,
+  Sparkles, RefreshCw, ChevronDown, ChevronUp,
 } from "lucide-react";
-import { aiPilotApi, type AiBatchJob } from "../api/client";
+import { aiPilotApi, projectsApi, llmScreeningApi, type AiBatchJob, type LlmConfig } from "../api/client";
 import { AiBadge } from "../components/AiProvenance";
 import { StopJobButton, ViewResultsButton } from "../components/AiJobControls";
+import { MODEL_CATALOG } from "../constants/modelCatalog";
 
 /** "Extract All with AI" / "Resume Extraction" (stopped with remaining work) /
  * "Running…" — one label rule shared by extract, concepts, and resolve-conflicts. */
@@ -26,11 +27,93 @@ function batchActionLabel(job: AiBatchJob, hasRemainingWork: boolean, startLabel
 const EXTRACTION_ROW_WARNING_THRESHOLD = 30;
 const CONCEPT_FIELD_WARNING_THRESHOLD = 20;
 
-const MODEL_OPTIONS = [
-  { value: "anthropic/claude-haiku-4-5", label: "Claude Haiku (fast, via OpenRouter)" },
-  { value: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet (smart, via OpenRouter)" },
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku (Anthropic direct)" },
-];
+/** Grouped model <select> options, shared with LLMScreeningPage's fuller catalog
+ * (src/constants/modelCatalog.ts) so every AI action offers the same model list. */
+function ModelSelectOptions() {
+  return (
+    <>
+      {MODEL_CATALOG.map((g) => (
+        <optgroup key={g.group} label={g.group}>
+          {g.models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}{m.recommended ? " ★" : ""} — {m.cost_per_1k}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
+/** Per-action "Model" + "Custom instructions" panel, toggled open next to
+ * each AI Pilot action. onSave/saving are omitted for actions with no
+ * persisted template to hang instructions on (resolve-conflicts) — there,
+ * instructions are just carried along with that one run. */
+function AiConfigPanel({
+  model, onModelChange, instructions, onInstructionsChange, placeholder, onSave, saving,
+}: {
+  model: string;
+  onModelChange: (v: string) => void;
+  instructions: string;
+  onInstructionsChange: (v: string) => void;
+  placeholder: string;
+  onSave?: () => void;
+  saving?: boolean;
+}) {
+  return (
+    <div style={{ padding: "0.75rem 1.1rem 0.9rem", background: "#faf5ff", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ marginBottom: "0.55rem" }}>
+        <label style={{ fontSize: "0.72rem", fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 2 }}>Model for this action</label>
+        <select
+          value={model}
+          onChange={(e) => onModelChange(e.target.value)}
+          style={{ fontSize: "0.8rem", padding: "0.3rem 0.5rem", borderRadius: "0.375rem", border: "1px solid var(--border)", minWidth: 280, background: "var(--surface)" }}
+        >
+          <ModelSelectOptions />
+        </select>
+      </div>
+      <div>
+        <label style={{ fontSize: "0.72rem", fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 2 }}>Custom instructions (optional)</label>
+        <textarea
+          value={instructions}
+          onChange={(e) => onInstructionsChange(e.target.value)}
+          placeholder={placeholder}
+          rows={3}
+          style={{ width: "100%", maxWidth: 520, fontSize: "0.8rem", padding: "0.4rem 0.5rem", borderRadius: "0.375rem", border: "1px solid var(--border)", fontFamily: "inherit", resize: "vertical", background: "var(--surface)" }}
+        />
+        {onSave && (
+          <div>
+            <button
+              onClick={onSave}
+              disabled={saving}
+              style={{ marginTop: "0.4rem", padding: "0.25rem 0.65rem", borderRadius: "0.375rem", border: "1px solid var(--border)", background: "var(--surface)", fontSize: "0.76rem", fontWeight: 600, cursor: saving ? "default" : "pointer" }}
+            >
+              {saving ? "Saving…" : "Save to project"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Small gear toggle for showing/hiding an AiConfigPanel next to an action button. */
+function ConfigToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Configure model and prompt for this action"
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 2,
+        padding: "0.3rem 0.5rem", borderRadius: "0.375rem",
+        border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)",
+        fontSize: "0.78rem", cursor: "pointer",
+      }}
+    >
+      <Settings size={12} /> {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+    </button>
+  );
+}
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 
@@ -173,21 +256,70 @@ export default function AIPilotPage() {
     },
   });
 
+  // ── Per-action model + prompt configuration ──────────────────────────────────
+  // Extraction/concepts instructions are persisted on the project (llm_config.
+  // extraction_instructions / concept_template.ai_instructions) — the backend
+  // reads them directly when a bulk job runs, so "Save to project" is what
+  // actually takes effect; resolve-conflicts has no such template object, so
+  // its instructions travel with the single request instead.
+  const { data: project } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => projectsApi.get(projectId!).then(r => r.data),
+    enabled: !!projectId,
+  });
+  const { data: llmConfig } = useQuery({
+    queryKey: ["llm-config", projectId],
+    queryFn: () => llmScreeningApi.getLlmConfig(projectId!).then(r => r.data),
+    enabled: !!projectId,
+  });
+
+  const [showExtractConfig, setShowExtractConfig] = useState(false);
+  const [showConceptsConfig, setShowConceptsConfig] = useState(false);
+  const [showResolveConfig, setShowResolveConfig] = useState(false);
+  const [extractModel, setExtractModel] = useState(model);
+  const [conceptsModel, setConceptsModel] = useState(model);
+  const [resolveModel, setResolveModel] = useState(model);
+  const [extractInstructions, setExtractInstructions] = useState("");
+  const [conceptsInstructions, setConceptsInstructions] = useState("");
+  const [resolveInstructions, setResolveInstructions] = useState("");
+
+  useEffect(() => {
+    if (llmConfig?.extraction_instructions !== undefined) {
+      setExtractInstructions(llmConfig.extraction_instructions ?? "");
+    }
+  }, [llmConfig?.extraction_instructions]);
+  useEffect(() => {
+    if (project?.concept_template?.ai_instructions !== undefined) {
+      setConceptsInstructions(project.concept_template.ai_instructions ?? "");
+    }
+  }, [project?.concept_template?.ai_instructions]);
+
+  const saveExtractInstructions = useMutation({
+    mutationFn: () =>
+      llmScreeningApi.updateLlmConfig(projectId!, { ...(llmConfig ?? {}), extraction_instructions: extractInstructions } as LlmConfig),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-config", projectId] }),
+  });
+  const saveConceptsInstructions = useMutation({
+    mutationFn: () =>
+      projectsApi.updateConceptTemplate(projectId!, project?.concept_template?.fields ?? [], conceptsInstructions),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project", projectId] }),
+  });
+
   // ── Bulk extraction ──────────────────────────────────────────────────────────
   const extractAll = useMutation({
-    mutationFn: () => aiPilotApi.startBulkExtraction(projectId!, { model }),
+    mutationFn: () => aiPilotApi.startBulkExtraction(projectId!, { model: extractModel }),
     onSuccess: () => { refetch(); },
   });
 
   // ── Bulk concepts ────────────────────────────────────────────────────────────
   const conceptsAll = useMutation({
-    mutationFn: () => aiPilotApi.startBulkConcepts(projectId!, { model }),
+    mutationFn: () => aiPilotApi.startBulkConcepts(projectId!, { model: conceptsModel }),
     onSuccess: () => { refetch(); },
   });
 
   // ── Resolve all conflicts (background job, like extraction/concepts) ────────
   const resolveAll = useMutation({
-    mutationFn: () => aiPilotApi.resolveAll(projectId!, { model }),
+    mutationFn: () => aiPilotApi.resolveAll(projectId!, { model: resolveModel, instructions: resolveInstructions || undefined }),
     onSuccess: () => { refetch(); },
   });
 
@@ -254,9 +386,10 @@ export default function AIPilotPage() {
           <select
             value={model}
             onChange={e => setModel(e.target.value)}
+            title="Default model — each action below can override this individually via its ⚙ Configure toggle"
             style={{ fontSize: "0.8rem", padding: "0.3rem 0.5rem", borderRadius: "0.375rem", border: "1px solid var(--border)", background: "var(--surface)" }}
           >
-            {MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <ModelSelectOptions />
           </select>
           <button
             onClick={() => refetch()}
@@ -391,9 +524,21 @@ export default function AIPilotPage() {
                 <StopJobButton projectId={projectId!} jobId={extractJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
               )}
               <ViewResultsButton projectId={projectId!} jobId={extractJob.job_id} />
+              <ConfigToggle open={showExtractConfig} onClick={() => setShowExtractConfig(v => !v)} />
             </div>
           }
         />
+        {showExtractConfig && (
+          <AiConfigPanel
+            model={extractModel}
+            onModelChange={setExtractModel}
+            instructions={extractInstructions}
+            onInstructionsChange={setExtractInstructions}
+            placeholder="e.g. Only extract outcomes reported at 12-month follow-up. Report sample sizes as integers."
+            onSave={() => saveExtractInstructions.mutate()}
+            saving={saveExtractInstructions.isPending}
+          />
+        )}
 
         <PipelineRow
           icon={<Layers size={16} />}
@@ -427,9 +572,21 @@ export default function AIPilotPage() {
                 <StopJobButton projectId={projectId!} jobId={conceptsJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
               )}
               <ViewResultsButton projectId={projectId!} jobId={conceptsJob.job_id} />
+              <ConfigToggle open={showConceptsConfig} onClick={() => setShowConceptsConfig(v => !v)} />
             </div>
           }
         />
+        {showConceptsConfig && (
+          <AiConfigPanel
+            model={conceptsModel}
+            onModelChange={setConceptsModel}
+            instructions={conceptsInstructions}
+            onInstructionsChange={setConceptsInstructions}
+            placeholder="e.g. Only extract concepts explicitly named by the authors, not inferred ones."
+            onSave={() => saveConceptsInstructions.mutate()}
+            saving={saveConceptsInstructions.isPending}
+          />
+        )}
 
         <div style={{ padding: "0.75rem 1.1rem", background: "#f8f9fa", borderBottom: "1px solid var(--border)", borderTop: "1px solid var(--border)" }}>
           <span style={{ fontSize: "0.73rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>Analysis</span>
@@ -481,9 +638,19 @@ export default function AIPilotPage() {
                 <StopJobButton projectId={projectId!} jobId={resolveJob.job_id} statusQueryKey={["ai-pilot-status", projectId]} />
               )}
               <ViewResultsButton projectId={projectId!} jobId={resolveJob.job_id} />
+              <ConfigToggle open={showResolveConfig} onClick={() => setShowResolveConfig(v => !v)} />
             </div>
           }
         />
+        {showResolveConfig && (
+          <AiConfigPanel
+            model={resolveModel}
+            onModelChange={setResolveModel}
+            instructions={resolveInstructions}
+            onInstructionsChange={setResolveInstructions}
+            placeholder="e.g. When reviewers disagree and one cites a missing outcome measure, prefer exclude."
+          />
+        )}
 
         <div style={{ padding: "0.75rem 1.1rem", background: "#f8f9fa", borderBottom: "1px solid var(--border)", borderTop: "1px solid var(--border)" }}>
           <span style={{ fontSize: "0.73rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>Synthesis</span>

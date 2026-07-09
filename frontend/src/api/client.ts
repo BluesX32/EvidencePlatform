@@ -2478,7 +2478,7 @@ export const aiPilotApi = {
       params,
     ),
 
-  resolveAll: (projectId: string, params: { model?: string; stage?: string }) =>
+  resolveAll: (projectId: string, params: { model?: string; stage?: string; instructions?: string }) =>
     api.post<AiBatchJob>(`/projects/${projectId}/ai-resolve-all`, params),
 
   getResolveAllStatus: (projectId: string) =>

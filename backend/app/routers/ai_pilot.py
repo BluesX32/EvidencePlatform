@@ -1032,6 +1032,11 @@ Return only valid JSON, no markdown fences."""
 class ResolveAllRequest(BaseModel):
     model: str = "anthropic/claude-haiku-4-5"
     stage: Optional[str] = None  # None = all stages
+    # Ad-hoc guidance appended to the resolution system prompt (e.g. "prefer
+    # excluding on any doubt about population match"). Unlike extraction/
+    # concepts, conflict resolution has no persisted template object to hang
+    # this on, so it's per-request rather than saved to the project.
+    instructions: Optional[str] = None
 
 
 @router.post("/{project_id}/ai-resolve-all")
@@ -1067,6 +1072,8 @@ async def ai_resolve_all(
     user_id = user.id
     stage = body.stage
     system = "You are an expert systematic reviewer. Given two reviewers' screening decisions and notes, suggest the correct resolution. Return a JSON object with exactly two keys: 'decision' (either 'include' or 'exclude') and 'rationale' (one sentence). Return only valid JSON."
+    if body.instructions:
+        system = f"{system}\n\n{body.instructions}"
 
     async def _run() -> None:
         set_llm_log_context(LlmLogContext(

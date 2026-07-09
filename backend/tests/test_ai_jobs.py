@@ -38,11 +38,14 @@ def test_idle_payload_when_no_job():
 async def test_job_lifecycle_and_latest(db):
     user, project = await _seed_project(db)
 
+    # created_at uses server_default=func.now(), which is transaction start
+    # time in Postgres — both rows would tie if inserted in one transaction,
+    # so older must be committed (ending its transaction) before newer starts.
     older = AiJob(project_id=project.id, job_type="extract", status="done",
                   total=5, done=5, model="claude-sonnet-4-6", triggered_by=user.id,
                   completed_at=datetime.now(tz=timezone.utc))
     db.add(older)
-    await db.flush()
+    await db.commit()
     newer = AiJob(project_id=project.id, job_type="extract", status="running",
                   total=10, done=3, errors=1, model="claude-sonnet-4-6",
                   triggered_by=user.id)
