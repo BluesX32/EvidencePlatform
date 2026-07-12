@@ -19,7 +19,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +33,7 @@ from app.models.ontology_node import OntologyNode
 from app.models.record_concept import RecordConcept
 from app.models.user import User
 from app.repositories.project_repo import ProjectRepo
+from app.utils.ontology_owl import build_owl_bytes, parse_owl_graph
 
 router = APIRouter(prefix="/projects/{project_id}/ontology", tags=["ontology"])
 
@@ -573,6 +574,170 @@ async def import_tree(
     await _import_nodes(body.nodes, parent_id=None)
     await db.commit()
     return {"created": created, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# OWL/RDF export & import (Protégé Desktop round trip)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/export.owl")
+async def export_owl(
+    project_id: uuid.UUID,
+    format: str = "turtle",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Export the ontology as OWL/RDF for editing in Protégé Desktop.
+
+    `format`: "turtle" (default, .ttl) or "xml" (.owl / RDF-XML). Class IRIs
+    embed each node's UUID so a subsequent /import-owl call can merge edits
+    back into the same rows instead of duplicating them.
+    """
+    await _require_project(project_id, current_user, db)
+    if format not in ("turtle", "xml"):
+        raise HTTPException(status_code=422, detail="format must be 'turtle' or 'xml'")
+
+    flat = await _load_tree_flat(project_id, db)
+    edge_rows = (
+        await db.execute(select(OntologyEdge).where(OntologyEdge.project_id == project_id))
+    ).scalars().all()
+    edges = [
+        {"source_id": e.source_id, "target_id": e.target_id, "label": e.label}
+        for e in edge_rows
+    ]
+
+    content = build_owl_bytes(project_id, flat, edges, fmt=format)
+    ext = "owl" if format == "xml" else "ttl"
+    media_type = "application/rdf+xml" if format == "xml" else "text/turtle"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="ontology-{project_id}.{ext}"'},
+    )
+
+
+@router.post("/import-owl", status_code=200)
+async def import_owl(
+    project_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Import/merge an OWL/RDF file (e.g. edited in Protégé Desktop).
+
+    Classes whose IRI embeds a node UUID already in this project update that
+    node in place, preserving its concept assignments; any other class
+    becomes a new node. See app.utils.ontology_owl for the OWL mapping.
+    """
+    await _require_project(project_id, current_user, db)
+
+    raw = await file.read()
+    fmt = "xml" if (file.filename or "").lower().endswith((".owl", ".rdf", ".xml")) else "turtle"
+    try:
+        parsed_nodes, parsed_edges = parse_owl_graph(raw, fmt=fmt)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse OWL/RDF file: {exc}")
+
+    existing_ids = set(
+        (
+            await db.execute(select(OntologyNode.id).where(OntologyNode.project_id == project_id))
+        ).scalars().all()
+    )
+
+    nodes_created = 0
+    nodes_updated = 0
+    unresolved_refs = 0
+    iri_to_node_id: Dict[str, uuid.UUID] = {}
+
+    # Pass 1: upsert every class as a node (parent_id resolved in pass 2).
+    for pn in parsed_nodes:
+        namespace = pn.namespace if pn.namespace in VALID_NAMESPACES else "entity"
+        if pn.node_id is not None and pn.node_id in existing_ids:
+            node = (
+                await db.execute(
+                    select(OntologyNode).where(
+                        OntologyNode.id == pn.node_id,
+                        OntologyNode.project_id == project_id,
+                    )
+                )
+            ).scalar_one()
+            node.name = pn.name.strip()
+            node.description = pn.description
+            node.namespace = namespace
+            node.color = pn.color
+            node.position = pn.position
+            iri_to_node_id[pn.iri] = node.id
+            nodes_updated += 1
+        else:
+            node = OntologyNode(
+                project_id=project_id,
+                parent_id=None,
+                name=pn.name.strip(),
+                description=pn.description,
+                namespace=namespace,
+                color=pn.color,
+                position=pn.position,
+            )
+            db.add(node)
+            await db.flush()
+            iri_to_node_id[pn.iri] = node.id
+            nodes_created += 1
+
+    # Pass 2: resolve parent_id now that every parsed class has a node id.
+    for pn in parsed_nodes:
+        if pn.parent_iri is None:
+            continue
+        node_id = iri_to_node_id[pn.iri]
+        parent_id = iri_to_node_id.get(pn.parent_iri)
+        if parent_id is None:
+            unresolved_refs += 1  # references a class outside this export (e.g. an external ontology)
+            continue
+        if parent_id == node_id or await _is_ancestor(parent_id, node_id, db):
+            unresolved_refs += 1
+            continue
+        await db.execute(
+            update(OntologyNode).where(OntologyNode.id == node_id).values(parent_id=parent_id)
+        )
+
+    # Pass 3: upsert relationship edges from the ep:rel_* annotation assertions.
+    edges_created = 0
+    edges_updated = 0
+    for pe in parsed_edges:
+        source_id = iri_to_node_id.get(pe.source_iri)
+        target_id = iri_to_node_id.get(pe.target_iri)
+        if source_id is None or target_id is None or source_id == target_id:
+            unresolved_refs += 1
+            continue
+        existing_edge = (
+            await db.execute(
+                select(OntologyEdge).where(
+                    OntologyEdge.project_id == project_id,
+                    OntologyEdge.source_id == source_id,
+                    OntologyEdge.target_id == target_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_edge is None:
+            db.add(OntologyEdge(project_id=project_id, source_id=source_id, target_id=target_id, label=pe.label))
+            edges_created += 1
+        elif existing_edge.label != pe.label:
+            existing_edge.label = pe.label
+            edges_updated += 1
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Import conflicts with existing ontology structure")
+
+    return {
+        "nodes_created": nodes_created,
+        "nodes_updated": nodes_updated,
+        "edges_created": edges_created,
+        "edges_updated": edges_updated,
+        "unresolved_refs": unresolved_refs,
+    }
 
 
 # ---------------------------------------------------------------------------

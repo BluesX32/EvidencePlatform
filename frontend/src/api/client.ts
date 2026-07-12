@@ -1295,6 +1295,14 @@ export interface OntologyExport {
   nodes: OntologyTreeNode[];
 }
 
+export interface OntologyOwlImportResult {
+  nodes_created: number;
+  nodes_updated: number;
+  edges_created: number;
+  edges_updated: number;
+  unresolved_refs: number;
+}
+
 export const ontologyApi = {
   list: (projectId: string) =>
     api.get<OntologyNode[]>(`/projects/${projectId}/ontology`),
@@ -1348,6 +1356,23 @@ export const ontologyApi = {
       `/projects/${projectId}/ontology/import`,
       body
     ),
+
+  /** Export as OWL/RDF (Turtle by default) for editing in Protégé Desktop. */
+  exportOwl: (projectId: string, format: "turtle" | "xml" = "turtle") =>
+    api.get<Blob>(`/projects/${projectId}/ontology/export.owl`, {
+      params: { format },
+      responseType: "blob",
+    }),
+
+  /** Import/merge an OWL/RDF file (e.g. edited in Protégé Desktop) back in. */
+  importOwl: (projectId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post<OntologyOwlImportResult>(
+      `/projects/${projectId}/ontology/import-owl`,
+      form
+    );
+  },
 };
 
 // ── Ontology Edges ────────────────────────────────────────────────────────────

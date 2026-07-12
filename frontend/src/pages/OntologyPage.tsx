@@ -2,10 +2,12 @@
  * OntologyPage — ontology / taxonomy editor.
  *
  * Views:
- *   "2D"  — React Flow canvas (dagre tree layout + relationship edges)
- *           Left: OntologyCanvas2D  Right: node / edge editor panel
- *   "3D"  — three.js force-directed graph (Graph3DCanvas)
- *           Full width with editor panel toggled by node/edge click
+ *   "Tree" — compact indented hierarchy (OntologyTree), like Protégé's
+ *            asserted class tree; default view, no horizontal sprawl
+ *   "2D"   — React Flow canvas (dagre tree layout + relationship edges)
+ *            Left: OntologyCanvas2D  Right: node / edge editor panel
+ *   "3D"   — three.js force-directed graph (Graph3DCanvas)
+ *            Full width with editor panel toggled by node/edge click
  *
  * Single source of truth: TanStack Query cache for nodes + edges.
  * All selection state lives here and is passed down as props.
@@ -23,7 +25,7 @@ import {
   type OntologyNode,
   type OntologyNamespace,
 } from "../api/client";
-import { NS_COLORS } from "../components/OntologyTree";
+import OntologyTree, { NS_COLORS } from "../components/OntologyTree";
 import { useToast, useConfirm } from "../components/Feedback";
 import OntologyCanvas2D from "../components/OntologyCanvas2D";
 import Graph3DCanvas from "../components/Graph3DCanvas";
@@ -68,9 +70,17 @@ export default function OntologyPage() {
   const confirmDialog = useConfirm();
 
   // ── View + search state ──────────────────────────────────────────────────
-  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
+  const [viewMode, setViewMode] = useState<"tree" | "2d" | "3d">("tree");
   const [searchQuery, setSearchQuery] = useState("");
   const [nsFilter, setNsFilter] = useState<OntologyNamespace | "all">("all");
+
+  const [showOwlHint, setShowOwlHint] = useState<boolean>(() => {
+    try { return localStorage.getItem("ep_ontology_owl_hint_dismissed") !== "1"; } catch { return true; }
+  });
+  const dismissOwlHint = () => {
+    setShowOwlHint(false);
+    try { localStorage.setItem("ep_ontology_owl_hint_dismissed", "1"); } catch { /* ignore */ }
+  };
 
   // 3D graph container sizing
   const graphContainerRef = useRef<HTMLDivElement>(null);
@@ -254,6 +264,21 @@ export default function OntologyPage() {
     onSuccess: (res) => { invalidate(); toast(`Sync complete: ${res.data.created} created, ${res.data.skipped} already present.`, "success"); },
   });
 
+  const importOwlMut = useMutation({
+    mutationFn: (file: File) => ontologyApi.importOwl(projectId!, file),
+    onSuccess: (res) => {
+      invalidate(); invalidateEdges();
+      const r = res.data;
+      toast(
+        `Import complete: ${r.nodes_created} new node(s), ${r.nodes_updated} updated, ` +
+        `${r.edges_created} new relationship(s), ${r.edges_updated} updated` +
+        (r.unresolved_refs ? ` (${r.unresolved_refs} reference(s) could not be resolved)` : "") + ".",
+        "success"
+      );
+    },
+    onError: (e: any) => toast(e?.response?.data?.detail ?? "Failed to import OWL/RDF file", "error"),
+  });
+
   // ── Edge mutations ────────────────────────────────────────────────────────
 
   const createEdgeMut = useMutation({
@@ -388,6 +413,20 @@ export default function OntologyPage() {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportOwl = async () => {
+    const res = await ontologyApi.exportOwl(projectId!, "turtle");
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement("a"); a.href = url; a.download = `ontology-${projectId}.ttl`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const owlFileInputRef = useRef<HTMLInputElement>(null);
+  const handleImportOwlFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) importOwlMut.mutate(file);
+    e.target.value = "";
+  };
+
   const startConnectMode = () => {
     if (!selectedId) return;
     setConnectSourceId(selectedId); setConnectMode(true); setViewMode("3d");
@@ -421,6 +460,10 @@ export default function OntologyPage() {
 
         {/* View toggle */}
         <div className="view-toggle" style={{ marginLeft: 8 }}>
+          <button className={`view-toggle-btn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode("tree")}
+            title="Compact indented hierarchy, like Protégé's class tree">
+            Tree
+          </button>
           <button className={`view-toggle-btn${viewMode === "2d" ? " active" : ""}`} onClick={() => setViewMode("2d")}>2D Canvas</button>
           <button className={`view-toggle-btn${viewMode === "3d" ? " active" : ""}`} onClick={() => setViewMode("3d")}>3D Graph</button>
         </div>
@@ -443,8 +486,33 @@ export default function OntologyPage() {
             ⟳ Sync levels
           </Btn>
           <Btn onClick={handleExport} color="#6b7280">↓ Export JSON</Btn>
+          <Btn onClick={handleExportOwl} color="#6b7280"
+            title="Download as OWL/RDF (Turtle) to open and edit in Protégé Desktop">
+            ↓ Export OWL
+          </Btn>
+          <Btn onClick={() => owlFileInputRef.current?.click()} color="#6b7280" disabled={importOwlMut.isPending}
+            title="Import an OWL/RDF file (e.g. edited in Protégé Desktop) — merges into this ontology by matching node IDs embedded in the file">
+            ↑ Import OWL
+          </Btn>
+          <input ref={owlFileInputRef} type="file" accept=".owl,.ttl,.rdf,.xml" style={{ display: "none" }}
+            onChange={handleImportOwlFile} />
         </div>
       </div>
+
+      {/* ── Protégé round-trip hint ── */}
+      {showOwlHint && (
+        <div style={{ background: "#eef2ff", borderBottom: "1px solid #c7d2fe", padding: "8px 20px", display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, color: "#3730a3", flexShrink: 0 }}>
+          <span style={{ flex: 1 }}>
+            <strong>Tip:</strong> use <em>↓ Export OWL</em> to open this ontology in Protégé Desktop for formal
+            ontology engineering (axioms, hierarchy cleanup, BFO alignment), then <em>↑ Import OWL</em> to merge
+            your edits back in — existing tagging on records is preserved as long as you don't delete a class.
+          </span>
+          <button onClick={dismissOwlHint}
+            style={{ border: "none", background: "transparent", color: "#4338ca", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "2px 6px", flexShrink: 0 }}>
+            Got it
+          </button>
+        </div>
+      )}
 
       {/* ── Stats strip ── */}
       {nodes.length > 0 && (
@@ -517,10 +585,10 @@ export default function OntologyPage() {
           </div>
         )}
 
-        {/* ── 2D Canvas view ── */}
-        {viewMode === "2d" && (
+        {/* ── Tree / 2D Canvas view (share the right-side editor panel) ── */}
+        {(viewMode === "tree" || viewMode === "2d") && (
           <>
-            {/* Canvas takes remaining space */}
+            {/* Visualization takes remaining space */}
             <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
               {isLoading ? (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#9ca3af" }}>Loading…</div>
@@ -530,6 +598,22 @@ export default function OntologyPage() {
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12, color: "#9ca3af" }}>
                   <p style={{ margin: 0 }}>No nodes yet.</p>
                   <button onClick={() => handleAddChild(null)} style={{ background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>+ Add root node</button>
+                </div>
+              ) : viewMode === "tree" ? (
+                <div style={{ height: "100%", overflow: "auto", padding: "12px 8px", background: "#fff" }}>
+                  <OntologyTree
+                    nodes={visibleNodes}
+                    edges={edges}
+                    selectedId={selectedId}
+                    selectedEdgeId={selectedEdgeId}
+                    onSelect={handleSelectNode}
+                    onSelectEdge={handleSelectEdge}
+                    onAddChild={handleAddChild}
+                    onDelete={handleDelete}
+                    onDeleteEdge={handleDeleteEdge}
+                    onReparent={handleReparent}
+                    searchQuery={searchQuery}
+                  />
                 </div>
               ) : (
                 <OntologyCanvas2D
